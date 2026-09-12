@@ -19,14 +19,14 @@ rsync -a \
   --exclude='src-tree/' \
   --exclude='ops/*.log' \
   --exclude='ops/*.pid' \
+  --exclude='bin/deployment-server' \
   "${ROOT}/" "${DEPLOYMENT_HOME}/"
 
-chmod +x "${DEPLOYMENT_HOME}/bin/"*.sh "${DEPLOYMENT_HOME}/scripts/"*.sh "${DEPLOYMENT_HOME}/install.sh"
+chmod +x "${DEPLOYMENT_HOME}/bin/"*.sh "${DEPLOYMENT_HOME}/scripts/"*.sh "${DEPLOYMENT_HOME}/install.sh" 2>/dev/null || true
 
 (
   cd "${DEPLOYMENT_HOME}"
-  npm install
-  npm run build
+  go build -o bin/deployment-server ./src
 )
 
 echo "[install] starting service..."
