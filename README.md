@@ -9,6 +9,7 @@
 | `~/runtime/agent-control-plane-deployment` | 本服务安装与数据根（`DEPLOYMENT_HOME`） |
 | `$HOME/packages/deployment-*` | 发版包 |
 | `$HOME/data/deploy.sqlite` | 服务契约 + 部署任务 |
+| `$HOME/upgrade-requests/` | ACP 自身升级请求（供 `acp-upgrader`） |
 | HTTP `127.0.0.1:4220` | 部署 API |
 
 被部署的应用（例如 web-cursor）仍使用自己的 runtime（如 `~/runtime/web-cursor`），由 SQLite 里的 **service contract** 描述启停方式。
@@ -16,16 +17,40 @@
 ## 安装 / 启停（本服务）
 
 HTTP 服务实现为 **Go**（`src/` → `bin/deployment-server`）。需要本机安装 Go toolchain。
+自身滚动升级另有独立进程 `bin/acp-upgrader`（**不**执行 `go build`）。
 
 ```bash
 git clone https://github.com/kaulie/agent-control-plane-deployment
 cd agent-control-plane-deployment
 ./install.sh
-# → go build + ~/runtime/agent-control-plane-deployment + 监听 :4220
+# → go build deployment-server + acp-upgrader
+# → 启动 upgrader + deployment-server（监听 :4220，端口用 DEPLOYMENT_PORT，不继承应用 PORT）
 
 ~/runtime/agent-control-plane-deployment/scripts/stop.sh
 ~/runtime/agent-control-plane-deployment/scripts/start.sh
 ~/runtime/agent-control-plane-deployment/scripts/restart.sh
+~/runtime/agent-control-plane-deployment/scripts/upgrader-start.sh
+~/runtime/agent-control-plane-deployment/scripts/upgrader-stop.sh
+```
+
+### 自身升级（ACP）
+
+deployment **不**在 worker 内对自己执行 `restartCmd`。流程：
+
+1. 发版包 `packages/deployment-<hash>/` 内必须已有可执行 `bin/deployment-server`（制品由发版流水线准备，upgrader 不编译）。
+2. `POST /api/deploys` 且 `serviceId=agent-control-plane-deployment`（`runtimeDir` 等于 `DEPLOYMENT_HOME`）：
+   - rsync 制品到 runtime（保留 `data/`、`packages/`、`logs/`、pid、upgrade-requests）
+   - 写入 `upgrade-requests/<requestId>.json`
+   - 任务保持 `running`，等待独立 upgrader
+3. `acp-upgrader`：`stop` → `start`（强制 `PORT=4220`）→ 探活；新进程 `reconcileOrphanDeploys` 收尾。
+
+```bash
+# 需先有 upgrader
+~/runtime/agent-control-plane-deployment/scripts/upgrader-start.sh
+
+curl -sS -X POST http://127.0.0.1:4220/api/deploys \
+  -H 'content-type: application/json' \
+  -d '{"serviceId":"agent-control-plane-deployment","deployment":"deployment-<hash>"}'
 ```
 
 ## 服务契约（SQLite，模式 B）

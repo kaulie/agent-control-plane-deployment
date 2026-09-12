@@ -34,6 +34,27 @@ func seedDefaultService(store *Store) {
 	log.Printf("[seed] registered service web-cursor → %s", runtimeDir)
 }
 
+func seedACPService(store *Store, cfg Config) {
+	svc, err := store.GetService("agent-control-plane-deployment")
+	if err != nil || svc != nil {
+		return
+	}
+	_, err = store.UpsertService(ServiceContract{
+		ServiceID:  "agent-control-plane-deployment",
+		Name:       "Agent Control Plane Deployment",
+		RuntimeDir: cfg.Home,
+		HealthURL:  fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Port),
+		StartCmd:   fmt.Sprintf("bash %q", filepath.Join(cfg.Home, "scripts", "start.sh")),
+		StopCmd:    fmt.Sprintf("bash %q", filepath.Join(cfg.Home, "scripts", "stop.sh")),
+		RestartCmd: fmt.Sprintf("bash %q", filepath.Join(cfg.Home, "scripts", "restart.sh")),
+	})
+	if err != nil {
+		log.Printf("[seed] acp service failed: %v", err)
+		return
+	}
+	log.Printf("[seed] registered service agent-control-plane-deployment → %s", cfg.Home)
+}
+
 func main() {
 	cfg := loadConfig()
 	store, err := NewStore(cfg.DBPath)
@@ -43,6 +64,7 @@ func main() {
 	defer store.Close()
 
 	seedDefaultService(store)
+	seedACPService(store, cfg)
 
 	worker := NewDeployWorker(store, cfg)
 	api := &apiServer{store: store, cfg: cfg, worker: worker}

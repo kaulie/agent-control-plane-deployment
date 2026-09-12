@@ -42,12 +42,12 @@ func loadConfig() Config {
 	_ = os.MkdirAll(packagesDir, 0o755)
 	_ = os.MkdirAll(filepath.Join(home, "logs"), 0o755)
 
-	host := os.Getenv("HOST")
+	host := os.Getenv("DEPLOYMENT_HOST")
 	if host == "" {
 		host = "127.0.0.1"
 	}
 	port := 4220
-	if p := os.Getenv("PORT"); p != "" {
+	if p := os.Getenv("DEPLOYMENT_PORT"); p != "" {
 		if n, err := strconv.Atoi(p); err == nil {
 			port = n
 		}

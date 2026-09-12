@@ -215,7 +215,19 @@ func executeDeploy(store *Store, cfg Config, requestID string) {
 		})
 		return
 	}
-	if _, err := os.Stat(filepath.Join(src, "scripts", "restart.sh")); err != nil && strings.TrimSpace(service.RestartCmd) == "" {
+
+	self := isSelfDeploy(*service, cfg)
+	if self {
+		bin := filepath.Join(src, "bin", "deployment-server")
+		st, err := os.Stat(bin)
+		if err != nil || st.IsDir() || st.Mode()&0o111 == 0 {
+			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
+				State: StateFailed,
+				Error: fmt.Sprintf("self-upgrade package missing executable bin/deployment-server: %s", bin),
+			})
+			return
+		}
+	} else if _, err := os.Stat(filepath.Join(src, "scripts", "restart.sh")); err != nil && strings.TrimSpace(service.RestartCmd) == "" {
 		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 			State: StateFailed,
 			Error: fmt.Sprintf("package incomplete and no restartCmd: %s", src),
@@ -247,22 +259,27 @@ func executeDeploy(store *Store, cfg Config, requestID string) {
 		fmt.Printf("[deploy] %s no graceful endpoints in registry; direct restart\n", job.RequestID)
 	}
 
-	rsyncCmd := strings.Join([]string{
-		"rsync", "-a", "--delete",
-		"--filter='P backend/.env'",
-		"--filter='P backend/data/'",
-		"--filter='P backend/runtime.pid'",
-		"--filter='P backend/server.log'",
-		"--filter='P backend/.watchdog-paused'",
-		"--exclude='backend/.env'",
-		"--exclude='backend/data/'",
-		"--exclude='backend/runtime.pid'",
-		"--exclude='backend/server.log'",
-		"--exclude='backend/.watchdog-paused'",
-		"--exclude='.git/'",
-		fmt.Sprintf("%q", src+"/"),
-		fmt.Sprintf("%q", service.RuntimeDir+"/"),
-	}, " ")
+	var rsyncCmd string
+	if self {
+		rsyncCmd = selfDeployRsyncCmd(src, service.RuntimeDir)
+	} else {
+		rsyncCmd = strings.Join([]string{
+			"rsync", "-a", "--delete",
+			"--filter='P backend/.env'",
+			"--filter='P backend/data/'",
+			"--filter='P backend/runtime.pid'",
+			"--filter='P backend/server.log'",
+			"--filter='P backend/.watchdog-paused'",
+			"--exclude='backend/.env'",
+			"--exclude='backend/data/'",
+			"--exclude='backend/runtime.pid'",
+			"--exclude='backend/server.log'",
+			"--exclude='backend/.watchdog-paused'",
+			"--exclude='.git/'",
+			fmt.Sprintf("%q", src+"/"),
+			fmt.Sprintf("%q", service.RuntimeDir+"/"),
+		}, " ")
+	}
 
 	fmt.Printf("[deploy] %s rsync %s → %s\n", job.RequestID, tag, service.RuntimeDir)
 	rsync := runShell(rsyncCmd, cfg.Home, os.Environ(), cfg.DeployMaxSec)
@@ -280,6 +297,27 @@ func executeDeploy(store *Store, cfg Config, requestID string) {
 
 	_ = os.WriteFile(filepath.Join(service.RuntimeDir, "VERSION"), []byte(hash+"\n"), 0o644)
 	_ = os.WriteFile(filepath.Join(service.RuntimeDir, "DEPLOYMENT"), []byte(tag+"\n"), 0o644)
+
+	if self {
+		if !upgraderRunning(cfg.Home) {
+			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
+				State:   StateFailed,
+				Version: hash,
+				Error:   "artifacts staged but acp-upgrader is not running; start scripts/upgrader-start.sh",
+			})
+			return
+		}
+		if err := enqueueACPUpgrade(cfg, *job, *service, hash, tag); err != nil {
+			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
+				State:   StateFailed,
+				Version: hash,
+				Error:   "failed to enqueue acp-upgrader request: " + err.Error(),
+			})
+			return
+		}
+		fmt.Printf("[deploy] %s self-upgrade staged; handed off to acp-upgrader (job stays running until reconcile)\n", job.RequestID)
+		return
+	}
 
 	restartCmd := strings.TrimSpace(service.RestartCmd)
 	if restartCmd == "" {
