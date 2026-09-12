@@ -100,11 +100,32 @@ Notify 请求体示例：`{ serviceId, requestId, deployment, version, message }
 
 ## 发版与部署
 
+### 服务方一键：通知 → 打包 → graceful 部署
+
+业务服务调用 ACP 的部署通知接口后，由 ACP **统一打包**，再进入部署（部署前会调业务方 `restartNotifyUrl`，再轮询 `restartPollUrl`，就绪后 rsync+restart）：
+
+```bash
+# 服务契约需含 gitRepoUrl（以及建议配置 graceful URL）
+curl -sS -X PUT http://127.0.0.1:4220/api/services/web-cursor \
+  -H 'content-type: application/json' \
+  -d '{"gitRepoUrl":"https://github.com/kaulie/agent-control-plane"}'
+
+curl -sS -X POST http://127.0.0.1:4220/api/deploy-notify \
+  -H 'content-type: application/json' \
+  -d '{"serviceId":"web-cursor","ref":"main"}'
+
+curl -sS http://127.0.0.1:4220/api/pipelines/<requestId>
+```
+
+流水线状态：`queued` → `packaging` → `deploying` → `succeeded`/`failed`。
+
+### 手工发版 + 部署
+
 ```bash
 # 1) 构建包 → packages/deployment-<hash>/
 ./bin/release.sh main
 
-# 2) HTTP 触发部署（不再写 deploy-requests 文件）
+# 2) HTTP 触发部署
 curl -sS -X POST http://127.0.0.1:4220/api/deploys \
   -H 'content-type: application/json' \
   -d '{"serviceId":"web-cursor","deployment":"deployment-<hash>"}'
@@ -123,9 +144,11 @@ curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 | Method | Path | 说明 |
 |---|---|---|
 | GET | `/health` | 本服务探活 |
-| GET/PUT/DELETE | `/api/services[/:id]` | 服务契约（含可选 graceful URL） |
-| POST | `/api/deploys` | 入队部署 |
-| GET | `/api/deploys[/:id]` | 查询任务 |
-| GET | `/api/meta` | 含 `gracefulPollIntervalSec` / `gracefulMaxWaitMs` |
+| GET/PUT/DELETE | `/api/services[/:id]` | 服务契约（含 `gitRepoUrl`、可选 graceful URL） |
+| POST | `/api/deploy-notify` | 服务方通知：打包 → 再部署 |
+| GET | `/api/pipelines[/:id]` | 打包+部署流水线状态 |
+| POST | `/api/deploys` | 已有包直接入队部署 |
+| GET | `/api/deploys[/:id]` | 查询部署任务 |
+| GET | `/api/meta` | 含 graceful / release 配置 |
 
 旧的 `ops/` 文件队列守护已废弃，保留目录仅作历史参考；请用本 HTTP 服务。

@@ -11,9 +11,10 @@ import (
 )
 
 type apiServer struct {
-	store  *Store
-	cfg    Config
-	worker *DeployWorker
+	store    *Store
+	cfg      Config
+	worker   *DeployWorker
+	pipeline *PipelineWorker
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -49,6 +50,9 @@ func (s *apiServer) routes() http.Handler {
 	mux.HandleFunc("POST /api/deploys", s.handleCreateDeploy)
 	mux.HandleFunc("GET /api/deploys", s.handleListDeploys)
 	mux.HandleFunc("GET /api/deploys/{requestId}", s.handleGetDeploy)
+	mux.HandleFunc("POST /api/deploy-notify", s.handleDeployNotify)
+	mux.HandleFunc("GET /api/pipelines", s.handleListPipelines)
+	mux.HandleFunc("GET /api/pipelines/{requestId}", s.handleGetPipeline)
 	mux.HandleFunc("GET /api/meta", s.handleMeta)
 	return withCORS(mux)
 }
@@ -91,6 +95,7 @@ type putServiceBody struct {
 	StartCmd          string  `json:"startCmd"`
 	StopCmd           string  `json:"stopCmd"`
 	RestartCmd        string  `json:"restartCmd"`
+	GitRepoURL        *string `json:"gitRepoUrl"`
 	RestartNotifyURL  *string `json:"restartNotifyUrl"`
 	RestartPollURL    *string `json:"restartPollUrl"`
 	GracefulMaxWaitMs *int    `json:"gracefulRestartMaxWaitMs"`
@@ -120,6 +125,7 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 	notifyURL := ""
 	pollURL := ""
 	maxWaitMs := 0
+	gitRepoURL := ""
 	if existing != nil {
 		if name == "" {
 			name = existing.Name
@@ -142,6 +148,7 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 		notifyURL = existing.RestartNotifyURL
 		pollURL = existing.RestartPollURL
 		maxWaitMs = existing.GracefulMaxWaitMs
+		gitRepoURL = existing.GitRepoURL
 	}
 	if body.RestartNotifyURL != nil {
 		notifyURL = strings.TrimSpace(*body.RestartNotifyURL)
@@ -154,6 +161,9 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 		if maxWaitMs < 0 {
 			maxWaitMs = 0
 		}
+	}
+	if body.GitRepoURL != nil {
+		gitRepoURL = strings.TrimSpace(*body.GitRepoURL)
 	}
 	if name == "" {
 		name = serviceID
@@ -178,6 +188,7 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 		StartCmd:          startCmd,
 		StopCmd:           stopCmd,
 		RestartCmd:        restartCmd,
+		GitRepoURL:        gitRepoURL,
 		RestartNotifyURL:  notifyURL,
 		RestartPollURL:    pollURL,
 		GracefulMaxWaitMs: maxWaitMs,
@@ -299,6 +310,100 @@ func (s *apiServer) handleGetDeploy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, job)
 }
 
+type deployNotifyBody struct {
+	ServiceID string `json:"serviceId"`
+	Ref       string `json:"ref"`
+	RequestID string `json:"requestId"`
+}
+
+// POST /api/deploy-notify — service asks ACP to package then deploy (graceful).
+func (s *apiServer) handleDeployNotify(w http.ResponseWriter, r *http.Request) {
+	var body deployNotifyBody
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	serviceID := strings.TrimSpace(body.ServiceID)
+	ref := strings.TrimSpace(body.Ref)
+	if ref == "" {
+		ref = "main"
+	}
+	if serviceID == "" {
+		writeError(w, http.StatusBadRequest, "serviceId is required")
+		return
+	}
+	svc, err := s.store.GetService(serviceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if svc == nil {
+		writeError(w, http.StatusNotFound, "service not found: "+serviceID)
+		return
+	}
+	if strings.TrimSpace(svc.GitRepoURL) == "" {
+		writeError(w, http.StatusBadRequest,
+			"service missing gitRepoUrl; PUT /api/services/"+serviceID+` {"gitRepoUrl":"https://..."}`)
+		return
+	}
+	requestID := strings.TrimSpace(body.RequestID)
+	if requestID == "" {
+		requestID = "pipeline-" + uuid.NewString()[:8]
+	}
+	if existing, _ := s.store.GetPipeline(requestID); existing != nil {
+		writeError(w, http.StatusConflict, "request already exists: "+requestID)
+		return
+	}
+	job, err := s.store.CreatePipeline(requestID, serviceID, ref,
+		"accepted; will package then deploy (notify+poll before restart)")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if s.pipeline != nil {
+		s.pipeline.Kick()
+	}
+	type resp struct {
+		PipelineJob
+		Poll string `json:"poll"`
+	}
+	writeJSON(w, http.StatusAccepted, resp{
+		PipelineJob: job,
+		Poll:        "/api/pipelines/" + requestID,
+	})
+}
+
+func (s *apiServer) handleListPipelines(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if q := r.URL.Query().Get("limit"); q != "" {
+		if n, err := strconv.Atoi(q); err == nil {
+			limit = n
+		}
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	jobs, err := s.store.ListPipelines(limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"pipelines": jobs})
+}
+
+func (s *apiServer) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
+	job, err := s.store.GetPipeline(r.PathValue("requestId"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if job == nil {
+		writeError(w, http.StatusNotFound, "pipeline not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
 func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
 	example, _ := normalizeDeploymentTag("abc12345")
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -308,5 +413,7 @@ func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
 		"normalizeExample":        example,
 		"gracefulPollIntervalSec": int(gracefulPollInterval / time.Second),
 		"gracefulMaxWaitMs":       int(s.cfg.GracefulMaxWait / time.Millisecond),
+		"releaseMaxSec":           s.cfg.ReleaseMaxSec,
+		"deployNotify":            "POST /api/deploy-notify {serviceId, ref?}",
 	})
 }
