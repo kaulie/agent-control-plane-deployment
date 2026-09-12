@@ -3,6 +3,7 @@ set -euo pipefail
 HOME_DIR="${DEPLOYMENT_HOME:-${HOME}/runtime/agent-control-plane-deployment}"
 PID_FILE="${HOME_DIR}/deployment.pid"
 LOG_FILE="${HOME_DIR}/logs/deployment.log"
+BIN="${HOME_DIR}/bin/deployment-server"
 mkdir -p "${HOME_DIR}/logs"
 
 if [ -f "${PID_FILE}" ]; then
@@ -19,12 +20,12 @@ export DEPLOYMENT_HOME="${HOME_DIR}"
 export PORT="${PORT:-4220}"
 export HOST="${HOST:-127.0.0.1}"
 
-if [ ! -f "${HOME_DIR}/dist/index.js" ]; then
-  echo "[start][错误] missing dist/; run install.sh / npm run build first" >&2
+if [ ! -x "${BIN}" ]; then
+  echo "[start][错误] missing ${BIN}; run ./install.sh / go build -o bin/deployment-server ./src first" >&2
   exit 1
 fi
 
-nohup node dist/index.js >>"${LOG_FILE}" 2>&1 &
+nohup "${BIN}" >>"${LOG_FILE}" 2>&1 &
 echo $! > "${PID_FILE}"
 sleep 0.4
 if kill -0 "$(tr -d '[:space:]' < "${PID_FILE}")" 2>/dev/null; then

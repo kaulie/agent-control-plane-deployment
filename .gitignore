@@ -10,3 +10,4 @@ ops/*.log
 ops/*.pid
 .DS_Store
 *.swp
+bin/deployment-server

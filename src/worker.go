@@ -1,0 +1,445 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+)
+
+func normalizeDeploymentTag(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", fmt.Errorf("deployment is required")
+	}
+	if strings.HasPrefix(s, "deployment-") {
+		return s, nil
+	}
+	return "deployment-" + strings.TrimPrefix(s, "deployment-"), nil
+}
+
+func assertPackage(packagesDir, deployment string) (string, error) {
+	tag, err := normalizeDeploymentTag(deployment)
+	if err != nil {
+		return "", err
+	}
+	snap := filepath.Join(packagesDir, tag)
+	if _, err := os.Stat(filepath.Join(snap, "VERSION")); err != nil {
+		return "", fmt.Errorf("deployment package not found: %s", snap)
+	}
+	return tag, nil
+}
+
+type shellResult struct {
+	Code   int
+	Output string
+}
+
+func runShell(cmdStr, cwd string, env []string, timeoutSec int) shellResult {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "/bin/bash", "-lc", cmdStr)
+	cmd.Dir = cwd
+	cmd.Env = env
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+
+	if err := cmd.Start(); err != nil {
+		return shellResult{Code: 1, Output: err.Error()}
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	select {
+	case <-ctx.Done():
+		if cmd.Process != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		<-done
+		out := buf.String()
+		if len(out) > 200_000 {
+			out = out[len(out)-200_000:]
+		}
+		return shellResult{Code: 1, Output: out + "\ntimeout"}
+	case err := <-done:
+		out := buf.String()
+		if len(out) > 200_000 {
+			out = out[len(out)-200_000:]
+		}
+		code := 0
+		if err != nil {
+			if ee, ok := err.(*exec.ExitError); ok {
+				code = ee.ExitCode()
+			} else {
+				code = 1
+				out += "\n" + err.Error()
+			}
+		}
+		return shellResult{Code: code, Output: out}
+	}
+}
+
+func healthOK(rawURL string) bool {
+	client := &http.Client{Timeout: 3 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Cache-Control", "no-store")
+	res, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer res.Body.Close()
+	_, _ = io.Copy(io.Discard, res.Body)
+	return res.StatusCode >= 200 && res.StatusCode < 300
+}
+
+func portFromHealthURL(healthURL string) string {
+	u, err := url.Parse(healthURL)
+	if err != nil {
+		return "4211"
+	}
+	if u.Port() != "" {
+		return u.Port()
+	}
+	if u.Scheme == "https" {
+		return "443"
+	}
+	return "80"
+}
+
+func serviceCmdEnv(service ServiceContract, extra map[string]string) []string {
+	base := os.Environ()
+	envMap := make(map[string]string, len(base)+8)
+	for _, e := range base {
+		if i := strings.IndexByte(e, '='); i > 0 {
+			envMap[e[:i]] = e[i+1:]
+		}
+	}
+	for k, v := range extra {
+		envMap[k] = v
+	}
+	envMap["RUNTIME_DIR"] = service.RuntimeDir
+	envMap["PORT"] = portFromHealthURL(service.HealthURL)
+	delete(envMap, "HOST")
+	delete(envMap, "DEPLOYMENT_HOME")
+
+	out := make([]string, 0, len(envMap))
+	for k, v := range envMap {
+		out = append(out, k+"="+v)
+	}
+	return out
+}
+
+func externalWatchdogPausePath(runtimeDir string) string {
+	name := filepath.Base(strings.TrimRight(runtimeDir, "/"))
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, "deployment", name, "ops", "watchdog-pause-until")
+}
+
+func setExternalWatchdogPause(runtimeDir string, sec int) {
+	file := externalWatchdogPausePath(runtimeDir)
+	_ = os.MkdirAll(filepath.Dir(file), 0o755)
+	if sec < 15 {
+		sec = 15
+	}
+	until := time.Now().Unix() + int64(sec)
+	if err := os.WriteFile(file, []byte(fmt.Sprintf("%d\n", until)), 0o644); err != nil {
+		fmt.Printf("[deploy] watchdog-pause-until write failed: %v\n", err)
+	}
+}
+
+func clearExternalWatchdogPause(runtimeDir string) {
+	_ = os.Remove(externalWatchdogPausePath(runtimeDir))
+}
+
+func clearStaleDeployPauses(store *Store) int {
+	svcs, err := store.ListServices()
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, svc := range svcs {
+		file := externalWatchdogPausePath(svc.RuntimeDir)
+		if _, err := os.Stat(file); err != nil {
+			continue
+		}
+		clearExternalWatchdogPause(svc.RuntimeDir)
+		_ = os.Remove(filepath.Join(svc.RuntimeDir, "backend", ".watchdog-paused"))
+		fmt.Printf("[deploy] cleared stale pause flags for %s\n", svc.ServiceID)
+		n++
+	}
+	return n
+}
+
+func executeDeploy(store *Store, cfg Config, requestID string) {
+	job, err := store.GetDeploy(requestID)
+	if err != nil || job == nil || job.State != StateRunning {
+		return
+	}
+	service, err := store.GetService(job.ServiceID)
+	if err != nil || service == nil {
+		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
+			State: StateFailed,
+			Error: fmt.Sprintf("unknown service: %s", job.ServiceID),
+		})
+		return
+	}
+
+	tag, err := normalizeDeploymentTag(job.Deployment)
+	if err != nil {
+		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{State: StateFailed, Error: err.Error()})
+		return
+	}
+	hash := strings.TrimPrefix(tag, "deployment-")
+	src := filepath.Join(cfg.PackagesDir, tag)
+	if _, err := os.Stat(filepath.Join(src, "VERSION")); err != nil {
+		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
+			State: StateFailed,
+			Error: fmt.Sprintf("package not found: %s", src),
+		})
+		return
+	}
+	if _, err := os.Stat(filepath.Join(src, "scripts", "restart.sh")); err != nil && strings.TrimSpace(service.RestartCmd) == "" {
+		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
+			State: StateFailed,
+			Error: fmt.Sprintf("package incomplete and no restartCmd: %s", src),
+		})
+		return
+	}
+	snapVerBytes, err := os.ReadFile(filepath.Join(src, "VERSION"))
+	if err != nil {
+		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{State: StateFailed, Error: err.Error()})
+		return
+	}
+	snapVer := strings.TrimSpace(string(snapVerBytes))
+	if snapVer != hash {
+		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
+			State: StateFailed,
+			Error: fmt.Sprintf("VERSION(%s) != hash(%s)", snapVer, hash),
+		})
+		return
+	}
+
+	_ = os.MkdirAll(service.RuntimeDir, 0o755)
+
+	rsyncCmd := strings.Join([]string{
+		"rsync", "-a", "--delete",
+		"--filter='P backend/.env'",
+		"--filter='P backend/data/'",
+		"--filter='P backend/runtime.pid'",
+		"--filter='P backend/server.log'",
+		"--filter='P backend/.watchdog-paused'",
+		"--exclude='backend/.env'",
+		"--exclude='backend/data/'",
+		"--exclude='backend/runtime.pid'",
+		"--exclude='backend/server.log'",
+		"--exclude='backend/.watchdog-paused'",
+		"--exclude='.git/'",
+		fmt.Sprintf("%q", src+"/"),
+		fmt.Sprintf("%q", service.RuntimeDir+"/"),
+	}, " ")
+
+	fmt.Printf("[deploy] %s rsync %s → %s\n", job.RequestID, tag, service.RuntimeDir)
+	rsync := runShell(rsyncCmd, cfg.Home, os.Environ(), cfg.DeployMaxSec)
+	if rsync.Code != 0 {
+		out := rsync.Output
+		if len(out) > 2000 {
+			out = out[len(out)-2000:]
+		}
+		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
+			State: StateFailed,
+			Error: "rsync failed: " + out,
+		})
+		return
+	}
+
+	_ = os.WriteFile(filepath.Join(service.RuntimeDir, "VERSION"), []byte(hash+"\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(service.RuntimeDir, "DEPLOYMENT"), []byte(tag+"\n"), 0o644)
+
+	restartCmd := strings.TrimSpace(service.RestartCmd)
+	if restartCmd == "" {
+		restartCmd = fmt.Sprintf("bash %q", filepath.Join(service.RuntimeDir, "scripts", "restart.sh"))
+	}
+	pauseSec := cfg.DeployMaxSec
+	if pauseSec > 90 {
+		pauseSec = 90
+	}
+	setExternalWatchdogPause(service.RuntimeDir, pauseSec)
+	defer clearExternalWatchdogPause(service.RuntimeDir)
+
+	fmt.Printf("[deploy] %s restart via contract (PORT=%s): %s\n",
+		job.RequestID, portFromHealthURL(service.HealthURL), restartCmd)
+	restart := runShell(
+		restartCmd,
+		service.RuntimeDir,
+		serviceCmdEnv(*service, map[string]string{"APP_VERSION": hash}),
+		cfg.DeployMaxSec,
+	)
+	if restart.Code != 0 {
+		out := restart.Output
+		if len(out) > 2000 {
+			out = out[len(out)-2000:]
+		}
+		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
+			State:   StateFailed,
+			Version: hash,
+			Error:   "restart failed: " + out,
+		})
+		return
+	}
+
+	if !healthOK(service.HealthURL) {
+		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
+			State:   StateFailed,
+			Version: hash,
+			Error:   "restart finished but health check failed: " + service.HealthURL,
+		})
+		return
+	}
+
+	_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
+		State:   StateSucceeded,
+		Version: hash,
+		Message: "deploy succeeded",
+	})
+	fmt.Printf("[deploy] %s ok version=%s\n", job.RequestID, hash)
+}
+
+func reconcileOrphanDeploys(store *Store) int {
+	orphans, err := store.ListDeploysByState(StateRunning)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, job := range orphans {
+		service, err := store.GetService(job.ServiceID)
+		if err != nil || service == nil {
+			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
+				State:   StateFailed,
+				Error:   "deployment service restarted; service contract missing",
+				Message: "reconciled after deployment service restart",
+			})
+			n++
+			continue
+		}
+		tag, _ := normalizeDeploymentTag(job.Deployment)
+		hash := strings.TrimPrefix(tag, "deployment-")
+		versionOnDisk := ""
+		if b, err := os.ReadFile(filepath.Join(service.RuntimeDir, "VERSION")); err == nil {
+			versionOnDisk = strings.TrimSpace(string(b))
+		}
+		ok := healthOK(service.HealthURL)
+		if ok && versionOnDisk == hash {
+			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
+				State:   StateSucceeded,
+				Version: hash,
+				Message: "deploy succeeded (status reconciled after deployment service died mid-restart; gateway health confirmed)",
+			})
+			fmt.Printf("[deploy] reconciled %s → succeeded (health ok, version=%s)\n", job.RequestID, hash)
+		} else {
+			errMsg := fmt.Sprintf("deployment service restarted mid-deploy; health check failed: %s", service.HealthURL)
+			if ok {
+				errMsg = fmt.Sprintf("deployment service restarted mid-deploy; VERSION=%s expected=%s", versionOnDisk, hash)
+			}
+			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
+				State:   StateFailed,
+				Version: versionOnDisk,
+				Error:   errMsg,
+				Message: "reconciled after deployment service restart",
+			})
+			fmt.Printf("[deploy] reconciled %s → failed\n", job.RequestID)
+		}
+		n++
+	}
+	return n
+}
+
+type DeployWorker struct {
+	store  *Store
+	cfg    Config
+	mu     sync.Mutex
+	busy   bool
+	stopCh chan struct{}
+	wg     sync.WaitGroup
+}
+
+func NewDeployWorker(store *Store, cfg Config) *DeployWorker {
+	return &DeployWorker{
+		store:  store,
+		cfg:    cfg,
+		stopCh: make(chan struct{}),
+	}
+}
+
+func (w *DeployWorker) Start() {
+	w.wg.Add(1)
+	go func() {
+		defer w.wg.Done()
+		t := time.NewTicker(time.Second)
+		defer t.Stop()
+		w.tick()
+		for {
+			select {
+			case <-w.stopCh:
+				return
+			case <-t.C:
+				w.tick()
+			}
+		}
+	}()
+}
+
+func (w *DeployWorker) Stop() {
+	select {
+	case <-w.stopCh:
+	default:
+		close(w.stopCh)
+	}
+	w.wg.Wait()
+}
+
+func (w *DeployWorker) Kick() {
+	go w.tick()
+}
+
+func (w *DeployWorker) tick() {
+	w.mu.Lock()
+	if w.busy {
+		w.mu.Unlock()
+		return
+	}
+	w.busy = true
+	w.mu.Unlock()
+
+	defer func() {
+		w.mu.Lock()
+		w.busy = false
+		w.mu.Unlock()
+	}()
+
+	job, err := w.store.ClaimNextQueued()
+	if err != nil {
+		fmt.Printf("[deploy-worker] %v\n", err)
+		return
+	}
+	if job == nil {
+		return
+	}
+	executeDeploy(w.store, w.cfg, job.RequestID)
+}

@@ -15,11 +15,13 @@
 
 ## 安装 / 启停（本服务）
 
+HTTP 服务实现为 **Go**（`src/` → `bin/deployment-server`）。需要本机安装 Go toolchain。
+
 ```bash
 git clone https://github.com/kaulie/agent-control-plane-deployment
 cd agent-control-plane-deployment
 ./install.sh
-# → ~/runtime/agent-control-plane-deployment + 监听 :4220
+# → go build + ~/runtime/agent-control-plane-deployment + 监听 :4220
 
 ~/runtime/agent-control-plane-deployment/scripts/stop.sh
 ~/runtime/agent-control-plane-deployment/scripts/start.sh
