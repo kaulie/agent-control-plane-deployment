@@ -130,11 +130,11 @@ function populateServiceSelects() {
   }
 }
 
-// service editor modal
-const modal = $('#svc-modal');
+// service editor: in-page form card (no modal, no forced popup)
+const formCard = $('#svc-form-card');
 const form = $('#svc-form');
-function openServiceModal(svc) {
-  $('#svc-modal-title').textContent = svc ? '编辑服务契约' : '新建服务契约';
+function openServiceForm(svc) {
+  $('#svc-form-title').textContent = svc ? '编辑服务契约' : '新建服务契约';
   $('#svc-delete').hidden = !svc;
   form.reset();
   if (svc) {
@@ -155,13 +155,13 @@ function openServiceModal(svc) {
     form.serviceId.readOnly = false;
   }
   $('#svc-form-msg').textContent = '';
-  modal.hidden = false;
+  formCard.hidden = false;
+  formCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
-function closeServiceModal() { modal.hidden = true; }
+function closeServiceForm() { formCard.hidden = true; }
 
-$('#svc-new').addEventListener('click', () => openServiceModal(null));
-$('#svc-close').addEventListener('click', closeServiceModal);
-modal.addEventListener('click', (e) => { if (e.target === modal) closeServiceModal(); });
+$('#svc-new').addEventListener('click', () => openServiceForm(null));
+$('#svc-cancel').addEventListener('click', closeServiceForm);
 
 $('#svc-delete').addEventListener('click', async () => {
   const id = form.serviceId.value;
@@ -169,7 +169,7 @@ $('#svc-delete').addEventListener('click', async () => {
   try {
     await apiSend('DELETE', '/api/services/' + encodeURIComponent(id));
     toast('已删除 ' + id, 'ok');
-    closeServiceModal();
+    closeServiceForm();
     refresh();
   } catch (e) { $('#svc-form-msg').textContent = '删除失败：' + e.message; }
 });
@@ -198,7 +198,7 @@ form.addEventListener('submit', async (e) => {
   try {
     await apiSend('PUT', '/api/services/' + encodeURIComponent(id), body);
     toast('已保存 ' + id, 'ok');
-    closeServiceModal();
+    closeServiceForm();
     refresh();
   } catch (err) {
     $('#svc-form-msg').textContent = '保存失败：' + err.message;
@@ -210,7 +210,7 @@ $('#svc-table tbody').addEventListener('click', (e) => {
   const btn = e.target.closest('[data-svc-edit]');
   if (!btn) return;
   const svc = services.find((s) => s.serviceId === btn.dataset.svcEdit);
-  if (svc) openServiceModal(svc);
+  if (svc) openServiceForm(svc);
 });
 
 // ---- pipelines ------------------------------------------------------------

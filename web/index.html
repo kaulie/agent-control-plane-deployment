@@ -35,6 +35,55 @@
       <div class="actions">
         <button class="btn btn--primary" id="svc-new">＋ 新建服务契约</button>
       </div>
+      <div id="svc-form-card" class="form-card" hidden>
+        <div class="form-card__head">
+          <h2 id="svc-form-title">新建服务契约</h2>
+          <button class="btn btn--ghost" id="svc-cancel" type="button">取消</button>
+        </div>
+        <form id="svc-form" class="form-grid">
+          <label>serviceId
+            <input type="text" name="serviceId" required />
+          </label>
+          <label>name
+            <input type="text" name="name" />
+          </label>
+          <label>runtimeDir
+            <input type="text" name="runtimeDir" required />
+          </label>
+          <label>healthUrl
+            <input type="text" name="healthUrl" required />
+          </label>
+          <label>startCmd
+            <input type="text" name="startCmd" />
+          </label>
+          <label>stopCmd
+            <input type="text" name="stopCmd" />
+          </label>
+          <label>restartCmd
+            <input type="text" name="restartCmd" />
+          </label>
+          <label>gitRepoUrl
+            <input type="text" name="gitRepoUrl" placeholder="https://github.com/..." />
+          </label>
+          <label>defaultBranch
+            <input type="text" name="defaultBranch" placeholder="main" />
+          </label>
+          <label>restartNotifyUrl
+            <input type="text" name="restartNotifyUrl" placeholder="graceful（可选）" />
+          </label>
+          <label>restartPollUrl
+            <input type="text" name="restartPollUrl" placeholder="graceful（可选）" />
+          </label>
+          <label>gracefulRestartMaxWaitMs
+            <input type="number" name="gracefulRestartMaxWaitMs" min="0" placeholder="0 = 用默认" />
+          </label>
+          <div class="form-actions">
+            <button type="submit" class="btn btn--primary">保存</button>
+            <button type="button" class="btn btn--danger" id="svc-delete" hidden>删除</button>
+            <span id="svc-form-msg" class="muted"></span>
+          </div>
+        </form>
+      </div>
       <div class="tablewrap">
         <table class="grid" id="svc-table">
           <thead>
@@ -106,58 +155,7 @@
     </section>
   </main>
 
-  <!-- Service editor modal -->
-  <div class="modal" id="svc-modal" hidden>
-    <div class="modal__card">
-      <div class="modal__head">
-        <h2 id="svc-modal-title">服务契约</h2>
-        <button class="btn btn--ghost" id="svc-close">✕</button>
-      </div>
-      <form id="svc-form" class="form-grid">
-        <label>serviceId
-          <input type="text" name="serviceId" required />
-        </label>
-        <label>name
-          <input type="text" name="name" />
-        </label>
-        <label>runtimeDir
-          <input type="text" name="runtimeDir" required />
-        </label>
-        <label>healthUrl
-          <input type="text" name="healthUrl" required />
-        </label>
-        <label>startCmd
-          <input type="text" name="startCmd" />
-        </label>
-        <label>stopCmd
-          <input type="text" name="stopCmd" />
-        </label>
-        <label>restartCmd
-          <input type="text" name="restartCmd" />
-        </label>
-        <label>gitRepoUrl
-          <input type="text" name="gitRepoUrl" placeholder="https://github.com/..." />
-        </label>
-        <label>defaultBranch
-          <input type="text" name="defaultBranch" placeholder="main" />
-        </label>
-        <label>restartNotifyUrl
-          <input type="text" name="restartNotifyUrl" placeholder="graceful（可选）" />
-        </label>
-        <label>restartPollUrl
-          <input type="text" name="restartPollUrl" placeholder="graceful（可选）" />
-        </label>
-        <label>gracefulRestartMaxWaitMs
-          <input type="number" name="gracefulRestartMaxWaitMs" min="0" placeholder="0 = 用默认" />
-        </label>
-        <div class="form-actions">
-          <button type="submit" class="btn btn--primary">保存</button>
-          <button type="button" class="btn btn--danger" id="svc-delete" hidden>删除</button>
-          <span id="svc-form-msg" class="muted"></span>
-        </div>
-      </form>
-    </div>
-  </div>
+  <!-- Service editor: in-page form card (shown via 新建/编辑 buttons) -->
 
   <div id="toast" class="toast" hidden></div>
 

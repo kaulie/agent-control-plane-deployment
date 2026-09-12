@@ -132,24 +132,21 @@ a { color: var(--accent-2); }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 .cell-actions { display: flex; gap: 6px; }
 
-/* Modal */
-.modal {
-  position: fixed; inset: 0;
-  background: rgba(0,0,0,.55);
-  display: flex; align-items: center; justify-content: center;
-  z-index: 50;
-}
-.modal__card {
+/* In-page form card (replaces modal) */
+.form-card {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 10px;
-  width: min(680px, 92vw);
-  max-height: 88vh;
-  overflow: auto;
   padding: 16px 18px;
+  margin-bottom: 14px;
 }
-.modal__head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
-.modal__head h2 { margin: 0; font-size: 15px; }
+.form-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.form-card__head h2 { margin: 0; font-size: 15px; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
 .form-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
 .form-grid input {
