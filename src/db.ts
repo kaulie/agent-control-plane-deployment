@@ -200,6 +200,15 @@ export class Store {
     return rows.map((r) => this.mapDeploy(r));
   }
 
+  listDeploysByState(state: DeployState): DeployJob[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM deploys WHERE state = ? ORDER BY requested_at ASC`,
+      )
+      .all(state) as Array<Record<string, unknown>>;
+    return rows.map((r) => this.mapDeploy(r));
+  }
+
   claimNextQueued(): DeployJob | undefined {
     const row = this.db
       .prepare(

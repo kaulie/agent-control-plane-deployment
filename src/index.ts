@@ -6,7 +6,12 @@ import os from "node:os";
 import { loadConfig } from "./config.js";
 import { Store } from "./db.js";
 import { registerRoutes } from "./routes.js";
-import { DeployWorker, Watchdog } from "./worker.js";
+import {
+  DeployPause,
+  DeployWorker,
+  Watchdog,
+  reconcileOrphanDeploys,
+} from "./worker.js";
 
 const config = loadConfig();
 const store = new Store(config.dbPath);
@@ -33,8 +38,9 @@ seedDefaultService();
 const app = Fastify({ logger: true });
 await app.register(cors, { origin: true });
 
-const worker = new DeployWorker(store, config);
-const watchdog = new Watchdog(store, config);
+const pause = new DeployPause();
+const worker = new DeployWorker(store, config, pause);
+const watchdog = new Watchdog(store, config, pause);
 
 await registerRoutes(app, { store, config, worker });
 
@@ -56,6 +62,12 @@ process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());
 
 await app.listen({ host: config.host, port: config.port });
+
+const reconciled = await reconcileOrphanDeploys(store);
+if (reconciled > 0) {
+  app.log.info(`reconciled ${reconciled} orphan deploy(s) left running`);
+}
+
 worker.start();
 watchdog.start();
 app.log.info(
