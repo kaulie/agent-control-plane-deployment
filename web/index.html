@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Deployment Control Plane</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">◆</span>
+      <h1>Deployment Control Plane</h1>
+      <span id="health-badge" class="badge badge--muted">…</span>
+    </div>
+    <div class="topbar__meta">
+      <span id="meta-home" class="muted"></span>
+      <span id="meta-port" class="muted"></span>
+      <label class="autorefresh">
+        <input type="checkbox" id="autorefresh" checked /> 自动刷新
+      </label>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab tab--active" data-tab="services">服务契约</button>
+    <button class="tab" data-tab="pipelines">部署流水线</button>
+    <button class="tab" data-tab="deploys">部署任务</button>
+    <button class="tab" data-tab="meta">元信息</button>
+  </nav>
+
+  <main class="content">
+    <!-- Services -->
+    <section id="tab-services" class="tabpanel tabpanel--active">
+      <div class="actions">
+        <button class="btn btn--primary" id="svc-new">＋ 新建服务契约</button>
+      </div>
+      <div class="tablewrap">
+        <table class="grid" id="svc-table">
+          <thead>
+            <tr>
+              <th>serviceId</th><th>名称</th><th>runtimeDir</th><th>healthUrl</th>
+              <th>gitRepoUrl</th><th>graceful</th><th>更新时间</th><th>操作</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Pipelines -->
+    <section id="tab-pipelines" class="tabpanel">
+      <div class="actions">
+        <div class="form-inline">
+          <label>服务
+            <select id="pipe-service"></select>
+          </label>
+          <label>ref（可选，默认 defaultBranch）
+            <input type="text" id="pipe-ref" placeholder="main / commit" />
+          </label>
+          <button class="btn btn--primary" id="pipe-trigger">触发打包+部署</button>
+        </div>
+      </div>
+      <div class="tablewrap">
+        <table class="grid" id="pipe-table">
+          <thead>
+            <tr>
+              <th>requestId</th><th>service</th><th>ref</th><th>状态</th>
+              <th>deployment</th><th>version</th><th>deployReq</th><th>请求时间</th><th>消息</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Deploys -->
+    <section id="tab-deploys" class="tabpanel">
+      <div class="actions">
+        <div class="form-inline">
+          <label>服务
+            <select id="dep-service"></select>
+          </label>
+          <label>deployment / hash
+            <input type="text" id="dep-deployment" placeholder="deployment-<hash>" />
+          </label>
+          <button class="btn btn--primary" id="dep-trigger">触发部署</button>
+        </div>
+      </div>
+      <div class="tablewrap">
+        <table class="grid" id="dep-table">
+          <thead>
+            <tr>
+              <th>requestId</th><th>service</th><th>deployment</th><th>状态</th>
+              <th>version</th><th>请求时间</th><th>开始</th><th>结束</th><th>消息 / 错误</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Meta -->
+    <section id="tab-meta" class="tabpanel">
+      <pre id="meta-pre" class="jsonpre">加载中…</pre>
+    </section>
+  </main>
+
+  <!-- Service editor modal -->
+  <div class="modal" id="svc-modal" hidden>
+    <div class="modal__card">
+      <div class="modal__head">
+        <h2 id="svc-modal-title">服务契约</h2>
+        <button class="btn btn--ghost" id="svc-close">✕</button>
+      </div>
+      <form id="svc-form" class="form-grid">
+        <label>serviceId
+          <input type="text" name="serviceId" required />
+        </label>
+        <label>name
+          <input type="text" name="name" />
+        </label>
+        <label>runtimeDir
+          <input type="text" name="runtimeDir" required />
+        </label>
+        <label>healthUrl
+          <input type="text" name="healthUrl" required />
+        </label>
+        <label>startCmd
+          <input type="text" name="startCmd" />
+        </label>
+        <label>stopCmd
+          <input type="text" name="stopCmd" />
+        </label>
+        <label>restartCmd
+          <input type="text" name="restartCmd" />
+        </label>
+        <label>gitRepoUrl
+          <input type="text" name="gitRepoUrl" placeholder="https://github.com/..." />
+        </label>
+        <label>defaultBranch
+          <input type="text" name="defaultBranch" placeholder="main" />
+        </label>
+        <label>restartNotifyUrl
+          <input type="text" name="restartNotifyUrl" placeholder="graceful（可选）" />
+        </label>
+        <label>restartPollUrl
+          <input type="text" name="restartPollUrl" placeholder="graceful（可选）" />
+        </label>
+        <label>gracefulRestartMaxWaitMs
+          <input type="number" name="gracefulRestartMaxWaitMs" min="0" placeholder="0 = 用默认" />
+        </label>
+        <div class="form-actions">
+          <button type="submit" class="btn btn--primary">保存</button>
+          <button type="button" class="btn btn--danger" id="svc-delete" hidden>删除</button>
+          <span id="svc-form-msg" class="muted"></span>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

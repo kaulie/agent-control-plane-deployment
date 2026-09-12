@@ -54,7 +54,26 @@ func (s *apiServer) routes() http.Handler {
 	mux.HandleFunc("GET /api/pipelines", s.handleListPipelines)
 	mux.HandleFunc("GET /api/pipelines/{requestId}", s.handleGetPipeline)
 	mux.HandleFunc("GET /api/meta", s.handleMeta)
+	s.registerPanel(mux)
 	return withCORS(mux)
+}
+
+// registerPanel serves the standalone web panel (vanilla HTML/CSS/JS) from
+// cfg.WebDir on the same port as the API. The panel lives under /panel/ so it
+// never shadows /health or /api/*. Root "/" redirects to /panel/.
+func (s *apiServer) registerPanel(mux *http.ServeMux) {
+	webDir := s.cfg.WebDir
+	if webDir == "" {
+		return
+	}
+	fs := http.FileServer(http.Dir(webDir))
+	mux.Handle("GET /panel/", http.StripPrefix("/panel/", fs))
+	mux.HandleFunc("GET /panel", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/panel/", http.StatusFound)
+	})
+	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/panel/", http.StatusFound)
+	})
 }
 
 func (s *apiServer) handleHealth(w http.ResponseWriter, r *http.Request) {

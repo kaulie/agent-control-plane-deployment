@@ -14,6 +14,7 @@ type Config struct {
 	PackagesDir  string
 	DataDir      string
 	DBPath       string
+	WebDir       string
 	DeployMaxSec int
 	// Max seconds for git fetch + build.sh during packageFromGit.
 	ReleaseMaxSec int
@@ -40,8 +41,10 @@ func loadConfig() Config {
 	}
 	dataDir := filepath.Join(home, "data")
 	packagesDir := filepath.Join(home, "packages")
+	webDir := filepath.Join(home, "web")
 	_ = os.MkdirAll(dataDir, 0o755)
 	_ = os.MkdirAll(packagesDir, 0o755)
+	_ = os.MkdirAll(webDir, 0o755)
 	_ = os.MkdirAll(filepath.Join(home, "logs"), 0o755)
 
 	host := os.Getenv("DEPLOYMENT_HOST")
@@ -87,6 +90,7 @@ func loadConfig() Config {
 		Home:            home,
 		PackagesDir:     packagesDir,
 		DataDir:         dataDir,
+		WebDir:          webDir,
 		DBPath:          filepath.Join(dataDir, "deploy.sqlite"),
 		DeployMaxSec:    deployMax,
 		ReleaseMaxSec:   releaseMax,
