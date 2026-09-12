@@ -153,3 +153,25 @@ curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 | GET | `/api/meta` | 含 graceful / release 配置 |
 
 旧的 `ops/` 文件队列守护已废弃，保留目录仅作历史参考；请用本 HTTP 服务。
+
+## Web 控制面板（独立 panel）
+
+本服务内置一个**独立前端项目**（`web/`，原生 HTML + CSS + JS，无构建步骤、无框架），
+由 `deployment-server` 在**同一端口**（`:4220`）直接托管，无需额外进程或端口。
+
+- 入口：`http://127.0.0.1:4220/` → 302 到 `/panel/`（`index.html`）
+- 静态资源：`/panel/styles.css`、`/panel/app.js`（从 `DEPLOYMENT_HOME/web` 读取）
+- 与 `/health`、`/api/*` 完全隔离，互不冲突
+
+面板功能：
+
+| 面板 | 能力 |
+|---|---|
+| 服务契约 | 列表 / 新建 / 编辑 / 删除（`PUT`/`DELETE /api/services`） |
+| 部署流水线 | 列表 + 触发打包→部署（`POST /api/deploy-notify`），实时状态轮询 |
+| 部署任务 | 列表 + 触发已有包部署（`POST /api/deploys`） |
+| 元信息 | 展示 `/api/meta` |
+
+状态徽标：`queued`/`packaging`/`deploying`/`running`/`succeeded`/`failed`/`cancelled`。
+默认每 3s 自动刷新当前页签，可在右上角关闭。`install.sh` 已把 `web/` 一并 rsync 到 runtime。
+
