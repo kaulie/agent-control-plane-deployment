@@ -11,7 +11,6 @@ export interface Config {
   dataDir: string;
   dbPath: string;
   deployMaxSec: number;
-  watchdogIntervalSec: number;
 }
 
 function expandHome(p: string): string {
@@ -38,9 +37,5 @@ export function loadConfig(): Config {
     dataDir,
     dbPath: path.join(dataDir, "deploy.sqlite"),
     deployMaxSec: Math.max(30, Number(process.env.DEPLOY_MAX_SEC || 120)),
-    watchdogIntervalSec: Math.max(
-      5,
-      Number(process.env.WATCHDOG_INTERVAL_SEC || 10),
-    ),
   };
 }

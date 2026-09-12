@@ -17,7 +17,6 @@ export interface ServiceContract {
   startCmd: string;
   stopCmd: string;
   restartCmd: string;
-  watchdogEnabled: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -97,7 +96,6 @@ export class Store {
       startCmd: input.startCmd,
       stopCmd: input.stopCmd,
       restartCmd: input.restartCmd,
-      watchdogEnabled: input.watchdogEnabled,
       createdAt: existing?.createdAt ?? input.createdAt ?? ts,
       updatedAt: ts,
     };
@@ -126,7 +124,7 @@ export class Store {
         row.startCmd,
         row.stopCmd,
         row.restartCmd,
-        row.watchdogEnabled ? 1 : 0,
+        0,
         row.createdAt,
         row.updatedAt,
       );
@@ -266,7 +264,6 @@ export class Store {
       startCmd: String(r.start_cmd),
       stopCmd: String(r.stop_cmd),
       restartCmd: String(r.restart_cmd),
-      watchdogEnabled: Number(r.watchdog_enabled) === 1,
       createdAt: String(r.created_at),
       updatedAt: String(r.updated_at),
     };
