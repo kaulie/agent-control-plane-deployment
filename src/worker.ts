@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { Config } from "./config.js";
 import type { ServiceContract, Store } from "./db.js";
@@ -11,6 +12,27 @@ export function normalizeDeploymentTag(raw: string): string {
   return `deployment-${s.replace(/^deployment-/, "")}`;
 }
 
+/**
+ * In-memory gate so the in-process Watchdog never races a DeployWorker
+ * restart (that race previously produced EADDRINUSE / flapping).
+ */
+export class DeployPause {
+  private depth = 0;
+
+  begin(): void {
+    this.depth += 1;
+  }
+
+  end(): void {
+    this.depth = Math.max(0, this.depth - 1);
+  }
+
+  get active(): boolean {
+    return this.depth > 0;
+  }
+}
+
+/** Run shell in its own process group so SIGKILL cannot take down this service. */
 function runShell(
   cmd: string,
   cwd: string,
@@ -22,6 +44,8 @@ function runShell(
       cwd,
       env,
       stdio: ["ignore", "pipe", "pipe"],
+      // Own session/process group — isolates restart/stop from this Node process.
+      detached: true,
     });
     let output = "";
     const append = (buf: Buffer) => {
@@ -30,12 +54,28 @@ function runShell(
     };
     child.stdout?.on("data", append);
     child.stderr?.on("data", append);
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-    }, timeoutSec * 1000);
+
+    const killTree = () => {
+      if (child.pid == null) return;
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+
+    const timer = setTimeout(killTree, timeoutSec * 1000);
     child.on("close", (code) => {
       clearTimeout(timer);
       resolve({ code: code ?? 1, output });
+    });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      resolve({ code: 1, output: `${output}\n${err.message}` });
     });
   });
 }
@@ -52,10 +92,45 @@ async function healthOk(url: string): Promise<boolean> {
   }
 }
 
+/**
+ * Time-bounded pause for the legacy external ops watchdog
+ * (`~/deployment/<service>/ops/watchdog-pause-until`).
+ * stop.sh/start.sh only flip `.watchdog-paused`, and start.sh clears it
+ * before health is up — without this file the external watchdog races restart.
+ */
+function externalWatchdogPausePath(runtimeDir: string): string {
+  const name = path.basename(runtimeDir.replace(/\/+$/, "") || runtimeDir);
+  return path.join(os.homedir(), "deployment", name, "ops", "watchdog-pause-until");
+}
+
+function setExternalWatchdogPause(runtimeDir: string, sec: number): void {
+  const file = externalWatchdogPausePath(runtimeDir);
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const until = Math.floor(Date.now() / 1000) + Math.max(30, sec);
+    fs.writeFileSync(file, `${until}\n`);
+  } catch (err) {
+    console.warn(
+      "[deploy] watchdog-pause-until write failed:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
+function clearExternalWatchdogPause(runtimeDir: string): void {
+  const file = externalWatchdogPausePath(runtimeDir);
+  try {
+    fs.unlinkSync(file);
+  } catch {
+    /* ignore */
+  }
+}
+
 export async function executeDeploy(opts: {
   store: Store;
   config: Config;
   requestId: string;
+  pause: DeployPause;
 }): Promise<void> {
   const job = opts.store.getDeploy(opts.requestId);
   if (!job || job.state !== "running") return;
@@ -127,59 +202,127 @@ export async function executeDeploy(opts: {
     `"${service.runtimeDir}/"`,
   ].join(" ");
 
-  console.log(`[deploy] ${job.requestId} rsync ${tag} → ${service.runtimeDir}`);
-  const rsync = await runShell(
-    rsyncCmd,
-    opts.config.home,
-    process.env,
-    opts.config.deployMaxSec,
-  );
-  if (rsync.code !== 0) {
-    opts.store.finishDeploy(job.requestId, {
-      state: "failed",
-      error: `rsync failed: ${rsync.output.slice(-2000)}`,
-    });
-    return;
-  }
+  // Cover rsync + restart (+ start.sh's own health wait).
+  const pauseSec = opts.config.deployMaxSec * 2;
+  opts.pause.begin();
+  setExternalWatchdogPause(service.runtimeDir, pauseSec);
+  try {
+    console.log(`[deploy] ${job.requestId} rsync ${tag} → ${service.runtimeDir}`);
+    const rsync = await runShell(
+      rsyncCmd,
+      opts.config.home,
+      process.env,
+      opts.config.deployMaxSec,
+    );
+    if (rsync.code !== 0) {
+      opts.store.finishDeploy(job.requestId, {
+        state: "failed",
+        error: `rsync failed: ${rsync.output.slice(-2000)}`,
+      });
+      return;
+    }
 
-  fs.writeFileSync(path.join(service.runtimeDir, "VERSION"), `${hash}\n`);
-  fs.writeFileSync(path.join(service.runtimeDir, "DEPLOYMENT"), `${tag}\n`);
+    fs.writeFileSync(path.join(service.runtimeDir, "VERSION"), `${hash}\n`);
+    fs.writeFileSync(path.join(service.runtimeDir, "DEPLOYMENT"), `${tag}\n`);
 
-  const restartCmd =
-    service.restartCmd.trim() ||
-    `bash "${path.join(service.runtimeDir, "scripts", "restart.sh")}"`;
-  console.log(`[deploy] ${job.requestId} restart via contract: ${restartCmd}`);
-  const restart = await runShell(
-    restartCmd,
-    service.runtimeDir,
-    { ...process.env, APP_VERSION: hash, RUNTIME_DIR: service.runtimeDir },
-    opts.config.deployMaxSec,
-  );
-  if (restart.code !== 0) {
+    const restartCmd =
+      service.restartCmd.trim() ||
+      `bash "${path.join(service.runtimeDir, "scripts", "restart.sh")}"`;
+    console.log(`[deploy] ${job.requestId} restart via contract: ${restartCmd}`);
+    // Refresh pause before stop/start window (start.sh clears .watchdog-paused).
+    setExternalWatchdogPause(service.runtimeDir, opts.config.deployMaxSec);
+    const restart = await runShell(
+      restartCmd,
+      service.runtimeDir,
+      { ...process.env, APP_VERSION: hash, RUNTIME_DIR: service.runtimeDir },
+      opts.config.deployMaxSec,
+    );
+    if (restart.code !== 0) {
+      opts.store.finishDeploy(job.requestId, {
+        state: "failed",
+        version: hash,
+        error: `restart failed: ${restart.output.slice(-2000)}`,
+      });
+      return;
+    }
+
+    const ok = await healthOk(service.healthUrl);
+    if (!ok) {
+      opts.store.finishDeploy(job.requestId, {
+        state: "failed",
+        version: hash,
+        error: `restart finished but health check failed: ${service.healthUrl}`,
+      });
+      return;
+    }
+
     opts.store.finishDeploy(job.requestId, {
-      state: "failed",
+      state: "succeeded",
       version: hash,
-      error: `restart failed: ${restart.output.slice(-2000)}`,
+      message: "deploy succeeded",
     });
-    return;
+    console.log(`[deploy] ${job.requestId} ok version=${hash}`);
+  } finally {
+    clearExternalWatchdogPause(service.runtimeDir);
+    opts.pause.end();
   }
+}
 
-  const ok = await healthOk(service.healthUrl);
-  if (!ok) {
-    opts.store.finishDeploy(job.requestId, {
-      state: "failed",
-      version: hash,
-      error: `restart finished but health check failed: ${service.healthUrl}`,
-    });
-    return;
+/**
+ * If this process died mid-restart, jobs can be stuck in `running`.
+ * On boot: health+VERSION match → succeeded; otherwise → failed.
+ */
+export async function reconcileOrphanDeploys(store: Store): Promise<number> {
+  const orphans = store.listDeploysByState("running");
+  let n = 0;
+  for (const job of orphans) {
+    const service = store.getService(job.serviceId);
+    if (!service) {
+      store.finishDeploy(job.requestId, {
+        state: "failed",
+        error: "deployment service restarted; service contract missing",
+        message: "reconciled after deployment service restart",
+      });
+      n += 1;
+      continue;
+    }
+    const hash = normalizeDeploymentTag(job.deployment).replace(
+      /^deployment-/,
+      "",
+    );
+    let versionOnDisk = "";
+    try {
+      versionOnDisk = fs
+        .readFileSync(path.join(service.runtimeDir, "VERSION"), "utf8")
+        .trim();
+    } catch {
+      /* ignore */
+    }
+    const ok = await healthOk(service.healthUrl);
+    if (ok && versionOnDisk === hash) {
+      store.finishDeploy(job.requestId, {
+        state: "succeeded",
+        version: hash,
+        message:
+          "deploy succeeded (status reconciled after deployment service died mid-restart; gateway health confirmed)",
+      });
+      console.log(
+        `[deploy] reconciled ${job.requestId} → succeeded (health ok, version=${hash})`,
+      );
+    } else {
+      store.finishDeploy(job.requestId, {
+        state: "failed",
+        version: versionOnDisk || undefined,
+        error: ok
+          ? `deployment service restarted mid-deploy; VERSION=${versionOnDisk || "?"} expected=${hash}`
+          : `deployment service restarted mid-deploy; health check failed: ${service.healthUrl}`,
+        message: "reconciled after deployment service restart",
+      });
+      console.warn(`[deploy] reconciled ${job.requestId} → failed`);
+    }
+    n += 1;
   }
-
-  opts.store.finishDeploy(job.requestId, {
-    state: "succeeded",
-    version: hash,
-    message: "deploy succeeded",
-  });
-  console.log(`[deploy] ${job.requestId} ok version=${hash}`);
+  return n;
 }
 
 export class DeployWorker {
@@ -189,6 +332,7 @@ export class DeployWorker {
   constructor(
     private store: Store,
     private config: Config,
+    private pause: DeployPause,
   ) {}
 
   start(): void {
@@ -217,6 +361,7 @@ export class DeployWorker {
         store: this.store,
         config: this.config,
         requestId: job.requestId,
+        pause: this.pause,
       });
     } catch (err) {
       console.warn(
@@ -235,6 +380,7 @@ export class Watchdog {
   constructor(
     private store: Store,
     private config: Config,
+    private pause: DeployPause,
   ) {}
 
   start(): void {
@@ -252,13 +398,13 @@ export class Watchdog {
   }
 
   private async tick(): Promise<void> {
+    if (this.pause.active) return;
     for (const svc of this.store.listServices()) {
       if (!svc.watchdogEnabled) continue;
+      if (this.pause.active) return;
       const ok = await healthOk(svc.healthUrl);
       if (ok) continue;
-      console.warn(
-        `[watchdog] ${svc.serviceId} unhealthy → startCmd`,
-      );
+      console.warn(`[watchdog] ${svc.serviceId} unhealthy → startCmd`);
       await runShell(
         svc.startCmd,
         svc.runtimeDir,
