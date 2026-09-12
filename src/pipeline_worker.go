@@ -1,0 +1,172 @@
+package main
+
+import (
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+// PipelineWorker: package from git, then enqueue deploy (graceful notify/poll happens in DeployWorker).
+type PipelineWorker struct {
+	store  *Store
+	cfg    Config
+	deploy *DeployWorker
+	mu     sync.Mutex
+	busy   bool
+	stopCh chan struct{}
+	wg     sync.WaitGroup
+}
+
+func NewPipelineWorker(store *Store, cfg Config, deploy *DeployWorker) *PipelineWorker {
+	return &PipelineWorker{
+		store:  store,
+		cfg:    cfg,
+		deploy: deploy,
+		stopCh: make(chan struct{}),
+	}
+}
+
+func (w *PipelineWorker) Start() {
+	w.wg.Add(1)
+	go func() {
+		defer w.wg.Done()
+		t := time.NewTicker(time.Second)
+		defer t.Stop()
+		w.tick()
+		for {
+			select {
+			case <-w.stopCh:
+				return
+			case <-t.C:
+				w.tick()
+				w.syncDeploying()
+			}
+		}
+	}()
+}
+
+func (w *PipelineWorker) Stop() {
+	select {
+	case <-w.stopCh:
+	default:
+		close(w.stopCh)
+	}
+	w.wg.Wait()
+}
+
+func (w *PipelineWorker) Kick() {
+	go w.tick()
+}
+
+func (w *PipelineWorker) tick() {
+	w.mu.Lock()
+	if w.busy {
+		w.mu.Unlock()
+		return
+	}
+	w.busy = true
+	w.mu.Unlock()
+	defer func() {
+		w.mu.Lock()
+		w.busy = false
+		w.mu.Unlock()
+	}()
+
+	job, err := w.store.ClaimNextPipeline()
+	if err != nil {
+		fmt.Printf("[pipeline-worker] %v\n", err)
+		return
+	}
+	if job == nil {
+		return
+	}
+	w.execute(job)
+}
+
+func (w *PipelineWorker) execute(job *PipelineJob) {
+	svc, err := w.store.GetService(job.ServiceID)
+	if err != nil || svc == nil {
+		failPipeline(w.store, job.RequestID, "unknown service: "+job.ServiceID)
+		return
+	}
+	gitURL := strings.TrimSpace(svc.GitRepoURL)
+	if gitURL == "" {
+		failPipeline(w.store, job.RequestID, "service missing gitRepoUrl; register it via PUT /api/services/"+job.ServiceID)
+		return
+	}
+
+	fmt.Printf("[pipeline] %s packaging service=%s ref=%s repo=%s\n", job.RequestID, job.ServiceID, job.Ref, gitURL)
+	pkg, err := packageFromGit(w.cfg.PackagesDir, gitURL, job.Ref, w.cfg.ReleaseMaxSec)
+	if err != nil {
+		failPipeline(w.store, job.RequestID, "package failed: "+err.Error())
+		return
+	}
+	msg := "package ready; enqueueing deploy"
+	if pkg.Skipped {
+		msg = "package already exists; enqueueing deploy"
+	}
+	_ = w.store.UpdatePipeline(job.RequestID, PipelineJob{
+		State:      PipelineDeploying,
+		Deployment: pkg.Tag,
+		Version:    pkg.Hash,
+		Message:    msg,
+	})
+
+	deployID := job.RequestID
+	if existing, _ := w.store.GetDeploy(deployID); existing != nil {
+		deployID = "deploy-req-" + uuid.NewString()[:8]
+	}
+	_, err = w.store.CreateDeploy(deployID, job.ServiceID, pkg.Tag,
+		"queued after package (graceful notify+poll before restart)")
+	if err != nil {
+		failPipeline(w.store, job.RequestID, "enqueue deploy failed: "+err.Error())
+		return
+	}
+	_ = w.store.UpdatePipeline(job.RequestID, PipelineJob{
+		State:           PipelineDeploying,
+		Deployment:      pkg.Tag,
+		DeployRequestID: deployID,
+		Version:         pkg.Hash,
+		Message:         "deploy queued; waiting for graceful restart window then apply",
+	})
+	w.deploy.Kick()
+	fmt.Printf("[pipeline] %s packaged %s → deploy %s\n", job.RequestID, pkg.Tag, deployID)
+}
+
+func (w *PipelineWorker) syncDeploying() {
+	jobs, err := w.store.ListPipelinesByState(PipelineDeploying)
+	if err != nil {
+		return
+	}
+	for _, job := range jobs {
+		if job.DeployRequestID == "" {
+			continue
+		}
+		dep, err := w.store.GetDeploy(job.DeployRequestID)
+		if err != nil || dep == nil {
+			continue
+		}
+		switch dep.State {
+		case StateSucceeded:
+			_ = w.store.UpdatePipeline(job.RequestID, PipelineJob{
+				State:           PipelineSucceeded,
+				Deployment:      dep.Deployment,
+				DeployRequestID: dep.RequestID,
+				Version:         dep.Version,
+				Message:         "pipeline succeeded",
+			})
+		case StateFailed, StateCancelled:
+			_ = w.store.UpdatePipeline(job.RequestID, PipelineJob{
+				State:           PipelineFailed,
+				Deployment:      dep.Deployment,
+				DeployRequestID: dep.RequestID,
+				Version:         dep.Version,
+				Error:           dep.Error,
+				Message:         "deploy failed",
+			})
+		}
+	}
+}

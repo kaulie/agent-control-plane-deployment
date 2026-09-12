@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -27,6 +28,10 @@ type ServiceContract struct {
 	StartCmd   string `json:"startCmd"`
 	StopCmd    string `json:"stopCmd"`
 	RestartCmd string `json:"restartCmd"`
+	// Git repo used by POST /api/deploy-notify packaging.
+	GitRepoURL string `json:"gitRepoUrl,omitempty"`
+	// Default git branch/ref for packaging when notify omits ref (default: main).
+	DefaultBranch string `json:"defaultBranch,omitempty"`
 	// Project-provided graceful restart endpoints (both required to enable).
 	RestartNotifyURL string `json:"restartNotifyUrl,omitempty"`
 	RestartPollURL   string `json:"restartPollUrl,omitempty"`
@@ -118,14 +123,19 @@ func (s *Store) migrate() error {
 	if err != nil {
 		return err
 	}
-	return s.ensureServiceGracefulColumns()
+	if err := s.ensureServiceExtraColumns(); err != nil {
+		return err
+	}
+	return s.migratePipelines()
 }
 
-func (s *Store) ensureServiceGracefulColumns() error {
+func (s *Store) ensureServiceExtraColumns() error {
 	cols := map[string]string{
 		"restart_notify_url":   `ALTER TABLE services ADD COLUMN restart_notify_url TEXT NOT NULL DEFAULT ''`,
 		"restart_poll_url":     `ALTER TABLE services ADD COLUMN restart_poll_url TEXT NOT NULL DEFAULT ''`,
 		"graceful_max_wait_ms": `ALTER TABLE services ADD COLUMN graceful_max_wait_ms INTEGER NOT NULL DEFAULT 0`,
+		"git_repo_url":         `ALTER TABLE services ADD COLUMN git_repo_url TEXT NOT NULL DEFAULT ''`,
+		"default_branch":       `ALTER TABLE services ADD COLUMN default_branch TEXT NOT NULL DEFAULT 'main'`,
 	}
 	existing := map[string]bool{}
 	rows, err := s.db.Query(`PRAGMA table_info(services)`)
@@ -157,6 +167,10 @@ func (s *Store) ensureServiceGracefulColumns() error {
 	return nil
 }
 
+func (s *Store) ensureServiceGracefulColumns() error {
+	return s.ensureServiceExtraColumns()
+}
+
 func (s *Store) UpsertService(input ServiceContract) (ServiceContract, error) {
 	existing, _ := s.GetService(input.ServiceID)
 	ts := nowISO()
@@ -173,8 +187,9 @@ func (s *Store) UpsertService(input ServiceContract) (ServiceContract, error) {
 		  service_id, name, runtime_dir, health_url,
 		  start_cmd, stop_cmd, restart_cmd, watchdog_enabled,
 		  restart_notify_url, restart_poll_url, graceful_max_wait_ms,
+		  git_repo_url, default_branch,
 		  created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(service_id) DO UPDATE SET
 		  name = excluded.name,
 		  runtime_dir = excluded.runtime_dir,
@@ -186,10 +201,13 @@ func (s *Store) UpsertService(input ServiceContract) (ServiceContract, error) {
 		  restart_notify_url = excluded.restart_notify_url,
 		  restart_poll_url = excluded.restart_poll_url,
 		  graceful_max_wait_ms = excluded.graceful_max_wait_ms,
+		  git_repo_url = excluded.git_repo_url,
+		  default_branch = excluded.default_branch,
 		  updated_at = excluded.updated_at`,
 		row.ServiceID, row.Name, row.RuntimeDir, row.HealthURL,
 		row.StartCmd, row.StopCmd, row.RestartCmd, 0,
 		row.RestartNotifyURL, row.RestartPollURL, row.GracefulMaxWaitMs,
+		row.GitRepoURL, defaultBranchOrMain(row.DefaultBranch),
 		row.CreatedAt, row.UpdatedAt,
 	)
 	return row, err
@@ -200,6 +218,7 @@ func (s *Store) GetService(serviceID string) (*ServiceContract, error) {
 		SELECT service_id, name, runtime_dir, health_url,
 		       start_cmd, stop_cmd, restart_cmd, watchdog_enabled,
 		       restart_notify_url, restart_poll_url, graceful_max_wait_ms,
+		       git_repo_url, default_branch,
 		       created_at, updated_at
 		FROM services WHERE service_id = ?`, serviceID)
 	svc, err := scanService(row)
@@ -214,6 +233,7 @@ func (s *Store) ListServices() ([]ServiceContract, error) {
 		SELECT service_id, name, runtime_dir, health_url,
 		       start_cmd, stop_cmd, restart_cmd, watchdog_enabled,
 		       restart_notify_url, restart_poll_url, graceful_max_wait_ms,
+		       git_repo_url, default_branch,
 		       created_at, updated_at
 		FROM services ORDER BY name ASC`)
 	if err != nil {
@@ -384,12 +404,22 @@ func scanService(row scannable) (*ServiceContract, error) {
 		&svc.ServiceID, &svc.Name, &svc.RuntimeDir, &svc.HealthURL,
 		&svc.StartCmd, &svc.StopCmd, &svc.RestartCmd, &watchdog,
 		&svc.RestartNotifyURL, &svc.RestartPollURL, &svc.GracefulMaxWaitMs,
+		&svc.GitRepoURL, &svc.DefaultBranch,
 		&svc.CreatedAt, &svc.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
+	svc.DefaultBranch = defaultBranchOrMain(svc.DefaultBranch)
 	return &svc, nil
+}
+
+func defaultBranchOrMain(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "main"
+	}
+	return s
 }
 
 func scanServiceRows(rows *sql.Rows) (*ServiceContract, error) {

@@ -26,6 +26,7 @@ func seedDefaultService(store *Store) {
 		StartCmd:   fmt.Sprintf("bash %q", filepath.Join(runtimeDir, "scripts", "start.sh")),
 		StopCmd:    fmt.Sprintf("bash %q", filepath.Join(runtimeDir, "scripts", "stop.sh")),
 		RestartCmd: fmt.Sprintf("bash %q", filepath.Join(runtimeDir, "scripts", "restart.sh")),
+		GitRepoURL: "https://github.com/kaulie/agent-control-plane",
 	})
 	if err != nil {
 		log.Printf("[seed] failed: %v", err)
@@ -67,7 +68,8 @@ func main() {
 	seedACPService(store, cfg)
 
 	worker := NewDeployWorker(store, cfg)
-	api := &apiServer{store: store, cfg: cfg, worker: worker}
+	pipeline := NewPipelineWorker(store, cfg, worker)
+	api := &apiServer{store: store, cfg: cfg, worker: worker, pipeline: pipeline}
 
 	pidFile := filepath.Join(cfg.Home, "deployment.pid")
 	_ = os.WriteFile(pidFile, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644)
@@ -86,11 +88,13 @@ func main() {
 		log.Printf("reconciled %d orphan deploy(s) left running", reconciled)
 	}
 	worker.Start()
+	pipeline.Start()
 
 	go func() {
 		ch := make(chan os.Signal, 1)
 		signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 		<-ch
+		pipeline.Stop()
 		worker.Stop()
 		_ = os.Remove(pidFile)
 		_ = httpServer.Close()

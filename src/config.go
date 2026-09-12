@@ -15,6 +15,8 @@ type Config struct {
 	DataDir      string
 	DBPath       string
 	DeployMaxSec int
+	// Max seconds for git fetch + build.sh during packageFromGit.
+	ReleaseMaxSec int
 	// Default max wait for project graceful restart (notify + poll).
 	GracefulMaxWait time.Duration
 }
@@ -62,6 +64,16 @@ func loadConfig() Config {
 		deployMax = 30
 	}
 
+	releaseMax := 600
+	if p := os.Getenv("RELEASE_MAX_SEC"); p != "" {
+		if n, err := strconv.Atoi(p); err == nil {
+			releaseMax = n
+		}
+	}
+	if releaseMax < 60 {
+		releaseMax = 60
+	}
+
 	gracefulMaxWait := 10 * time.Minute
 	if p := os.Getenv("GRACEFUL_RESTART_MAX_WAIT_MS"); p != "" {
 		if n, err := strconv.Atoi(p); err == nil && n > 0 {
@@ -77,6 +89,7 @@ func loadConfig() Config {
 		DataDir:         dataDir,
 		DBPath:          filepath.Join(dataDir, "deploy.sqlite"),
 		DeployMaxSec:    deployMax,
+		ReleaseMaxSec:   releaseMax,
 		GracefulMaxWait: gracefulMaxWait,
 	}
 }
