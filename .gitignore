@@ -1,0 +1,9 @@
+# Local install / runtime artifacts — never commit
+deployment-*/
+deploy-requests/
+deploy-status/
+ops/*.log
+ops/*.pid
+ops/watchdog-pause-until
+.DS_Store
+*.swp
