@@ -112,7 +112,8 @@ curl -sS -X PUT http://127.0.0.1:4220/api/services/web-cursor \
 
 curl -sS -X POST http://127.0.0.1:4220/api/deploy-notify \
   -H 'content-type: application/json' \
-  -d '{"serviceId":"web-cursor","ref":"main"}'
+  -d '{"serviceId":"web-cursor"}'
+# 未传 ref → 默认拉该服务 defaultBranch（缺省 main）的最新 tip
 
 curl -sS http://127.0.0.1:4220/api/pipelines/<requestId>
 ```

@@ -96,6 +96,7 @@ type putServiceBody struct {
 	StopCmd           string  `json:"stopCmd"`
 	RestartCmd        string  `json:"restartCmd"`
 	GitRepoURL        *string `json:"gitRepoUrl"`
+	DefaultBranch     *string `json:"defaultBranch"`
 	RestartNotifyURL  *string `json:"restartNotifyUrl"`
 	RestartPollURL    *string `json:"restartPollUrl"`
 	GracefulMaxWaitMs *int    `json:"gracefulRestartMaxWaitMs"`
@@ -126,6 +127,7 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 	pollURL := ""
 	maxWaitMs := 0
 	gitRepoURL := ""
+	defaultBranch := "main"
 	if existing != nil {
 		if name == "" {
 			name = existing.Name
@@ -149,6 +151,7 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 		pollURL = existing.RestartPollURL
 		maxWaitMs = existing.GracefulMaxWaitMs
 		gitRepoURL = existing.GitRepoURL
+		defaultBranch = defaultBranchOrMain(existing.DefaultBranch)
 	}
 	if body.RestartNotifyURL != nil {
 		notifyURL = strings.TrimSpace(*body.RestartNotifyURL)
@@ -164,6 +167,9 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.GitRepoURL != nil {
 		gitRepoURL = strings.TrimSpace(*body.GitRepoURL)
+	}
+	if body.DefaultBranch != nil {
+		defaultBranch = defaultBranchOrMain(*body.DefaultBranch)
 	}
 	if name == "" {
 		name = serviceID
@@ -189,6 +195,7 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 		StopCmd:           stopCmd,
 		RestartCmd:        restartCmd,
 		GitRepoURL:        gitRepoURL,
+		DefaultBranch:     defaultBranch,
 		RestartNotifyURL:  notifyURL,
 		RestartPollURL:    pollURL,
 		GracefulMaxWaitMs: maxWaitMs,
@@ -321,10 +328,6 @@ func (s *apiServer) handleDeployNotify(w http.ResponseWriter, r *http.Request) {
 	var body deployNotifyBody
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	serviceID := strings.TrimSpace(body.ServiceID)
-	ref := strings.TrimSpace(body.Ref)
-	if ref == "" {
-		ref = "main"
-	}
 	if serviceID == "" {
 		writeError(w, http.StatusBadRequest, "serviceId is required")
 		return
@@ -343,6 +346,11 @@ func (s *apiServer) handleDeployNotify(w http.ResponseWriter, r *http.Request) {
 			"service missing gitRepoUrl; PUT /api/services/"+serviceID+` {"gitRepoUrl":"https://..."}`)
 		return
 	}
+	// Default: service defaultBranch (usually main) tip — latest code.
+	ref := strings.TrimSpace(body.Ref)
+	if ref == "" {
+		ref = defaultBranchOrMain(svc.DefaultBranch)
+	}
 	requestID := strings.TrimSpace(body.RequestID)
 	if requestID == "" {
 		requestID = "pipeline-" + uuid.NewString()[:8]
@@ -352,7 +360,7 @@ func (s *apiServer) handleDeployNotify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	job, err := s.store.CreatePipeline(requestID, serviceID, ref,
-		"accepted; will package then deploy (notify+poll before restart)")
+		"accepted; package "+ref+" (latest) then deploy with graceful notify+poll")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
