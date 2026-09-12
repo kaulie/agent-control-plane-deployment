@@ -1,40 +1,34 @@
 #!/usr/bin/env bash
-# Install this repo into DEPLOY_HOME and (re)start ops daemons.
+# Install + start the deployment HTTP service under DEPLOYMENT_HOME.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEPLOY_HOME="${DEPLOY_HOME:-/Users/gaolei/deployment/web-cursor}"
+DEPLOYMENT_HOME="${DEPLOYMENT_HOME:-${HOME}/runtime/agent-control-plane-deployment}"
 
-echo "[install] → ${DEPLOY_HOME}"
-mkdir -p "${DEPLOY_HOME}/bin" "${DEPLOY_HOME}/ops" \
-  "${DEPLOY_HOME}/deploy-requests" "${DEPLOY_HOME}/deploy-status" \
-  "${DEPLOY_HOME}/deploy-requests/processing"
-
-rsync -a --delete \
-  --exclude='.git/' \
-  --exclude='deployment-*/' \
-  --exclude='deploy-requests/' \
-  --exclude='deploy-status/' \
-  --exclude='ops/*.log' \
-  --exclude='ops/*.pid' \
-  --exclude='ops/watchdog-pause-until' \
-  "${ROOT}/bin/" "${DEPLOY_HOME}/bin/"
+echo "[install] → ${DEPLOYMENT_HOME}"
+mkdir -p "${DEPLOYMENT_HOME}/packages" "${DEPLOYMENT_HOME}/data" "${DEPLOYMENT_HOME}/logs"
 
 rsync -a \
-  "${ROOT}/ops/watchdog.sh" \
-  "${ROOT}/ops/deploy-agent.sh" \
-  "${ROOT}/ops/start-ops.sh" \
-  "${ROOT}/ops/stop-ops.sh" \
-  "${ROOT}/ops/install.sh" \
-  "${DEPLOY_HOME}/ops/"
+  --exclude='.git/' \
+  --exclude='node_modules/' \
+  --exclude='dist/' \
+  --exclude='packages/' \
+  --exclude='data/' \
+  --exclude='logs/' \
+  --exclude='deployment.pid' \
+  --exclude='src-tree/' \
+  --exclude='ops/*.log' \
+  --exclude='ops/*.pid' \
+  "${ROOT}/" "${DEPLOYMENT_HOME}/"
 
-chmod +x "${DEPLOY_HOME}/bin/"*.sh "${DEPLOY_HOME}/ops/"*.sh
+chmod +x "${DEPLOYMENT_HOME}/bin/"*.sh "${DEPLOYMENT_HOME}/scripts/"*.sh "${DEPLOYMENT_HOME}/install.sh"
 
-if [ -f "${ROOT}/repo.url" ]; then
-  cp "${ROOT}/repo.url" "${DEPLOY_HOME}/repo.url"
-fi
+(
+  cd "${DEPLOYMENT_HOME}"
+  npm install
+  npm run build
+)
 
-echo "[install] starting ops daemons..."
-DEPLOY_HOME="${DEPLOY_HOME}" "${DEPLOY_HOME}/ops/stop-ops.sh" || true
-DEPLOY_HOME="${DEPLOY_HOME}" "${DEPLOY_HOME}/ops/start-ops.sh"
-echo "[install] done"
+echo "[install] starting service..."
+DEPLOYMENT_HOME="${DEPLOYMENT_HOME}" "${DEPLOYMENT_HOME}/scripts/restart.sh"
+echo "[install] done — API http://127.0.0.1:${PORT:-4220}/health"

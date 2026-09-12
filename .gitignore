@@ -1,9 +1,12 @@
 # Local install / runtime artifacts — never commit
-deployment-*/
-deploy-requests/
-deploy-status/
+node_modules/
+dist/
+packages/
+data/
+logs/
+deployment.pid
+src-tree/
 ops/*.log
 ops/*.pid
-ops/watchdog-pause-until
 .DS_Store
 *.swp
