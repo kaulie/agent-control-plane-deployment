@@ -6,7 +6,11 @@ import os from "node:os";
 import { loadConfig } from "./config.js";
 import { Store } from "./db.js";
 import { registerRoutes } from "./routes.js";
-import { DeployWorker, reconcileOrphanDeploys } from "./worker.js";
+import {
+  DeployWorker,
+  clearStaleDeployPauses,
+  reconcileOrphanDeploys,
+} from "./worker.js";
 
 const config = loadConfig();
 const store = new Store(config.dbPath);
@@ -53,6 +57,11 @@ process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());
 
 await app.listen({ host: config.host, port: config.port });
+
+const cleared = clearStaleDeployPauses(store);
+if (cleared > 0) {
+  app.log.info(`cleared stale deploy pause flags for ${cleared} service(s)`);
+}
 
 const reconciled = await reconcileOrphanDeploys(store);
 if (reconciled > 0) {

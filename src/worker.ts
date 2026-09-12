@@ -14,10 +14,7 @@ export function normalizeDeploymentTag(raw: string): string {
 
 /**
  * Run a shell command and wait for exit.
- * `detached: true` is hardening: the child gets its own process group so a
- * timeout can `kill(-pid)` the whole tree without relying on the default
- * inherited group. Restart scripts are still independent files; this only
- * affects how Node spawns them.
+ * `detached: true` so timeout can `kill(-pid)` the child tree only.
  */
 function runShell(
   cmd: string,
@@ -43,7 +40,6 @@ function runShell(
     const killTree = () => {
       if (child.pid == null) return;
       try {
-        // Negative PID = process group (valid because detached: true).
         process.kill(-child.pid, "SIGKILL");
       } catch {
         try {
@@ -78,11 +74,37 @@ async function healthOk(url: string): Promise<boolean> {
   }
 }
 
+/** App listen port from contract healthUrl — must override ACP's own PORT=4220. */
+function portFromHealthUrl(healthUrl: string): string {
+  try {
+    const u = new URL(healthUrl);
+    if (u.port) return u.port;
+    return u.protocol === "https:" ? "443" : "80";
+  } catch {
+    return "4211";
+  }
+}
+
 /**
- * Time-bounded pause for the external ops watchdog
- * (`~/deployment/<service>/ops/watchdog-pause-until`).
- * This HTTP service no longer runs an in-process watchdog; app liveness is
- * owned outside (e.g. ~/deployment/web-cursor/ops/watchdog.sh).
+ * Env for app start/stop/restart.
+ * Critical: never leak deployment-service PORT/HOST (that made stop.sh kill :4220).
+ */
+function serviceCmdEnv(
+  service: ServiceContract,
+  extra: Record<string, string> = {},
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...extra };
+  env.RUNTIME_DIR = service.runtimeDir;
+  env.PORT = portFromHealthUrl(service.healthUrl);
+  delete env.HOST;
+  delete env.DEPLOYMENT_HOME;
+  return env;
+}
+
+/**
+ * Short pause for external ops watchdog during restart only.
+ * Keep TTL tight: if this process dies mid-restart, leftover pause must not
+ * block auto-recovery for minutes.
  */
 function externalWatchdogPausePath(runtimeDir: string): string {
   const name = path.basename(runtimeDir.replace(/\/+$/, "") || runtimeDir);
@@ -93,7 +115,7 @@ function setExternalWatchdogPause(runtimeDir: string, sec: number): void {
   const file = externalWatchdogPausePath(runtimeDir);
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    const until = Math.floor(Date.now() / 1000) + Math.max(30, sec);
+    const until = Math.floor(Date.now() / 1000) + Math.max(15, sec);
     fs.writeFileSync(file, `${until}\n`);
   } catch (err) {
     console.warn(
@@ -110,6 +132,26 @@ function clearExternalWatchdogPause(runtimeDir: string): void {
   } catch {
     /* ignore */
   }
+}
+
+/** After a crash mid-deploy, unblock external ops watchdogs immediately. */
+export function clearStaleDeployPauses(store: Store): number {
+  let n = 0;
+  for (const svc of store.listServices()) {
+    const file = externalWatchdogPausePath(svc.runtimeDir);
+    if (!fs.existsSync(file)) continue;
+    clearExternalWatchdogPause(svc.runtimeDir);
+    // stop.sh may have left this; start.sh normally clears it — do it on boot
+    // so ops watchdog is not stuck forever after a mid-restart crash.
+    try {
+      fs.unlinkSync(path.join(svc.runtimeDir, "backend", ".watchdog-paused"));
+    } catch {
+      /* ignore */
+    }
+    console.log(`[deploy] cleared stale pause flags for ${svc.serviceId}`);
+    n += 1;
+  }
+  return n;
 }
 
 export async function executeDeploy(opts: {
@@ -187,38 +229,39 @@ export async function executeDeploy(opts: {
     `"${service.runtimeDir}/"`,
   ].join(" ");
 
-  // Cover rsync + restart (+ start.sh's own health wait) for external ops watchdog.
-  const pauseSec = opts.config.deployMaxSec * 2;
+  // rsync while app is still up — do not pause ops watchdog yet.
+  console.log(`[deploy] ${job.requestId} rsync ${tag} → ${service.runtimeDir}`);
+  const rsync = await runShell(
+    rsyncCmd,
+    opts.config.home,
+    process.env,
+    opts.config.deployMaxSec,
+  );
+  if (rsync.code !== 0) {
+    opts.store.finishDeploy(job.requestId, {
+      state: "failed",
+      error: `rsync failed: ${rsync.output.slice(-2000)}`,
+    });
+    return;
+  }
+
+  fs.writeFileSync(path.join(service.runtimeDir, "VERSION"), `${hash}\n`);
+  fs.writeFileSync(path.join(service.runtimeDir, "DEPLOYMENT"), `${tag}\n`);
+
+  const restartCmd =
+    service.restartCmd.trim() ||
+    `bash "${path.join(service.runtimeDir, "scripts", "restart.sh")}"`;
+  // Pause only for the restart window; cap TTL so a crash cannot block recovery long.
+  const pauseSec = Math.min(90, opts.config.deployMaxSec);
   setExternalWatchdogPause(service.runtimeDir, pauseSec);
   try {
-    console.log(`[deploy] ${job.requestId} rsync ${tag} → ${service.runtimeDir}`);
-    const rsync = await runShell(
-      rsyncCmd,
-      opts.config.home,
-      process.env,
-      opts.config.deployMaxSec,
+    console.log(
+      `[deploy] ${job.requestId} restart via contract (PORT=${portFromHealthUrl(service.healthUrl)}): ${restartCmd}`,
     );
-    if (rsync.code !== 0) {
-      opts.store.finishDeploy(job.requestId, {
-        state: "failed",
-        error: `rsync failed: ${rsync.output.slice(-2000)}`,
-      });
-      return;
-    }
-
-    fs.writeFileSync(path.join(service.runtimeDir, "VERSION"), `${hash}\n`);
-    fs.writeFileSync(path.join(service.runtimeDir, "DEPLOYMENT"), `${tag}\n`);
-
-    const restartCmd =
-      service.restartCmd.trim() ||
-      `bash "${path.join(service.runtimeDir, "scripts", "restart.sh")}"`;
-    console.log(`[deploy] ${job.requestId} restart via contract: ${restartCmd}`);
-    // Refresh pause before stop/start window (start.sh clears .watchdog-paused).
-    setExternalWatchdogPause(service.runtimeDir, opts.config.deployMaxSec);
     const restart = await runShell(
       restartCmd,
       service.runtimeDir,
-      { ...process.env, APP_VERSION: hash, RUNTIME_DIR: service.runtimeDir },
+      serviceCmdEnv(service, { APP_VERSION: hash }),
       opts.config.deployMaxSec,
     );
     if (restart.code !== 0) {

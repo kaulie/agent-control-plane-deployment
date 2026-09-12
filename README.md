@@ -65,9 +65,9 @@ curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 
 部署期间防抖（重要）：
 
-- rsync+restart 全程写入 `~/deployment/<service>/ops/watchdog-pause-until`，避免外部 ops watchdog 与 `restart` 抢跑（`start.sh` 会清掉 `.watchdog-paused`，不能只靠那个标记）。
-- `restartCmd` 用 `detached` spawn，超时可按进程组清理子树。
-- 若本服务在 deploy 中途退出，启动时 reconcile 卡在 `running` 的任务（健康且 VERSION 匹配 → succeeded）。
+- **禁止**把本服务的 `PORT`/`HOST` 传给应用的 `restartCmd`（否则 `stop.sh` 会误杀 `:4220`）。
+- 仅在 restart 窗口写入短 TTL 的 `watchdog-pause-until`（≤90s）；rsync 期间不暂停。
+- 本服务启动时清理残留 pause / `.watchdog-paused`，并 reconcile 卡在 `running` 的任务。
 
 ## API 一览
 
