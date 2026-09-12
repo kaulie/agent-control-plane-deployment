@@ -238,6 +238,15 @@ func executeDeploy(store *Store, cfg Config, requestID string) {
 
 	_ = os.MkdirAll(service.RuntimeDir, 0o755)
 
+	if service.SupportsGracefulRestart() {
+		fmt.Printf("[deploy] %s graceful restart enabled (notify+poll)\n", job.RequestID)
+		if waitForGracefulRestart(*service, cfg, *job, hash) {
+			fmt.Printf("[deploy] %s proceeding after graceful force timeout\n", job.RequestID)
+		}
+	} else {
+		fmt.Printf("[deploy] %s no graceful endpoints in registry; direct restart\n", job.RequestID)
+	}
+
 	rsyncCmd := strings.Join([]string{
 		"rsync", "-a", "--delete",
 		"--filter='P backend/.env'",

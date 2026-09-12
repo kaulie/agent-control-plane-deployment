@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 )
 
 type Config struct {
@@ -14,6 +15,8 @@ type Config struct {
 	DataDir      string
 	DBPath       string
 	DeployMaxSec int
+	// Default max wait for project graceful restart (notify + poll).
+	GracefulMaxWait time.Duration
 }
 
 func expandHome(p string) string {
@@ -59,13 +62,21 @@ func loadConfig() Config {
 		deployMax = 30
 	}
 
+	gracefulMaxWait := 10 * time.Minute
+	if p := os.Getenv("GRACEFUL_RESTART_MAX_WAIT_MS"); p != "" {
+		if n, err := strconv.Atoi(p); err == nil && n > 0 {
+			gracefulMaxWait = time.Duration(n) * time.Millisecond
+		}
+	}
+
 	return Config{
-		Host:         host,
-		Port:         port,
-		Home:         home,
-		PackagesDir:  packagesDir,
-		DataDir:      dataDir,
-		DBPath:       filepath.Join(dataDir, "deploy.sqlite"),
-		DeployMaxSec: deployMax,
+		Host:            host,
+		Port:            port,
+		Home:            home,
+		PackagesDir:     packagesDir,
+		DataDir:         dataDir,
+		DBPath:          filepath.Join(dataDir, "deploy.sqlite"),
+		DeployMaxSec:    deployMax,
+		GracefulMaxWait: gracefulMaxWait,
 	}
 }
