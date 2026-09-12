@@ -45,7 +45,31 @@ curl -sS -X PUT http://127.0.0.1:4220/api/services/web-cursor \
   }'
 ```
 
-首次启动若库中无 `web-cursor`，会自动 seed 一条默认契约。
+首次启动若库中无 `web-cursor`，会自动 seed 一条默认契约（不含 graceful 端点 → 直接重启）。
+
+### Graceful restart（可选）
+
+在**本服务注册库**里为项目填写双方端点；**缺一或全空**视为不支持 graceful，部署时直接 rsync + restart。
+
+| 字段 | 说明 |
+|---|---|
+| `restartNotifyUrl` | 部署前 `POST` 通知项目方即将重启 |
+| `restartPollUrl` | 每 **15s** `GET` 轮询；JSON 含 `canRestart` / `canDeploy` / `ready` 任一为 `true` 则开始部署 |
+| `gracefulRestartMaxWaitMs` | 可选；超时后**强制**继续部署。`0` 或省略则用环境变量 `GRACEFUL_RESTART_MAX_WAIT_MS`（默认 10 分钟） |
+
+```bash
+curl -sS -X PUT http://127.0.0.1:4220/api/services/web-cursor \
+  -H 'content-type: application/json' \
+  -d '{
+    "restartNotifyUrl": "http://127.0.0.1:4211/api/ops/restart-notify",
+    "restartPollUrl": "http://127.0.0.1:4211/api/ops/restart-status",
+    "gracefulRestartMaxWaitMs": 600000
+  }'
+```
+
+Notify 请求体示例：`{ serviceId, requestId, deployment, version, message }`。
+
+部署步骤：若已配置 graceful → notify + 轮询（或超时强制）→ rsync → `restartCmd` → 探活 `healthUrl`。
 
 本服务**不再**内置 watchdog（不探活、不自动 `startCmd`）。应用存活由外部 ops（如 `~/deployment/web-cursor/ops/watchdog.sh`）负责。
 
@@ -63,8 +87,6 @@ curl -sS -X POST http://127.0.0.1:4220/api/deploys \
 curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 ```
 
-部署步骤：rsync 包 → `runtimeDir`，再执行契约 `restartCmd`，最后探活 `healthUrl`。
-
 部署期间防抖（重要）：
 
 - **禁止**把本服务的 `PORT`/`HOST` 传给应用的 `restartCmd`（否则 `stop.sh` 会误杀 `:4220`）。
@@ -76,8 +98,9 @@ curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 | Method | Path | 说明 |
 |---|---|---|
 | GET | `/health` | 本服务探活 |
-| GET/PUT/DELETE | `/api/services[/:id]` | 服务契约 |
+| GET/PUT/DELETE | `/api/services[/:id]` | 服务契约（含可选 graceful URL） |
 | POST | `/api/deploys` | 入队部署 |
 | GET | `/api/deploys[/:id]` | 查询任务 |
+| GET | `/api/meta` | 含 `gracefulPollIntervalSec` / `gracefulMaxWaitMs` |
 
 旧的 `ops/` 文件队列守护已废弃，保留目录仅作历史参考；请用本 HTTP 服务。

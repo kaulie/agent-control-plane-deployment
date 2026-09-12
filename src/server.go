@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -84,12 +85,15 @@ func (s *apiServer) handleGetService(w http.ResponseWriter, r *http.Request) {
 }
 
 type putServiceBody struct {
-	Name       string `json:"name"`
-	RuntimeDir string `json:"runtimeDir"`
-	HealthURL  string `json:"healthUrl"`
-	StartCmd   string `json:"startCmd"`
-	StopCmd    string `json:"stopCmd"`
-	RestartCmd string `json:"restartCmd"`
+	Name              string  `json:"name"`
+	RuntimeDir        string  `json:"runtimeDir"`
+	HealthURL         string  `json:"healthUrl"`
+	StartCmd          string  `json:"startCmd"`
+	StopCmd           string  `json:"stopCmd"`
+	RestartCmd        string  `json:"restartCmd"`
+	RestartNotifyURL  *string `json:"restartNotifyUrl"`
+	RestartPollURL    *string `json:"restartPollUrl"`
+	GracefulMaxWaitMs *int    `json:"gracefulRestartMaxWaitMs"`
 }
 
 func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
@@ -113,6 +117,9 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 	startCmd := strings.TrimSpace(body.StartCmd)
 	stopCmd := strings.TrimSpace(body.StopCmd)
 	restartCmd := strings.TrimSpace(body.RestartCmd)
+	notifyURL := ""
+	pollURL := ""
+	maxWaitMs := 0
 	if existing != nil {
 		if name == "" {
 			name = existing.Name
@@ -132,6 +139,21 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 		if restartCmd == "" {
 			restartCmd = existing.RestartCmd
 		}
+		notifyURL = existing.RestartNotifyURL
+		pollURL = existing.RestartPollURL
+		maxWaitMs = existing.GracefulMaxWaitMs
+	}
+	if body.RestartNotifyURL != nil {
+		notifyURL = strings.TrimSpace(*body.RestartNotifyURL)
+	}
+	if body.RestartPollURL != nil {
+		pollURL = strings.TrimSpace(*body.RestartPollURL)
+	}
+	if body.GracefulMaxWaitMs != nil {
+		maxWaitMs = *body.GracefulMaxWaitMs
+		if maxWaitMs < 0 {
+			maxWaitMs = 0
+		}
 	}
 	if name == "" {
 		name = serviceID
@@ -141,15 +163,24 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 			"runtimeDir, healthUrl, startCmd, stopCmd, restartCmd are required (or update an existing service)")
 		return
 	}
+	// Graceful restart is all-or-nothing: both URLs or neither.
+	if (notifyURL == "") != (pollURL == "") {
+		writeError(w, http.StatusBadRequest,
+			"restartNotifyUrl and restartPollUrl must both be set (graceful) or both empty (direct restart)")
+		return
+	}
 
 	svc, err := s.store.UpsertService(ServiceContract{
-		ServiceID:  serviceID,
-		Name:       name,
-		RuntimeDir: runtimeDir,
-		HealthURL:  healthURL,
-		StartCmd:   startCmd,
-		StopCmd:    stopCmd,
-		RestartCmd: restartCmd,
+		ServiceID:         serviceID,
+		Name:              name,
+		RuntimeDir:        runtimeDir,
+		HealthURL:         healthURL,
+		StartCmd:          startCmd,
+		StopCmd:           stopCmd,
+		RestartCmd:        restartCmd,
+		RestartNotifyURL:  notifyURL,
+		RestartPollURL:    pollURL,
+		GracefulMaxWaitMs: maxWaitMs,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -271,9 +302,11 @@ func (s *apiServer) handleGetDeploy(w http.ResponseWriter, r *http.Request) {
 func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
 	example, _ := normalizeDeploymentTag("abc12345")
 	writeJSON(w, http.StatusOK, map[string]any{
-		"home":             s.cfg.Home,
-		"packagesDir":      s.cfg.PackagesDir,
-		"port":             s.cfg.Port,
-		"normalizeExample": example,
+		"home":                    s.cfg.Home,
+		"packagesDir":             s.cfg.PackagesDir,
+		"port":                    s.cfg.Port,
+		"normalizeExample":        example,
+		"gracefulPollIntervalSec": int(gracefulPollInterval / time.Second),
+		"gracefulMaxWaitMs":       int(s.cfg.GracefulMaxWait / time.Millisecond),
 	})
 }

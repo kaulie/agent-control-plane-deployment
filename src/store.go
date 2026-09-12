@@ -27,8 +27,13 @@ type ServiceContract struct {
 	StartCmd   string `json:"startCmd"`
 	StopCmd    string `json:"stopCmd"`
 	RestartCmd string `json:"restartCmd"`
-	CreatedAt  string `json:"createdAt"`
-	UpdatedAt  string `json:"updatedAt"`
+	// Project-provided graceful restart endpoints (both required to enable).
+	RestartNotifyURL string `json:"restartNotifyUrl,omitempty"`
+	RestartPollURL   string `json:"restartPollUrl,omitempty"`
+	// 0 = use server default (GRACEFUL_RESTART_MAX_WAIT_MS).
+	GracefulMaxWaitMs int    `json:"gracefulRestartMaxWaitMs,omitempty"`
+	CreatedAt         string `json:"createdAt"`
+	UpdatedAt         string `json:"updatedAt"`
 }
 
 type DeployJob struct {
@@ -88,6 +93,9 @@ func (s *Store) migrate() error {
         stop_cmd TEXT NOT NULL,
         restart_cmd TEXT NOT NULL,
         watchdog_enabled INTEGER NOT NULL DEFAULT 1,
+        restart_notify_url TEXT NOT NULL DEFAULT '',
+        restart_poll_url TEXT NOT NULL DEFAULT '',
+        graceful_max_wait_ms INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -107,7 +115,46 @@ func (s *Store) migrate() error {
 
       CREATE INDEX IF NOT EXISTS idx_deploys_state ON deploys(state);
     `)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.ensureServiceGracefulColumns()
+}
+
+func (s *Store) ensureServiceGracefulColumns() error {
+	cols := map[string]string{
+		"restart_notify_url":   `ALTER TABLE services ADD COLUMN restart_notify_url TEXT NOT NULL DEFAULT ''`,
+		"restart_poll_url":     `ALTER TABLE services ADD COLUMN restart_poll_url TEXT NOT NULL DEFAULT ''`,
+		"graceful_max_wait_ms": `ALTER TABLE services ADD COLUMN graceful_max_wait_ms INTEGER NOT NULL DEFAULT 0`,
+	}
+	existing := map[string]bool{}
+	rows, err := s.db.Query(`PRAGMA table_info(services)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		existing[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for col, ddl := range cols {
+		if existing[col] {
+			continue
+		}
+		if _, err := s.db.Exec(ddl); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) UpsertService(input ServiceContract) (ServiceContract, error) {
@@ -125,8 +172,9 @@ func (s *Store) UpsertService(input ServiceContract) (ServiceContract, error) {
 		INSERT INTO services (
 		  service_id, name, runtime_dir, health_url,
 		  start_cmd, stop_cmd, restart_cmd, watchdog_enabled,
+		  restart_notify_url, restart_poll_url, graceful_max_wait_ms,
 		  created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(service_id) DO UPDATE SET
 		  name = excluded.name,
 		  runtime_dir = excluded.runtime_dir,
@@ -135,9 +183,13 @@ func (s *Store) UpsertService(input ServiceContract) (ServiceContract, error) {
 		  stop_cmd = excluded.stop_cmd,
 		  restart_cmd = excluded.restart_cmd,
 		  watchdog_enabled = excluded.watchdog_enabled,
+		  restart_notify_url = excluded.restart_notify_url,
+		  restart_poll_url = excluded.restart_poll_url,
+		  graceful_max_wait_ms = excluded.graceful_max_wait_ms,
 		  updated_at = excluded.updated_at`,
 		row.ServiceID, row.Name, row.RuntimeDir, row.HealthURL,
 		row.StartCmd, row.StopCmd, row.RestartCmd, 0,
+		row.RestartNotifyURL, row.RestartPollURL, row.GracefulMaxWaitMs,
 		row.CreatedAt, row.UpdatedAt,
 	)
 	return row, err
@@ -147,6 +199,7 @@ func (s *Store) GetService(serviceID string) (*ServiceContract, error) {
 	row := s.db.QueryRow(`
 		SELECT service_id, name, runtime_dir, health_url,
 		       start_cmd, stop_cmd, restart_cmd, watchdog_enabled,
+		       restart_notify_url, restart_poll_url, graceful_max_wait_ms,
 		       created_at, updated_at
 		FROM services WHERE service_id = ?`, serviceID)
 	svc, err := scanService(row)
@@ -160,6 +213,7 @@ func (s *Store) ListServices() ([]ServiceContract, error) {
 	rows, err := s.db.Query(`
 		SELECT service_id, name, runtime_dir, health_url,
 		       start_cmd, stop_cmd, restart_cmd, watchdog_enabled,
+		       restart_notify_url, restart_poll_url, graceful_max_wait_ms,
 		       created_at, updated_at
 		FROM services ORDER BY name ASC`)
 	if err != nil {
@@ -329,6 +383,7 @@ func scanService(row scannable) (*ServiceContract, error) {
 	err := row.Scan(
 		&svc.ServiceID, &svc.Name, &svc.RuntimeDir, &svc.HealthURL,
 		&svc.StartCmd, &svc.StopCmd, &svc.RestartCmd, &watchdog,
+		&svc.RestartNotifyURL, &svc.RestartPollURL, &svc.GracefulMaxWaitMs,
 		&svc.CreatedAt, &svc.UpdatedAt,
 	)
 	if err != nil {
