@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 )
 
 func seedDefaultService(store *Store) {
@@ -79,6 +80,24 @@ func main() {
 		Handler: api.routes(),
 	}
 
+	// Start serving BEFORE reconcile so that self-deploy orphan reconciliation
+	// can confirm this server's own /health. Previously reconcile ran before
+	// ListenAndServe, so a just-succeeded self-upgrade was falsely marked
+	// "failed" (healthOK hit /health before the listener was up).
+	go func() {
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("listen: %v", err)
+		}
+	}()
+	healthURL := fmt.Sprintf("http://%s/health", httpServer.Addr)
+	readyDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(readyDeadline) {
+		if healthOK(healthURL) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
 	cleared := clearStaleDeployPauses(store)
 	if cleared > 0 {
 		log.Printf("cleared stale deploy pause flags for %d service(s)", cleared)
@@ -90,6 +109,7 @@ func main() {
 	worker.Start()
 	pipeline.Start()
 
+	stopCh := make(chan struct{})
 	go func() {
 		ch := make(chan os.Signal, 1)
 		signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
@@ -98,10 +118,9 @@ func main() {
 		worker.Stop()
 		_ = os.Remove(pidFile)
 		_ = httpServer.Close()
+		close(stopCh)
 	}()
 
 	log.Printf("deployment service on http://%s home=%s", httpServer.Addr, cfg.Home)
-	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("listen: %v", err)
-	}
+	<-stopCh
 }
