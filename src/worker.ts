@@ -32,7 +32,13 @@ export class DeployPause {
   }
 }
 
-/** Run shell in its own process group so SIGKILL cannot take down this service. */
+/**
+ * Run a shell command and wait for exit.
+ * `detached: true` is hardening: the child gets its own process group so a
+ * timeout can `kill(-pid)` the whole tree without relying on the default
+ * inherited group. Restart scripts are still independent files; this only
+ * affects how Node spawns them.
+ */
 function runShell(
   cmd: string,
   cwd: string,
@@ -44,7 +50,6 @@ function runShell(
       cwd,
       env,
       stdio: ["ignore", "pipe", "pipe"],
-      // Own session/process group — isolates restart/stop from this Node process.
       detached: true,
     });
     let output = "";
@@ -58,6 +63,7 @@ function runShell(
     const killTree = () => {
       if (child.pid == null) return;
       try {
+        // Negative PID = process group (valid because detached: true).
         process.kill(-child.pid, "SIGKILL");
       } catch {
         try {

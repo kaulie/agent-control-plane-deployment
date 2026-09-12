@@ -64,11 +64,11 @@ curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 
 部署步骤：rsync 包 → `runtimeDir`，再执行契约 `restartCmd`，最后探活 `healthUrl`。
 
-重启隔离（重要）：
+部署期间防抖（重要）：
 
-- `restartCmd` / `startCmd` 在**独立进程组**中执行，避免信号波及本部署服务。
-- 部署进行中会写入 `~/deployment/<service>/ops/watchdog-pause-until`，并暂停进程内 Watchdog，防止与 restart 抢跑导致 `EADDRINUSE`。
-- 若本服务在 restart 中途被干掉，启动时会 reconcile 卡在 `running` 的任务（健康且 VERSION 匹配则标 succeeded）。
+- **主修复**：rsync+restart 全程暂停进程内 Watchdog，并写入 `~/deployment/<service>/ops/watchdog-pause-until`，避免与 `restart` 抢 `start` 导致 `EADDRINUSE`。（`start.sh` 会清掉 `.watchdog-paused`，不能只靠那个标记。）
+- **加固**：`restartCmd` / `startCmd` 用 `detached` spawn，超时可按进程组清理子树；脚本本身仍是独立文件。
+- **恢复**：若本服务在 deploy 中途退出，启动时 reconcile 卡在 `running` 的任务（健康且 VERSION 匹配 → succeeded）。
 
 ## API 一览
 
