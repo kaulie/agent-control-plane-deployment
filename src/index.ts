@@ -6,12 +6,7 @@ import os from "node:os";
 import { loadConfig } from "./config.js";
 import { Store } from "./db.js";
 import { registerRoutes } from "./routes.js";
-import {
-  DeployPause,
-  DeployWorker,
-  Watchdog,
-  reconcileOrphanDeploys,
-} from "./worker.js";
+import { DeployWorker, reconcileOrphanDeploys } from "./worker.js";
 
 const config = loadConfig();
 const store = new Store(config.dbPath);
@@ -28,7 +23,6 @@ function seedDefaultService(): void {
     startCmd: `bash "${path.join(runtimeDir, "scripts", "start.sh")}"`,
     stopCmd: `bash "${path.join(runtimeDir, "scripts", "stop.sh")}"`,
     restartCmd: `bash "${path.join(runtimeDir, "scripts", "restart.sh")}"`,
-    watchdogEnabled: true,
   });
   console.log("[seed] registered service web-cursor →", runtimeDir);
 }
@@ -38,9 +32,7 @@ seedDefaultService();
 const app = Fastify({ logger: true });
 await app.register(cors, { origin: true });
 
-const pause = new DeployPause();
-const worker = new DeployWorker(store, config, pause);
-const watchdog = new Watchdog(store, config, pause);
+const worker = new DeployWorker(store, config);
 
 await registerRoutes(app, { store, config, worker });
 
@@ -49,7 +41,6 @@ fs.writeFileSync(pidFile, `${process.pid}\n`);
 
 const shutdown = async (): Promise<void> => {
   worker.stop();
-  watchdog.stop();
   try {
     fs.unlinkSync(pidFile);
   } catch {
@@ -69,7 +60,6 @@ if (reconciled > 0) {
 }
 
 worker.start();
-watchdog.start();
 app.log.info(
   `deployment service on http://${config.host}:${config.port} home=${config.home}`,
 );

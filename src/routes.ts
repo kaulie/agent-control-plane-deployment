@@ -47,7 +47,6 @@ export async function registerRoutes(
       startCmd?: string;
       stopCmd?: string;
       restartCmd?: string;
-      watchdogEnabled?: boolean;
     };
   }>("/api/services/:serviceId", async (req, reply) => {
     const body = req.body ?? {};
@@ -74,8 +73,6 @@ export async function registerRoutes(
       startCmd,
       stopCmd,
       restartCmd,
-      watchdogEnabled:
-        body.watchdogEnabled ?? existing?.watchdogEnabled ?? true,
     });
     return reply.code(existing ? 200 : 201).send(svc);
   });

@@ -13,26 +13,6 @@ export function normalizeDeploymentTag(raw: string): string {
 }
 
 /**
- * In-memory gate so the in-process Watchdog never races a DeployWorker
- * restart (that race previously produced EADDRINUSE / flapping).
- */
-export class DeployPause {
-  private depth = 0;
-
-  begin(): void {
-    this.depth += 1;
-  }
-
-  end(): void {
-    this.depth = Math.max(0, this.depth - 1);
-  }
-
-  get active(): boolean {
-    return this.depth > 0;
-  }
-}
-
-/**
  * Run a shell command and wait for exit.
  * `detached: true` is hardening: the child gets its own process group so a
  * timeout can `kill(-pid)` the whole tree without relying on the default
@@ -99,10 +79,10 @@ async function healthOk(url: string): Promise<boolean> {
 }
 
 /**
- * Time-bounded pause for the legacy external ops watchdog
+ * Time-bounded pause for the external ops watchdog
  * (`~/deployment/<service>/ops/watchdog-pause-until`).
- * stop.sh/start.sh only flip `.watchdog-paused`, and start.sh clears it
- * before health is up — without this file the external watchdog races restart.
+ * This HTTP service no longer runs an in-process watchdog; app liveness is
+ * owned outside (e.g. ~/deployment/web-cursor/ops/watchdog.sh).
  */
 function externalWatchdogPausePath(runtimeDir: string): string {
   const name = path.basename(runtimeDir.replace(/\/+$/, "") || runtimeDir);
@@ -136,7 +116,6 @@ export async function executeDeploy(opts: {
   store: Store;
   config: Config;
   requestId: string;
-  pause: DeployPause;
 }): Promise<void> {
   const job = opts.store.getDeploy(opts.requestId);
   if (!job || job.state !== "running") return;
@@ -208,9 +187,8 @@ export async function executeDeploy(opts: {
     `"${service.runtimeDir}/"`,
   ].join(" ");
 
-  // Cover rsync + restart (+ start.sh's own health wait).
+  // Cover rsync + restart (+ start.sh's own health wait) for external ops watchdog.
   const pauseSec = opts.config.deployMaxSec * 2;
-  opts.pause.begin();
   setExternalWatchdogPause(service.runtimeDir, pauseSec);
   try {
     console.log(`[deploy] ${job.requestId} rsync ${tag} → ${service.runtimeDir}`);
@@ -270,7 +248,6 @@ export async function executeDeploy(opts: {
     console.log(`[deploy] ${job.requestId} ok version=${hash}`);
   } finally {
     clearExternalWatchdogPause(service.runtimeDir);
-    opts.pause.end();
   }
 }
 
@@ -338,7 +315,6 @@ export class DeployWorker {
   constructor(
     private store: Store,
     private config: Config,
-    private pause: DeployPause,
   ) {}
 
   start(): void {
@@ -367,7 +343,6 @@ export class DeployWorker {
         store: this.store,
         config: this.config,
         requestId: job.requestId,
-        pause: this.pause,
       });
     } catch (err) {
       console.warn(
@@ -376,47 +351,6 @@ export class DeployWorker {
       );
     } finally {
       this.busy = false;
-    }
-  }
-}
-
-export class Watchdog {
-  private timer: NodeJS.Timeout | undefined;
-
-  constructor(
-    private store: Store,
-    private config: Config,
-    private pause: DeployPause,
-  ) {}
-
-  start(): void {
-    if (this.timer) return;
-    this.timer = setInterval(
-      () => void this.tick(),
-      this.config.watchdogIntervalSec * 1000,
-    );
-    this.timer.unref?.();
-  }
-
-  stop(): void {
-    if (this.timer) clearInterval(this.timer);
-    this.timer = undefined;
-  }
-
-  private async tick(): Promise<void> {
-    if (this.pause.active) return;
-    for (const svc of this.store.listServices()) {
-      if (!svc.watchdogEnabled) continue;
-      if (this.pause.active) return;
-      const ok = await healthOk(svc.healthUrl);
-      if (ok) continue;
-      console.warn(`[watchdog] ${svc.serviceId} unhealthy → startCmd`);
-      await runShell(
-        svc.startCmd,
-        svc.runtimeDir,
-        { ...process.env, RUNTIME_DIR: svc.runtimeDir },
-        this.config.deployMaxSec,
-      );
     }
   }
 }

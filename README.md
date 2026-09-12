@@ -39,14 +39,13 @@ curl -sS -X PUT http://127.0.0.1:4220/api/services/web-cursor \
     "healthUrl": "http://127.0.0.1:4211/health",
     "startCmd": "bash scripts/start.sh",
     "stopCmd": "bash scripts/stop.sh",
-    "restartCmd": "bash scripts/restart.sh",
-    "watchdogEnabled": true
+    "restartCmd": "bash scripts/restart.sh"
   }'
 ```
 
 首次启动若库中无 `web-cursor`，会自动 seed 一条默认契约。
 
-Watchdog 按契约探活；不健康则执行该服务的 `startCmd`。
+本服务**不再**内置 watchdog（不探活、不自动 `startCmd`）。应用存活由外部 ops（如 `~/deployment/web-cursor/ops/watchdog.sh`）负责。
 
 ## 发版与部署
 
@@ -66,9 +65,9 @@ curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 
 部署期间防抖（重要）：
 
-- **主修复**：rsync+restart 全程暂停进程内 Watchdog，并写入 `~/deployment/<service>/ops/watchdog-pause-until`，避免与 `restart` 抢 `start` 导致 `EADDRINUSE`。（`start.sh` 会清掉 `.watchdog-paused`，不能只靠那个标记。）
-- **加固**：`restartCmd` / `startCmd` 用 `detached` spawn，超时可按进程组清理子树；脚本本身仍是独立文件。
-- **恢复**：若本服务在 deploy 中途退出，启动时 reconcile 卡在 `running` 的任务（健康且 VERSION 匹配 → succeeded）。
+- rsync+restart 全程写入 `~/deployment/<service>/ops/watchdog-pause-until`，避免外部 ops watchdog 与 `restart` 抢跑（`start.sh` 会清掉 `.watchdog-paused`，不能只靠那个标记）。
+- `restartCmd` 用 `detached` spawn，超时可按进程组清理子树。
+- 若本服务在 deploy 中途退出，启动时 reconcile 卡在 `running` 的任务（健康且 VERSION 匹配 → succeeded）。
 
 ## API 一览
 
