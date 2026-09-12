@@ -17,8 +17,9 @@ fi
 
 cd "${HOME_DIR}"
 export DEPLOYMENT_HOME="${HOME_DIR}"
-export PORT="${PORT:-4220}"
-export HOST="${HOST:-127.0.0.1}"
+# Never inherit app PORT (e.g. web-cursor 4211). Only DEPLOYMENT_PORT overrides.
+export PORT="${DEPLOYMENT_PORT:-4220}"
+export HOST="${DEPLOYMENT_HOST:-127.0.0.1}"
 
 if [ ! -x "${BIN}" ]; then
   echo "[start][错误] missing ${BIN}; run ./install.sh / go build -o bin/deployment-server ./src first" >&2
