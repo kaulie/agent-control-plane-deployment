@@ -11,3 +11,5 @@ ops/*.pid
 .DS_Store
 *.swp
 bin/deployment-server
+bin/acp-upgrader
+outputs/

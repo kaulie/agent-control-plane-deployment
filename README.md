@@ -37,7 +37,7 @@ cd agent-control-plane-deployment
 
 deployment **不**在 worker 内对自己执行 `restartCmd`。流程：
 
-1. 发版包 `packages/deployment-<hash>/` 内必须已有可执行 `bin/deployment-server`（制品由发版流水线准备，upgrader 不编译）。
+1. 发版包 `packages/deployment-<hash>/` 内必须已有可执行 `bin/deployment-server`（制品由 `build.sh` 产出 `outputs/`，upgrader 不编译）。本仓库自带 `build.sh`，因此 `POST /api/deploy-notify {serviceId:"agent-control-plane-deployment"}`（或 `./bin/release.sh main`）可直接打包+部署自身。
 2. `POST /api/deploys` 且 `serviceId=agent-control-plane-deployment`（`runtimeDir` 等于 `DEPLOYMENT_HOME`）：
    - rsync 制品到 runtime（保留 `data/`、`packages/`、`logs/`、pid、upgrade-requests）
    - 写入 `upgrade-requests/<requestId>.json`
