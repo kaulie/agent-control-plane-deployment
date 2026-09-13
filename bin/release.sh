@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
 # 发版：从 app 仓库（repo.url）拉取 ref，执行 build.sh，冻结到
-#   $DEPLOYMENT_HOME/packages/deployment-<hash>/
+#   $DEPLOYMENT_HOME/packages/<DEPLOY_SERVICE_ID>/deployment-<hash>/
 #
-# 用法：./bin/release.sh [ref]
+# 用法：DEPLOY_SERVICE_ID=<serviceId> ./bin/release.sh [ref]
 #
 set -euo pipefail
 
@@ -15,8 +15,13 @@ PACKAGES_DIR="${DEPLOYMENT_HOME}/packages"
 log() { echo "[release] $*"; }
 die() { echo "[release][错误] $*" >&2; exit 1; }
 
+SERVICE_ID="${DEPLOY_SERVICE_ID:-}"
+if [ -z "${SERVICE_ID}" ]; then
+  die "未设置 DEPLOY_SERVICE_ID（serviceId，用于 packages 目录隔离）。例如: DEPLOY_SERVICE_ID=web-cursor ./bin/release.sh main"
+fi
+
 REF_INPUT="${1:-main}"
-mkdir -p "${PACKAGES_DIR}"
+mkdir -p "${PACKAGES_DIR}/${SERVICE_ID}"
 
 if [ -n "${GIT_REPO_URL:-}" ]; then
   :
@@ -47,7 +52,7 @@ fi
 FULL="$(git -C "${WORKDIR}" rev-parse FETCH_HEAD)"
 HASH="$(git -C "${WORKDIR}" rev-parse --short=8 "${FULL}")"
 TAG="deployment-${HASH}"
-DEST="${PACKAGES_DIR}/${TAG}"
+DEST="${PACKAGES_DIR}/${SERVICE_ID}/${TAG}"
 
 log "commit=${FULL} hash=${HASH} dest=${DEST}"
 

@@ -19,12 +19,18 @@ type PackageResult struct {
 }
 
 // packageFromGit clones/fetches ref, runs build.sh, freezes outputs into packagesDir.
-func packageFromGit(packagesDir, gitRepoURL, ref string, maxSec int) (PackageResult, error) {
+// The package is written under packagesDir/serviceID/tag so that packages for
+// different services are isolated into their own subdirectory (keyed by serviceId).
+func packageFromGit(packagesDir, serviceID, gitRepoURL, ref string, maxSec int) (PackageResult, error) {
 	var out PackageResult
 	gitRepoURL = strings.TrimSpace(gitRepoURL)
 	ref = strings.TrimSpace(ref)
 	if gitRepoURL == "" {
 		return out, fmt.Errorf("gitRepoUrl is required")
+	}
+	serviceID = strings.TrimSpace(serviceID)
+	if serviceID == "" {
+		return out, fmt.Errorf("serviceId is required for package isolation")
 	}
 	if ref == "" {
 		ref = "main"
@@ -77,7 +83,7 @@ func packageFromGit(packagesDir, gitRepoURL, ref string, maxSec int) (PackageRes
 	}
 	hash := strings.TrimSpace(hashOut)
 	tag := "deployment-" + hash
-	dest := filepath.Join(packagesDir, tag)
+	dest := filepath.Join(packagesDir, serviceID, tag)
 	out.Tag = tag
 	out.Hash = hash
 	out.FullCommit = full
