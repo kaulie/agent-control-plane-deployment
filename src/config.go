@@ -20,6 +20,10 @@ type Config struct {
 	ReleaseMaxSec int
 	// Default max wait for project graceful restart (notify + poll).
 	GracefulMaxWait time.Duration
+	// Max time to wait for the project health endpoint to come back after
+	// running restartCmd (polls every 2s). Avoids marking a deploy failed
+	// just because the service takes a few seconds to rebind its port.
+	HealthCheckTimeout time.Duration
 	// GitHub token (GITHUB_TOKEN / GH_TOKEN) used to upload/download release
 	// assets on each service's own repo. Empty disables release-based storage.
 	GitHubToken string
@@ -87,6 +91,13 @@ func loadConfig() Config {
 		}
 	}
 
+	healthCheckTimeout := 60 * time.Second
+	if p := os.Getenv("HEALTH_CHECK_TIMEOUT_SEC"); p != "" {
+		if n, err := strconv.Atoi(p); err == nil && n > 0 {
+			healthCheckTimeout = time.Duration(n) * time.Second
+		}
+	}
+
 	githubToken := os.Getenv("GITHUB_TOKEN")
 	if githubToken == "" {
 		githubToken = os.Getenv("GH_TOKEN")
@@ -103,6 +114,7 @@ func loadConfig() Config {
 		DeployMaxSec:    deployMax,
 		ReleaseMaxSec:   releaseMax,
 		GracefulMaxWait: gracefulMaxWait,
+		HealthCheckTimeout: healthCheckTimeout,
 		GitHubToken:     githubToken,
 	}
 }

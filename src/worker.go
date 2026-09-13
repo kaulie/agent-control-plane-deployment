@@ -116,6 +116,24 @@ func healthOK(rawURL string) bool {
 	return res.StatusCode >= 200 && res.StatusCode < 300
 }
 
+// waitForHealth polls the health endpoint every 2s until it returns healthy
+// or timeout elapses. Use after running restartCmd: the restart command
+// returning does not mean the service has rebound its port (node/webpack
+// apps can take a few seconds), so a single check races the startup and
+// falsely fails the deploy.
+func waitForHealth(rawURL string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if healthOK(rawURL) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
 func portFromHealthURL(healthURL string) string {
 	u, err := url.Parse(healthURL)
 	if err != nil {
@@ -400,7 +418,7 @@ func executeDeploy(store *Store, cfg Config, drain *GracefulDrain, requestID str
 		return
 	}
 
-	if !healthOK(service.HealthURL) {
+	if !waitForHealth(service.HealthURL, cfg.HealthCheckTimeout) {
 		_ = store.AddDeployEvent(job.RequestID, "error", "健康检查失败："+service.HealthURL)
 		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 			State:   StateFailed,
