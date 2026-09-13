@@ -153,20 +153,24 @@ curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 | POST | `/api/deploys` | 已有包直接入队部署 |
 | GET | `/api/deploys[/:id]` | 查询部署任务 |
 | GET | `/api/deploys/:id/events` | 部署执行事件日志 |
+| GET | `/api/artifacts[?serviceId=]` | 制品元数据列表（本地表，GitHub Releases 为存储） |
+| GET | `/api/artifacts/:tag?serviceId=` | 单个制品元数据（含访问路径 `assetUrl`/`browserDownloadUrl`） |
+| POST | `/api/artifacts/scan?serviceId=` | 扫描该服务仓库的 GitHub Releases，回填本地 artifacts 表 |
 | POST | `/restart/notify` | ACP 自身 graceful：通知进入 drain |
 | GET | `/restart/poll` | ACP 自身 graceful：轮询是否可重启 |
 | GET | `/api/meta` | 含 graceful / release 配置 |
 
 旧的 `ops/` 文件队列守护已废弃，保留目录仅作历史参考；请用本 HTTP 服务。
 
-## 制品存储（GitHub Releases）
+## 制品存储（GitHub Releases）+ 本地 artifacts 表
 
-制品不再落本地 `packages/`，而是上传到**每个服务自己的仓库**的 GitHub Release：
+制品不再落本地 `packages/`，而是上传到**每个服务自己的仓库**的 GitHub Release；GitHub Releases 只作纯存储，元数据（含访问路径）存本地 `artifacts` 表：
 
-- 打包：`packageFromGit`（`POST /api/deploy-notify` 或 `bin/release.sh`）clone+build 后，把 `outputs/` + `VERSION`/`COMMIT`/`GIT_REPO_URL` 打成 `package.tar.gz`，上传到 `<gitRepoUrl>` 仓库的 release（tag=`deployment-<hash>`，asset=`package.tar.gz`），随后删除本地临时构建目录。重复打包同 commit 会跳过构建（asset 已存在）。
-- 部署：`POST /api/deploys` 校验 release asset 存在；`executeDeploy` 从 release 下载 `package.tar.gz` 到临时目录 → rsync 到 runtime → 删临时目录。
+- 打包：`packageFromGit`（`POST /api/deploy-notify` 或 `bin/release.sh`）clone+build 后，把 `outputs/` + `VERSION`/`COMMIT`/`GIT_REPO_URL` 打成 `package.tar.gz`，上传到 `<gitRepoUrl>` 仓库的 release（tag=`deployment-<hash>`，asset=`package.tar.gz`），随后删除本地临时构建目录。重复打包同 commit 会跳过构建（asset 已存在）。上传成功后在本地 `artifacts` 表记录一行（`assetUrl`/`browserDownloadUrl`/`size` 等）。
+- 部署：`POST /api/deploys` 校验 release asset 存在；`executeDeploy` 优先用 `artifacts` 表里的 `assetUrl` 直接下载（跳过 release 查询），缺则回退到按 tag 查 release；下载到临时目录 → rsync 到 runtime → 删临时目录。
 - 鉴权：环境变量 `GITHUB_TOKEN`（回退 `GH_TOKEN`），需对每个被部署服务仓库有 `contents:write`（上传）/`contents:read`（下载私有 repo）。`/api/meta` 的 `githubReleaseEnabled` 反映 token 是否配置。
 - 一次性迁移旧本地包：`./bin/upload-existing-packages.sh [--purge]`，遍历 `packages/<serviceId>/deployment-<hash>/` 上传到对应 release，`--purge` 上传成功后删本地包。
+- 回填 artifacts 表：`POST /api/artifacts/scan?serviceId=<id>` 扫描该服务仓库所有 release，把带 `package.tar.gz` 的 release 元数据写进本地表（用于把已有 GitHub Releases 纳入索引）。查询：`GET /api/artifacts[?serviceId=]`。
 
 ## Web 控制面板（独立 panel）
 

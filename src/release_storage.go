@@ -68,16 +68,18 @@ func splitOwnerRepo(path string) (string, string, error) {
 }
 
 type ghRelease struct {
-	ID     int64     `json:"id"`
+	ID      int64     `json:"id"`
 	TagName string    `json:"tag_name"`
-	Assets []ghAsset `json:"assets"`
+	HTMLURL string    `json:"html_url"`
+	Assets  []ghAsset `json:"assets"`
 }
 
 type ghAsset struct {
-	ID                  int64  `json:"id"`
-	Name                string `json:"name"`
-	URL                 string `json:"url"`
-	BrowserDownloadURL  string `json:"browser_download_url"`
+	ID                 int64  `json:"id"`
+	Name               string `json:"name"`
+	URL                string `json:"url"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+	Size               int64  `json:"size"`
 }
 
 func ghDo(ctx context.Context, token, method, url string, body io.Reader, contentType, accept string) (*http.Response, error) {
@@ -127,28 +129,106 @@ func releaseAssetExists(ctx context.Context, token, gitRepoURL, tag string) (boo
 	return false, nil
 }
 
+// ReleaseScanItem describes one release + its package asset found while
+// scanning a service repo's releases (used to backfill the artifacts table).
+type ReleaseScanItem struct {
+	Tag                string
+	ReleaseID          int64
+	ReleaseURL         string
+	AssetID            int64
+	AssetURL           string
+	BrowserDownloadURL string
+	Size               int64
+}
+
+// listServiceReleases lists all releases on the service repo that carry the
+// package.tar.gz asset, returning the access paths for each. Used to backfill
+// the local artifacts table from existing GitHub Releases storage.
+func listServiceReleases(ctx context.Context, token, gitRepoURL string) ([]ReleaseScanItem, error) {
+	owner, repo, err := parseRepoOwnerName(gitRepoURL)
+	if err != nil {
+		return nil, err
+	}
+	var items []ReleaseScanItem
+	page := 1
+	for {
+		u := fmt.Sprintf("%s/repos/%s/%s/releases?per_page=100&page=%d", ghAPIBase, owner, repo, page)
+		resp, err := ghDo(ctx, token, http.MethodGet, u, nil, "", "application/vnd.github+json")
+		if err != nil {
+			return nil, fmt.Errorf("list releases: %w", err)
+		}
+		var rels []ghRelease
+		err = json.NewDecoder(resp.Body).Decode(&rels)
+		_ = resp.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("list releases: %s", resp.Status)
+		}
+		for _, rel := range rels {
+			for _, a := range rel.Assets {
+				if a.Name == releaseAssetName {
+					items = append(items, ReleaseScanItem{
+						Tag:                rel.TagName,
+						ReleaseID:          rel.ID,
+						ReleaseURL:         rel.HTMLURL,
+						AssetID:            a.ID,
+						AssetURL:           a.URL,
+						BrowserDownloadURL: a.BrowserDownloadURL,
+						Size:               a.Size,
+					})
+					break
+				}
+			}
+		}
+		if len(rels) < 100 {
+			break
+		}
+		page++
+		if page > 20 { // hard cap (2000 releases) to avoid runaway
+			break
+		}
+	}
+	return items, nil
+}
+
+// ArtifactMeta is the metadata returned after uploading a package to a
+// GitHub release, later persisted into the local artifacts table as the
+// access path to the storage.
+type ArtifactMeta struct {
+	RepoSlug           string // owner/repo
+	ReleaseID          int64
+	ReleaseURL         string // release html_url
+	AssetID            int64
+	AssetURL           string // GitHub API download URL
+	BrowserDownloadURL string // direct https download URL
+	Size               int64
+}
+
 // uploadPackageToRelease tars pkgDir and uploads it as the package.tar.gz
 // asset of release <tag> on the service repo, creating the release if needed.
 // If an asset with the same name already exists it is deleted first (GitHub
-// does not allow overwriting assets).
-func uploadPackageToRelease(ctx context.Context, token, gitRepoURL, tag, pkgDir string) error {
+// does not allow overwriting assets). Returns the asset metadata (access
+// paths) so the caller can record it in the local artifacts table.
+func uploadPackageToRelease(ctx context.Context, token, gitRepoURL, tag, pkgDir string) (*ArtifactMeta, error) {
 	owner, repo, err := parseRepoOwnerName(gitRepoURL)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if token == "" {
-		return fmt.Errorf("GITHUB_TOKEN not set; cannot upload release asset")
+		return nil, fmt.Errorf("GITHUB_TOKEN not set; cannot upload release asset")
 	}
 
 	// Prepare tar.gz in memory (packages are modestly sized).
 	var buf bytes.Buffer
 	if err := tarDir(pkgDir, &buf); err != nil {
-		return fmt.Errorf("tar package: %w", err)
+		return nil, fmt.Errorf("tar package: %w", err)
 	}
 
 	rel, err := ghGetOrCreateRelease(ctx, token, owner, repo, tag)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// Remove existing asset of the same name (no overwrite).
 	for _, a := range rel.Assets {
@@ -156,11 +236,11 @@ func uploadPackageToRelease(ctx context.Context, token, gitRepoURL, tag, pkgDir 
 			delURL := fmt.Sprintf("%s/repos/%s/%s/releases/assets/%d", ghAPIBase, owner, repo, a.ID)
 			dresp, derr := ghDo(ctx, token, http.MethodDelete, delURL, nil, "", "application/vnd.github+json")
 			if derr != nil {
-				return fmt.Errorf("delete old asset: %w", derr)
+				return nil, fmt.Errorf("delete old asset: %w", derr)
 			}
 			_ = dresp.Body.Close()
 			if dresp.StatusCode >= 300 {
-				return fmt.Errorf("delete old asset: %s", dresp.Status)
+				return nil, fmt.Errorf("delete old asset: %s", dresp.Status)
 			}
 			break
 		}
@@ -172,14 +252,26 @@ func uploadPackageToRelease(ctx context.Context, token, gitRepoURL, tag, pkgDir 
 		ghUploadBase, owner, repo, rel.ID, releaseAssetName)
 	resp, err := ghDo(ctx, token, http.MethodPost, uploadURL, &buf, "application/octet-stream", "application/vnd.github+json")
 	if err != nil {
-		return fmt.Errorf("upload asset: %w", err)
+		return nil, fmt.Errorf("upload asset: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("upload asset: %s: %s", resp.Status, string(b))
+		return nil, fmt.Errorf("upload asset: %s: %s", resp.Status, string(b))
 	}
-	return nil
+	var asset ghAsset
+	if err := json.NewDecoder(resp.Body).Decode(&asset); err != nil {
+		return nil, fmt.Errorf("decode upload response: %w", err)
+	}
+	return &ArtifactMeta{
+		RepoSlug:           owner + "/" + repo,
+		ReleaseID:          rel.ID,
+		ReleaseURL:         rel.HTMLURL,
+		AssetID:            asset.ID,
+		AssetURL:           asset.URL,
+		BrowserDownloadURL: asset.BrowserDownloadURL,
+		Size:               asset.Size,
+	}, nil
 }
 
 func ghGetOrCreateRelease(ctx context.Context, token, owner, repo, tag string) (*ghRelease, error) {
@@ -222,37 +314,40 @@ func ghGetOrCreateRelease(ctx context.Context, token, owner, repo, tag string) (
 }
 
 // downloadPackageFromRelease downloads the package.tar.gz asset of release
-// <tag> from the service repo and extracts it into destDir.
-func downloadPackageFromRelease(ctx context.Context, token, gitRepoURL, tag, destDir string) error {
-	owner, repo, err := parseRepoOwnerName(gitRepoURL)
-	if err != nil {
-		return err
-	}
-	getURL := fmt.Sprintf("%s/repos/%s/%s/releases/tags/%s", ghAPIBase, owner, repo, tag)
-	resp, err := ghDo(ctx, token, http.MethodGet, getURL, nil, "", "application/vnd.github+json")
-	if err != nil {
-		return fmt.Errorf("get release: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		return fmt.Errorf("release not found for tag %s on %s/%s", tag, owner, repo)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("get release %s: %s", tag, resp.Status)
-	}
-	var rel ghRelease
-	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
-		return err
-	}
-	var assetURL string
-	for _, a := range rel.Assets {
-		if a.Name == releaseAssetName {
-			assetURL = a.URL
-			break
-		}
-	}
+// <tag> from the service repo and extracts it into destDir. If assetURL is
+// non-empty (taken from the local artifacts table) the release lookup is
+// skipped and the asset is downloaded directly from that access path.
+func downloadPackageFromRelease(ctx context.Context, token, gitRepoURL, tag, destDir, assetURL string) error {
 	if assetURL == "" {
-		return fmt.Errorf("release %s has no asset %s", tag, releaseAssetName)
+		owner, repo, err := parseRepoOwnerName(gitRepoURL)
+		if err != nil {
+			return err
+		}
+		getURL := fmt.Sprintf("%s/repos/%s/%s/releases/tags/%s", ghAPIBase, owner, repo, tag)
+		resp, err := ghDo(ctx, token, http.MethodGet, getURL, nil, "", "application/vnd.github+json")
+		if err != nil {
+			return fmt.Errorf("get release: %w", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusNotFound {
+			return fmt.Errorf("release not found for tag %s on %s/%s", tag, owner, repo)
+		}
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("get release %s: %s", tag, resp.Status)
+		}
+		var rel ghRelease
+		if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+			return err
+		}
+		for _, a := range rel.Assets {
+			if a.Name == releaseAssetName {
+				assetURL = a.URL
+				break
+			}
+		}
+		if assetURL == "" {
+			return fmt.Errorf("release %s has no asset %s", tag, releaseAssetName)
+		}
 	}
 
 	aresp, err := ghDo(ctx, token, http.MethodGet, assetURL, nil, "", "application/octet-stream")

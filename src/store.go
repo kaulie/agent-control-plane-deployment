@@ -132,6 +132,9 @@ func (s *Store) migrate() error {
 	if err := s.migratePipelineEvents(); err != nil {
 		return err
 	}
+	if err := s.migrateArtifacts(); err != nil {
+		return err
+	}
 	return s.migrateDeployEvents()
 }
 
