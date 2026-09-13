@@ -13,3 +13,6 @@ ops/*.pid
 bin/deployment-server
 bin/acp-upgrader
 outputs/
+.gomodcache/
+.gocache/
+.gopath/
