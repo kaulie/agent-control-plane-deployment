@@ -80,13 +80,16 @@ type ghAsset struct {
 	BrowserDownloadURL  string `json:"browser_download_url"`
 }
 
-func ghDo(ctx context.Context, token, method, url string, body io.Reader, accept string) (*http.Response, error) {
+func ghDo(ctx context.Context, token, method, url string, body io.Reader, contentType, accept string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return nil, err
 	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
 	}
 	req.Header.Set("Accept", accept)
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
@@ -101,7 +104,7 @@ func releaseAssetExists(ctx context.Context, token, gitRepoURL, tag string) (boo
 		return false, err
 	}
 	u := fmt.Sprintf("%s/repos/%s/%s/releases/tags/%s", ghAPIBase, owner, repo, tag)
-	resp, err := ghDo(ctx, token, http.MethodGet, u, nil, "application/vnd.github+json")
+	resp, err := ghDo(ctx, token, http.MethodGet, u, nil, "", "application/vnd.github+json")
 	if err != nil {
 		return false, err
 	}
@@ -151,7 +154,7 @@ func uploadPackageToRelease(ctx context.Context, token, gitRepoURL, tag, pkgDir 
 	for _, a := range rel.Assets {
 		if a.Name == releaseAssetName {
 			delURL := fmt.Sprintf("%s/repos/%s/%s/releases/assets/%d", ghAPIBase, owner, repo, a.ID)
-			dresp, derr := ghDo(ctx, token, http.MethodDelete, delURL, nil, "application/vnd.github+json")
+			dresp, derr := ghDo(ctx, token, http.MethodDelete, delURL, nil, "", "application/vnd.github+json")
 			if derr != nil {
 				return fmt.Errorf("delete old asset: %w", derr)
 			}
@@ -163,10 +166,11 @@ func uploadPackageToRelease(ctx context.Context, token, gitRepoURL, tag, pkgDir 
 		}
 	}
 
-	// Upload asset.
+	// Upload asset. GitHub requires a Content-Type for the asset body; the
+	// Accept header stays the standard API media type.
 	uploadURL := fmt.Sprintf("%s/repos/%s/%s/releases/%d/assets?name=%s",
 		ghUploadBase, owner, repo, rel.ID, releaseAssetName)
-	resp, err := ghDo(ctx, token, http.MethodPost, uploadURL, &buf, "application/octet-stream")
+	resp, err := ghDo(ctx, token, http.MethodPost, uploadURL, &buf, "application/octet-stream", "application/vnd.github+json")
 	if err != nil {
 		return fmt.Errorf("upload asset: %w", err)
 	}
@@ -180,7 +184,7 @@ func uploadPackageToRelease(ctx context.Context, token, gitRepoURL, tag, pkgDir 
 
 func ghGetOrCreateRelease(ctx context.Context, token, owner, repo, tag string) (*ghRelease, error) {
 	getURL := fmt.Sprintf("%s/repos/%s/%s/releases/tags/%s", ghAPIBase, owner, repo, tag)
-	resp, err := ghDo(ctx, token, http.MethodGet, getURL, nil, "application/vnd.github+json")
+	resp, err := ghDo(ctx, token, http.MethodGet, getURL, nil, "", "application/vnd.github+json")
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +205,7 @@ func ghGetOrCreateRelease(ctx context.Context, token, owner, repo, tag string) (
 	body := fmt.Sprintf(`{"tag_name":%q,"name":%q,"body":"deployment package","prerelease":false}`, tag, tag)
 	cresp, err := ghDo(ctx, token, http.MethodPost,
 		fmt.Sprintf("%s/repos/%s/%s/releases", ghAPIBase, owner, repo),
-		strings.NewReader(body), "application/vnd.github+json")
+		strings.NewReader(body), "application/json", "application/vnd.github+json")
 	if err != nil {
 		return nil, fmt.Errorf("create release: %w", err)
 	}
@@ -225,7 +229,7 @@ func downloadPackageFromRelease(ctx context.Context, token, gitRepoURL, tag, des
 		return err
 	}
 	getURL := fmt.Sprintf("%s/repos/%s/%s/releases/tags/%s", ghAPIBase, owner, repo, tag)
-	resp, err := ghDo(ctx, token, http.MethodGet, getURL, nil, "application/vnd.github+json")
+	resp, err := ghDo(ctx, token, http.MethodGet, getURL, nil, "", "application/vnd.github+json")
 	if err != nil {
 		return fmt.Errorf("get release: %w", err)
 	}
@@ -251,7 +255,7 @@ func downloadPackageFromRelease(ctx context.Context, token, gitRepoURL, tag, des
 		return fmt.Errorf("release %s has no asset %s", tag, releaseAssetName)
 	}
 
-	aresp, err := ghDo(ctx, token, http.MethodGet, assetURL, nil, "application/octet-stream")
+	aresp, err := ghDo(ctx, token, http.MethodGet, assetURL, nil, "", "application/octet-stream")
 	if err != nil {
 		return fmt.Errorf("download asset: %w", err)
 	}

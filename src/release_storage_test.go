@@ -93,6 +93,11 @@ func (f *fakeGitHub) handleReleasesRoot(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "method", http.StatusMethodNotAllowed)
 		return
 	}
+	// GitHub requires a JSON Content-Type for the create-release body.
+	if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		http.Error(w, "Invalid Content-Type", http.StatusBadRequest)
+		return
+	}
 	var body struct {
 		TagName string `json:"tag_name"`
 	}
@@ -131,6 +136,12 @@ func (f *fakeGitHub) handleDeleteAsset(w http.ResponseWriter, r *http.Request) {
 func (f *fakeGitHub) handleUploadAsset(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method", http.StatusMethodNotAllowed)
+		return
+	}
+	// GitHub rejects asset uploads without a valid Content-Type (mirrors the
+	// real "Invalid Content-Type" 400 that bit us when ghDo set it as Accept).
+	if ct := r.Header.Get("Content-Type"); ct == "" || !strings.HasPrefix(ct, "application/") {
+		http.Error(w, `{"message":"Invalid Content-Type"}`, http.StatusBadRequest)
 		return
 	}
 	rest := strings.TrimPrefix(r.URL.Path, "/repos/o/r/releases/")
