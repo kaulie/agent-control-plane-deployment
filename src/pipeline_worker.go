@@ -11,23 +11,25 @@ import (
 
 // PipelineWorker: package from git, then enqueue deploy (graceful notify/poll happens in DeployWorker).
 type PipelineWorker struct {
-	store  *Store
-	cfg    Config
-	deploy *DeployWorker
-	drain  *GracefulDrain
-	mu     sync.Mutex
-	busy   bool
-	stopCh chan struct{}
-	wg     sync.WaitGroup
+	store   *Store
+	cfg     Config
+	storage ArtifactStorage
+	deploy  *DeployWorker
+	drain   *GracefulDrain
+	mu      sync.Mutex
+	busy    bool
+	stopCh  chan struct{}
+	wg      sync.WaitGroup
 }
 
-func NewPipelineWorker(store *Store, cfg Config, deploy *DeployWorker, drain *GracefulDrain) *PipelineWorker {
+func NewPipelineWorker(store *Store, cfg Config, storage ArtifactStorage, deploy *DeployWorker, drain *GracefulDrain) *PipelineWorker {
 	return &PipelineWorker{
-		store:  store,
-		cfg:    cfg,
-		deploy: deploy,
-		drain:  drain,
-		stopCh: make(chan struct{}),
+		store:   store,
+		cfg:     cfg,
+		storage: storage,
+		deploy:  deploy,
+		drain:   drain,
+		stopCh:  make(chan struct{}),
 	}
 }
 
@@ -108,7 +110,7 @@ func (w *PipelineWorker) execute(job *PipelineJob) {
 	fmt.Printf("[pipeline] %s packaging service=%s ref=%s repo=%s\n", job.RequestID, job.ServiceID, job.Ref, gitURL)
 	_ = w.store.AddPipelineEvent(job.RequestID, "info",
 		"开始打包：service="+job.ServiceID+" ref="+job.Ref+" repo="+gitURL)
-	pkg, err := packageFromGit(w.cfg.PackagesDir, job.ServiceID, gitURL, job.Ref, w.cfg.ReleaseMaxSec, w.cfg.GitHubToken)
+	pkg, err := packageFromGit(job.ServiceID, gitURL, job.Ref, w.cfg.ReleaseMaxSec, w.storage)
 	if err != nil {
 		failPipeline(w.store, job.RequestID, "package failed: "+err.Error())
 		return
@@ -122,9 +124,9 @@ func (w *PipelineWorker) execute(job *PipelineJob) {
 		_ = w.store.AddPipelineEvent(job.RequestID, "ok",
 			"打包完成：tag="+pkg.Tag+" version="+pkg.Hash+" commit="+pkg.FullCommit)
 	}
-	// Record artifact metadata locally (GitHub Releases is pure storage;
+	// Record artifact metadata locally (the storage backend is pure storage;
 	// the table holds the access path so deploys/panel can resolve without
-	// re-querying the GitHub API). Skipped builds already have a row.
+	// re-querying the backend). Skipped builds already have a row.
 	if pkg.Artifact != nil {
 		if err := w.store.RecordArtifact(Artifact{
 			ServiceID:          job.ServiceID,
@@ -139,7 +141,7 @@ func (w *PipelineWorker) execute(job *PipelineJob) {
 			BrowserDownloadURL: pkg.Artifact.BrowserDownloadURL,
 			ReleaseURL:         pkg.Artifact.ReleaseURL,
 			Size:               pkg.Artifact.Size,
-			Storage:            "github_release",
+			Storage:            pkg.Artifact.Storage,
 			CreatedAt:           nowISO(),
 		}); err != nil {
 			fmt.Printf("[pipeline] %s warn: record artifact: %v\n", job.RequestID, err)

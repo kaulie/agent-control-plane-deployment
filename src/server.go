@@ -14,6 +14,7 @@ import (
 type apiServer struct {
 	store    *Store
 	cfg      Config
+	storage  ArtifactStorage
 	worker   *DeployWorker
 	pipeline *PipelineWorker
 	drain    *GracefulDrain
@@ -284,7 +285,7 @@ func (s *apiServer) handleCreateDeploy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "service not found: "+serviceID)
 		return
 	}
-	deployment, err := assertRelease(s.cfg.GitHubToken, svc.GitRepoURL, raw)
+	deployment, err := assertRelease(s.storage, svc.GitRepoURL, raw)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -536,17 +537,18 @@ func (s *apiServer) handleScanArtifacts(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "service has no gitRepoUrl")
 		return
 	}
-	if s.cfg.GitHubToken == "" {
-		writeError(w, http.StatusServiceUnavailable, "GITHUB_TOKEN not configured; cannot scan releases")
+	if s.storage == nil {
+		writeError(w, http.StatusServiceUnavailable, "artifact storage not configured")
 		return
 	}
-	items, err := listServiceReleases(r.Context(), s.cfg.GitHubToken, gitURL)
+	items, err := s.storage.List(r.Context(), gitURL)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "scan releases: "+err.Error())
+		writeError(w, http.StatusBadGateway, "scan artifacts: "+err.Error())
 		return
 	}
 	owner, repo, _ := parseRepoOwnerName(gitURL)
 	repoSlug := owner + "/" + repo
+	storageName := s.storage.Name()
 	recorded := 0
 	for _, it := range items {
 		version := strings.TrimPrefix(it.Tag, "deployment-")
@@ -562,7 +564,7 @@ func (s *apiServer) handleScanArtifacts(w http.ResponseWriter, r *http.Request) 
 			BrowserDownloadURL: it.BrowserDownloadURL,
 			ReleaseURL:         it.ReleaseURL,
 			Size:               it.Size,
-			Storage:            "github_release",
+			Storage:            storageName,
 			CreatedAt:           nowISO(),
 		}); err != nil {
 			writeError(w, http.StatusInternalServerError, "record artifact "+it.Tag+": "+err.Error())
@@ -570,7 +572,7 @@ func (s *apiServer) handleScanArtifacts(w http.ResponseWriter, r *http.Request) 
 		}
 		recorded++
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"scanned": len(items), "recorded": recorded, "serviceId": serviceID})
+	writeJSON(w, http.StatusOK, map[string]any{"scanned": len(items), "recorded": recorded, "serviceId": serviceID, "storage": storageName})
 }
 
 func (s *apiServer) handleRestartNotify(w http.ResponseWriter, r *http.Request) {
@@ -636,7 +638,17 @@ func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
 		"gracefulPollIntervalSec": int(gracefulPollInterval / time.Second),
 		"gracefulMaxWaitMs":       int(s.cfg.GracefulMaxWait / time.Millisecond),
 		"releaseMaxSec":           s.cfg.ReleaseMaxSec,
+		"artifactStorage":         s.storageName(),
 		"githubReleaseEnabled":    s.cfg.GitHubToken != "",
 		"deployNotify":            "POST /api/deploy-notify {serviceId, ref?}",
 	})
+}
+
+// storageName reports the active artifact storage backend for /api/meta, or
+// "" when storage is not initialized (e.g. during early bootstrap).
+func (s *apiServer) storageName() string {
+	if s.storage == nil {
+		return ""
+	}
+	return s.storage.Name()
 }

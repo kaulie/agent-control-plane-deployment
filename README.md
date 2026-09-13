@@ -37,7 +37,7 @@ cd agent-control-plane-deployment
 
 deployment **不**在 worker 内对自己执行 `restartCmd`。流程：
 
-1. 制品由 `build.sh` 产出 `outputs/`，打成 `package.tar.gz` 上传到该服务仓库的 GitHub Release（tag=`deployment-<hash>`）；**不再落本地 `packages/`**（release 作为唯一来源，节省本地存储）。本仓库自带 `build.sh`，因此 `POST /api/deploy-notify {serviceId:"agent-control-plane-deployment"}`（或 `DEPLOY_SERVICE_ID=agent-control-plane-deployment ./bin/release.sh main`）可直接打包+部署自身。需环境变量 `GITHUB_TOKEN`（或 `gh auth`），且对目标仓库有 `contents:write`。
+1. 制品由 `build.sh` 产出 `outputs/`，经当前制品存储后端（`ARTIFACT_STORAGE`，默认 `github_release`）保存：`github_release` 模式打成 `package.tar.gz` 上传到该服务仓库的 GitHub Release（tag=`deployment-<hash>`），**不落本地 `packages/`**；`local` 模式则存到 `<packagesDir>/<serviceId>/deployment-<hash>/`。本仓库自带 `build.sh`，因此 `POST /api/deploy-notify {serviceId:"agent-control-plane-deployment"}`（或 `DEPLOY_SERVICE_ID=agent-control-plane-deployment ./bin/release.sh main`）可直接打包+部署自身。`github_release` 模式需环境变量 `GITHUB_TOKEN`（或 `gh auth`），且对目标仓库有 `contents:write`。
 2. `POST /api/deploys` 且 `serviceId=agent-control-plane-deployment`（`runtimeDir` 等于 `DEPLOYMENT_HOME`）：
    - **graceful**：ACP 自身也注册了 `restartNotifyUrl`/`restartPollUrl`（`POST /restart/notify`、`GET /restart/poll`，端口同 API）。部署前先通知自己进入 drain（worker 停止认领新任务），轮询直到无其它在途部署/流水线，再继续。
    - 从 release 下载 `package.tar.gz` 到临时目录 → rsync 到 runtime（保留 `data/`、`packages/`、`logs/`、pid、upgrade-requests）→ 删临时目录
@@ -153,24 +153,28 @@ curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 | POST | `/api/deploys` | 已有包直接入队部署 |
 | GET | `/api/deploys[/:id]` | 查询部署任务 |
 | GET | `/api/deploys/:id/events` | 部署执行事件日志 |
-| GET | `/api/artifacts[?serviceId=]` | 制品元数据列表（本地表，GitHub Releases 为存储） |
+| GET | `/api/artifacts[?serviceId=]` | 制品元数据列表（本地表，存储后端为纯存储） |
 | GET | `/api/artifacts/:tag?serviceId=` | 单个制品元数据（含访问路径 `assetUrl`/`browserDownloadUrl`） |
-| POST | `/api/artifacts/scan?serviceId=` | 扫描该服务仓库的 GitHub Releases，回填本地 artifacts 表 |
+| POST | `/api/artifacts/scan?serviceId=` | 扫描当前存储后端的制品，回填本地 artifacts 表 |
 | POST | `/restart/notify` | ACP 自身 graceful：通知进入 drain |
 | GET | `/restart/poll` | ACP 自身 graceful：轮询是否可重启 |
 | GET | `/api/meta` | 含 graceful / release 配置 |
 
 旧的 `ops/` 文件队列守护已废弃，保留目录仅作历史参考；请用本 HTTP 服务。
 
-## 制品存储（GitHub Releases）+ 本地 artifacts 表
+## 制品存储（可插拔）+ 本地 artifacts 表
 
-制品不再落本地 `packages/`，而是上传到**每个服务自己的仓库**的 GitHub Release；GitHub Releases 只作纯存储，元数据（含访问路径）存本地 `artifacts` 表：
+制品存储做成**可插拔**后端：本地磁盘（`local`）或 GitHub Releases（`github_release`），后续可扩展其它云存储（S3 等）。无论哪种后端，本地 `artifacts` 表始终是**存储无关的元数据索引**（含访问路径 `assetUrl`），部署/面板据此解析包，无需每次回查后端。
 
-- 打包：`packageFromGit`（`POST /api/deploy-notify` 或 `bin/release.sh`）clone+build 后，把 `outputs/` + `VERSION`/`COMMIT`/`GIT_REPO_URL` 打成 `package.tar.gz`，上传到 `<gitRepoUrl>` 仓库的 release（tag=`deployment-<hash>`，asset=`package.tar.gz`），随后删除本地临时构建目录。重复打包同 commit 会跳过构建（asset 已存在）。上传成功后在本地 `artifacts` 表记录一行（`assetUrl`/`browserDownloadUrl`/`size` 等）。
-- 部署：`POST /api/deploys` 校验 release asset 存在；`executeDeploy` 优先用 `artifacts` 表里的 `assetUrl` 直接下载（跳过 release 查询），缺则回退到按 tag 查 release；下载到临时目录 → rsync 到 runtime → 删临时目录。
-- 鉴权：环境变量 `GITHUB_TOKEN`（回退 `GH_TOKEN`），需对每个被部署服务仓库有 `contents:write`（上传）/`contents:read`（下载私有 repo）。`/api/meta` 的 `githubReleaseEnabled` 反映 token 是否配置。
-- 一次性迁移旧本地包：`./bin/upload-existing-packages.sh [--purge]`，遍历 `packages/<serviceId>/deployment-<hash>/` 上传到对应 release，`--purge` 上传成功后删本地包。
-- 回填 artifacts 表：`POST /api/artifacts/scan?serviceId=<id>` 扫描该服务仓库所有 release，把带 `package.tar.gz` 的 release 元数据写进本地表（用于把已有 GitHub Releases 纳入索引）。查询：`GET /api/artifacts[?serviceId=]`。
+- 选择后端：环境变量 `ARTIFACT_STORAGE`，取值 `local` | `github_release`。留空时：配置了 `GITHUB_TOKEN` → `github_release`，否则 → `local`。`/api/meta` 的 `artifactStorage` 反映当前后端。
+- `local`：包存 `<packagesDir>/<serviceId>/deployment-<hash>/`（原始本地布局，无需凭证）。上传=rsync 落盘，下载=rsync 到临时目录→rsync 到 runtime。
+- `github_release`：包打成 `package.tar.gz` 上传到**每个服务自己仓库**的 GitHub Release（tag=`deployment-<hash>`，asset=`package.tar.gz`），不再落本地 `packages/`（release 作为唯一来源，节省本地存储）。需 `GITHUB_TOKEN`（回退 `GH_TOKEN`），对被部署服务仓库有 `contents:write`（上传）/`contents:read`（下载私有 repo）。`/api/meta` 的 `githubReleaseEnabled` 反映 token 是否配置。
+- 打包：`packageFromGit`（`POST /api/deploy-notify` 或 `bin/release.sh`）clone+build 后，经当前后端 `Upload` 存储包，随后删本地临时构建目录。重复打包同 commit 会跳过构建（后端 `Exists` 命中）。上传成功后在本地 `artifacts` 表记录一行（`assetUrl`/`browserDownloadUrl`/`size`/`storage` 等）。
+- 部署：`POST /api/deploys` 经后端 `Exists` 校验制品存在；`executeDeploy` 优先用 `artifacts` 表里的 `assetUrl` 直接下载（跳过解析），缺则回退到按 tag 解析；下载到临时目录 → rsync 到 runtime → 删临时目录。
+- 一次性迁移旧本地包到 GitHub Releases：`./bin/upload-existing-packages.sh [--purge]`，遍历 `packages/<serviceId>/deployment-<hash>/` 上传到对应 release，`--purge` 上传成功后删本地包。
+- 回填 artifacts 表：`POST /api/artifacts/scan?serviceId=<id>` 经当前后端 `List` 扫描，把制品元数据写进本地表。查询：`GET /api/artifacts[?serviceId=]`、`GET /api/artifacts/:tag?serviceId=`。
+
+> 扩展新后端：实现 `ArtifactStorage` 接口（`Name/Exists/Upload/Download/List`，见 `src/artifact_storage.go`），在 `NewArtifactStorage` 工厂里注册新取值即可，调用方（`packageFromGit`/`executeDeploy`/`assertRelease`/`handleScanArtifacts`）无需改动。
 
 ## Web 控制面板（独立 panel）
 

@@ -67,13 +67,19 @@ func main() {
 	}
 	defer store.Close()
 
+	storage, err := NewArtifactStorage(cfg)
+	if err != nil {
+		log.Fatalf("artifact storage: %v", err)
+	}
+	log.Printf("[storage] artifact storage backend: %s", storage.Name())
+
 	seedDefaultService(store)
 	seedACPService(store, cfg)
 
 	drain := &GracefulDrain{}
-	worker := NewDeployWorker(store, cfg, drain)
-	pipeline := NewPipelineWorker(store, cfg, worker, drain)
-	api := &apiServer{store: store, cfg: cfg, worker: worker, pipeline: pipeline, drain: drain}
+	worker := NewDeployWorker(store, cfg, storage, drain)
+	pipeline := NewPipelineWorker(store, cfg, storage, worker, drain)
+	api := &apiServer{store: store, cfg: cfg, storage: storage, worker: worker, pipeline: pipeline, drain: drain}
 
 	pidFile := filepath.Join(cfg.Home, "deployment.pid")
 	_ = os.WriteFile(pidFile, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644)

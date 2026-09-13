@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -24,6 +25,11 @@ type Config struct {
 	// running restartCmd (polls every 2s). Avoids marking a deploy failed
 	// just because the service takes a few seconds to rebind its port.
 	HealthCheckTimeout time.Duration
+	// Artifact storage backend: "local" (on-disk under packagesDir) or
+	// "github_release" (GitHub Releases on each service's own repo). Empty
+	// defaults to github_release when GITHUB_TOKEN is set, else local. Env
+	// ARTIFACT_STORAGE. Future backends (S3, etc.) plug in via NewArtifactStorage.
+	ArtifactStorageType string
 	// GitHub token (GITHUB_TOKEN / GH_TOKEN) used to upload/download release
 	// assets on each service's own repo. Empty disables release-based storage.
 	GitHubToken string
@@ -103,6 +109,8 @@ func loadConfig() Config {
 		githubToken = os.Getenv("GH_TOKEN")
 	}
 
+	artifactStorageType := strings.TrimSpace(os.Getenv("ARTIFACT_STORAGE"))
+
 	return Config{
 		Host:            host,
 		Port:            port,
@@ -115,6 +123,7 @@ func loadConfig() Config {
 		ReleaseMaxSec:   releaseMax,
 		GracefulMaxWait: gracefulMaxWait,
 		HealthCheckTimeout: healthCheckTimeout,
+		ArtifactStorageType: artifactStorageType,
 		GitHubToken:     githubToken,
 	}
 }
