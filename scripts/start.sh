@@ -26,12 +26,26 @@ if [ ! -x "${BIN}" ]; then
   exit 1
 fi
 
+# Refuse to start if the port is already bound (e.g. a stale pidfile left a
+# previous server running). Without this, the new process fails to bind and
+# exits immediately, leaving a stale pidfile and a stuck self-upgrade.
+if command -v lsof >/dev/null 2>&1; then
+  holder="$(lsof -nP -iTCP:"${PORT}" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)"
+  if [ -n "${holder}" ]; then
+    echo "[start][错误] port ${PORT} already in use by pid=${holder}; run scripts/stop.sh first" >&2
+    exit 1
+  fi
+fi
+
 nohup "${BIN}" >>"${LOG_FILE}" 2>&1 &
 echo $! > "${PID_FILE}"
-sleep 0.4
+sleep 0.6
 if kill -0 "$(tr -d '[:space:]' < "${PID_FILE}")" 2>/dev/null; then
   echo "[start] ok pid=$(cat "${PID_FILE}") log=${LOG_FILE}"
 else
+  # Process died before becoming healthy — remove the stale pidfile so a retry
+  # is not confused into thinking it is already running.
+  rm -f "${PID_FILE}"
   echo "[start][错误] failed; see ${LOG_FILE}" >&2
   exit 1
 fi
