@@ -12,6 +12,23 @@ import (
 
 const gracefulPollInterval = 15 * time.Second
 
+// gracefulHTTPClient is used for restart notify/poll against the project's
+// own runtime. It disables HTTP keep-alives so no idle TCP connection to the
+// project port lingers after the call. This matters because some projects'
+// stop.sh clean up their port with `kill $(lsof -ti:$PORT)`, which would
+// otherwise also kill THIS deployment process (which holds an idle keep-alive
+// connection to that port from polling). With keep-alives disabled the
+// connection closes as soon as each request finishes, so the project's
+// port-cleanup no longer sweeps the deployment service up.
+var gracefulHTTPClient = &http.Client{
+	Timeout: 20 * time.Second,
+	Transport: &http.Transport{
+		Proxy:               http.ProxyFromEnvironment,
+		DisableKeepAlives:   true,
+		MaxIdleConnsPerHost: -1,
+	},
+}
+
 // SupportsGracefulRestart reports whether the service registered both
 // project-provided notify + poll endpoints.
 func (s ServiceContract) SupportsGracefulRestart() bool {
@@ -49,12 +66,13 @@ func postRestartNotify(notifyURL string, body restartNotifyBody) error {
 	if err != nil {
 		return err
 	}
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := gracefulHTTPClient
 	req, err := http.NewRequest(http.MethodPost, notifyURL, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Close = true
 	res, err := client.Do(req)
 	if err != nil {
 		return err
@@ -69,12 +87,13 @@ func postRestartNotify(notifyURL string, body restartNotifyBody) error {
 
 func getRestartPollStatus(pollURL string) (restartPollStatus, error) {
 	var st restartPollStatus
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := gracefulHTTPClient
 	req, err := http.NewRequest(http.MethodGet, pollURL, nil)
 	if err != nil {
 		return st, err
 	}
 	req.Header.Set("Cache-Control", "no-store")
+	req.Close = true
 	res, err := client.Do(req)
 	if err != nil {
 		return st, err

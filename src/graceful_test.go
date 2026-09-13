@@ -48,6 +48,41 @@ func TestPollAllowsDeploy(t *testing.T) {
 	}
 }
 
+// TestGracefulClientNoKeepAlive locks in the fix for the "deployment service
+// killed by project stop.sh" bug: the graceful client must disable keep-alives
+// so no idle TCP connection to the project port lingers after notify/poll
+// (otherwise `kill $(lsof -ti:$PORT)` in the project's stop.sh sweeps the
+// deployment process up). Each request must also send Connection: close.
+func TestGracefulClientNoKeepAlive(t *testing.T) {
+	tr, ok := gracefulHTTPClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport is %T, want *http.Transport", gracefulHTTPClient.Transport)
+	}
+	if !tr.DisableKeepAlives {
+		t.Fatal("gracefulHTTPClient.Transport.DisableKeepAlives must be true " +
+			"(prevents idle keep-alive connections to the project port that let " +
+			"the project's stop.sh kill the deployment service)")
+	}
+
+	var seenClose atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Connection") == "close" || r.Close {
+			seenClose.Store(true)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ready":true}`))
+	}))
+	defer srv.Close()
+
+	if _, err := getRestartPollStatus(srv.URL); err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	if !seenClose.Load() {
+		t.Fatal("poll request did not send Connection: close; keep-alive would " +
+			"leave a socket to the project port that stop.sh could kill")
+	}
+}
+
 func TestWaitForGracefulRestartReady(t *testing.T) {
 	var notified atomic.Bool
 	var polls atomic.Int32
