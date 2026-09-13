@@ -129,18 +129,6 @@ func releaseAssetExists(ctx context.Context, token, gitRepoURL, tag string) (boo
 	return false, nil
 }
 
-// ReleaseScanItem describes one release + its package asset found while
-// scanning a service repo's releases (used to backfill the artifacts table).
-type ReleaseScanItem struct {
-	Tag                string
-	ReleaseID          int64
-	ReleaseURL         string
-	AssetID            int64
-	AssetURL           string
-	BrowserDownloadURL string
-	Size               int64
-}
-
 // listServiceReleases lists all releases on the service repo that carry the
 // package.tar.gz asset, returning the access paths for each. Used to backfill
 // the local artifacts table from existing GitHub Releases storage.
@@ -191,19 +179,6 @@ func listServiceReleases(ctx context.Context, token, gitRepoURL string) ([]Relea
 		}
 	}
 	return items, nil
-}
-
-// ArtifactMeta is the metadata returned after uploading a package to a
-// GitHub release, later persisted into the local artifacts table as the
-// access path to the storage.
-type ArtifactMeta struct {
-	RepoSlug           string // owner/repo
-	ReleaseID          int64
-	ReleaseURL         string // release html_url
-	AssetID            int64
-	AssetURL           string // GitHub API download URL
-	BrowserDownloadURL string // direct https download URL
-	Size               int64
 }
 
 // uploadPackageToRelease tars pkgDir and uploads it as the package.tar.gz
@@ -264,6 +239,7 @@ func uploadPackageToRelease(ctx context.Context, token, gitRepoURL, tag, pkgDir 
 		return nil, fmt.Errorf("decode upload response: %w", err)
 	}
 	return &ArtifactMeta{
+		Storage:            "github_release",
 		RepoSlug:           owner + "/" + repo,
 		ReleaseID:          rel.ID,
 		ReleaseURL:         rel.HTMLURL,

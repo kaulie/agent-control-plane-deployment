@@ -19,11 +19,11 @@ type PackageResult struct {
 	Artifact   *ArtifactMeta
 }
 
-// packageFromGit clones/fetches ref, runs build.sh, and uploads the frozen
-// outputs as a package.tar.gz asset of a GitHub release (tag deployment-<hash>)
-// on the service's own git repo. Nothing is persisted under packagesDir;
-// the release is the single source of truth (saves local disk space).
-func packageFromGit(packagesDir, serviceID, gitRepoURL, ref string, maxSec int, token string) (PackageResult, error) {
+// packageFromGit clones/fetches ref, runs build.sh, and stores the frozen
+// outputs via the configured ArtifactStorage (local disk or GitHub Releases,
+// etc.). Nothing is persisted under packagesDir unless the storage is local;
+// the storage backend is the single source of truth for the bytes.
+func packageFromGit(serviceID, gitRepoURL, ref string, maxSec int, storage ArtifactStorage) (PackageResult, error) {
 	var out PackageResult
 	gitRepoURL = strings.TrimSpace(gitRepoURL)
 	ref = strings.TrimSpace(ref)
@@ -89,8 +89,8 @@ func packageFromGit(packagesDir, serviceID, gitRepoURL, ref string, maxSec int, 
 	out.Hash = hash
 	out.FullCommit = full
 
-	// Skip build if the release asset already exists (idempotent re-deploys).
-	if exists, err := releaseAssetExists(context.Background(), token, gitRepoURL, tag); err == nil && exists {
+	// Skip build if the artifact already exists in storage (idempotent re-deploys).
+	if exists, err := storage.Exists(context.Background(), serviceID, gitRepoURL, tag); err == nil && exists {
 		out.Skipped = true
 		return out, nil
 	}
@@ -157,8 +157,8 @@ func packageFromGit(packagesDir, serviceID, gitRepoURL, ref string, maxSec int, 
 	if st, err := os.Stat(outputs); err != nil || !st.IsDir() {
 		return out, fmt.Errorf("build.sh did not produce outputs/")
 	}
-	// Stage the package in a temp dir, then upload to the service repo's
-	// GitHub release. Nothing is written under packagesDir.
+	// Stage the package in a temp dir, then hand it to the storage backend.
+	// Nothing is written under packagesDir unless the backend is local.
 	pkgDir, err := os.MkdirTemp("", "release-pkg-*")
 	if err != nil {
 		return out, err
@@ -172,9 +172,9 @@ func packageFromGit(packagesDir, serviceID, gitRepoURL, ref string, maxSec int, 
 	_ = os.WriteFile(filepath.Join(pkgDir, "COMMIT"), []byte(full+"\n"), 0o644)
 	_ = os.WriteFile(filepath.Join(pkgDir, "GIT_REPO_URL"), []byte(gitRepoURL+"\n"), 0o644)
 
-	meta, err := uploadPackageToRelease(context.Background(), token, gitRepoURL, tag, pkgDir)
+	meta, err := storage.Upload(context.Background(), serviceID, gitRepoURL, tag, pkgDir)
 	if err != nil {
-		return out, fmt.Errorf("upload release: %w", err)
+		return out, fmt.Errorf("upload artifact: %w", err)
 	}
 	out.Artifact = meta
 	return out, nil

@@ -12,6 +12,8 @@ ops/*.pid
 *.swp
 bin/deployment-server
 bin/acp-upgrader
+# stray binary produced by `go build` (no -o) inside src/
+/src/src
 outputs/
 .gomodcache/
 .gocache/

@@ -27,21 +27,20 @@ func normalizeDeploymentTag(raw string) (string, error) {
 	return "deployment-" + strings.TrimPrefix(s, "deployment-"), nil
 }
 
-// assertRelease resolves a deployment tag and verifies that a GitHub release
-// with the package.tar.gz asset exists on the service's own repo. With
-// release-based storage the release is the single source of truth (no local
-// package needed).
-func assertRelease(token, gitRepoURL, deployment string) (string, error) {
+// assertRelease resolves a deployment tag and verifies that the artifact for
+// that tag exists in the configured storage (local disk or GitHub Releases,
+// etc.). The storage backend is the single source of truth for the bytes.
+func assertRelease(storage ArtifactStorage, gitRepoURL, deployment string) (string, error) {
 	tag, err := normalizeDeploymentTag(deployment)
 	if err != nil {
 		return "", err
 	}
-	exists, err := releaseAssetExists(context.Background(), token, gitRepoURL, tag)
+	exists, err := storage.Exists(context.Background(), "", gitRepoURL, tag)
 	if err != nil {
-		return "", fmt.Errorf("check release %s: %w", tag, err)
+		return "", fmt.Errorf("check artifact %s: %w", tag, err)
 	}
 	if !exists {
-		return "", fmt.Errorf("release asset not found for tag %s on %s", tag, gitRepoURL)
+		return "", fmt.Errorf("artifact not found for tag %s on %s", tag, gitRepoURL)
 	}
 	return tag, nil
 }
@@ -212,7 +211,7 @@ func clearStaleDeployPauses(store *Store) int {
 	return n
 }
 
-func executeDeploy(store *Store, cfg Config, drain *GracefulDrain, requestID string) {
+func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *GracefulDrain, requestID string) {
 	job, err := store.GetDeploy(requestID)
 	if err != nil || job == nil || job.State != StateRunning {
 		return
@@ -245,23 +244,24 @@ func executeDeploy(store *Store, cfg Config, drain *GracefulDrain, requestID str
 	hash := strings.TrimPrefix(tag, "deployment-")
 	_ = store.AddDeployEvent(job.RequestID, "info",
 		"开始部署：service="+job.ServiceID+" deployment="+tag+" version="+hash)
-	// Download the package from the service repo's GitHub release into a
-	// temp dir; the release is the single source of truth (no local package).
-	// Prefer the access path stored in the local artifacts table (avoids a
-	// release lookup round-trip); fall back to resolving via the GitHub API.
+	// Fetch the package from the configured storage backend into a temp dir;
+	// the storage is the single source of truth for the bytes (local disk or
+	// GitHub Releases, etc.). Prefer the access path stored in the local
+	// artifacts table (avoids a resolution round-trip); fall back to resolving
+	// via the backend.
 	src, err := os.MkdirTemp("", "deploy-pkg-*")
 	if err != nil {
 		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{State: StateFailed, Error: err.Error()})
 		return
 	}
 	defer os.RemoveAll(src)
-	var assetURL string
+	var accessPath string
 	if art, _ := store.GetArtifact(job.ServiceID, tag); art != nil {
-		assetURL = art.AssetURL
+		accessPath = art.AssetURL
 	}
 	dlCtx, dlCancel := context.WithTimeout(context.Background(), time.Duration(cfg.ReleaseMaxSec)*time.Second)
 	defer dlCancel()
-	if err := downloadPackageFromRelease(dlCtx, cfg.GitHubToken, service.GitRepoURL, tag, src, assetURL); err != nil {
+	if err := storage.Download(dlCtx, job.ServiceID, service.GitRepoURL, tag, src, accessPath); err != nil {
 		_ = store.AddDeployEvent(job.RequestID, "error", "下载制品失败："+err.Error())
 		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 			State: StateFailed,
@@ -269,7 +269,7 @@ func executeDeploy(store *Store, cfg Config, drain *GracefulDrain, requestID str
 		})
 		return
 	}
-	_ = store.AddDeployEvent(job.RequestID, "ok", "制品已从 release 下载到临时目录："+src)
+	_ = store.AddDeployEvent(job.RequestID, "ok", "制品已下载到临时目录："+src)
 
 	self := isSelfDeploy(*service, cfg)
 	if self {
@@ -489,20 +489,22 @@ func reconcileOrphanDeploys(store *Store) int {
 }
 
 type DeployWorker struct {
-	store  *Store
-	cfg    Config
-	drain  *GracefulDrain
-	mu     sync.Mutex
-	busy   bool
-	stopCh chan struct{}
-	wg     sync.WaitGroup
+	store   *Store
+	cfg     Config
+	storage ArtifactStorage
+	drain   *GracefulDrain
+	mu      sync.Mutex
+	busy    bool
+	stopCh  chan struct{}
+	wg      sync.WaitGroup
 }
 
-func NewDeployWorker(store *Store, cfg Config, drain *GracefulDrain) *DeployWorker {
+func NewDeployWorker(store *Store, cfg Config, storage ArtifactStorage, drain *GracefulDrain) *DeployWorker {
 	return &DeployWorker{
-		store:  store,
-		cfg:    cfg,
-		drain:  drain,
+		store:   store,
+		cfg:     cfg,
+		storage: storage,
+		drain:   drain,
 		stopCh: make(chan struct{}),
 	}
 }
@@ -566,5 +568,5 @@ func (w *DeployWorker) tick() {
 	if job == nil {
 		return
 	}
-	executeDeploy(w.store, w.cfg, w.drain, job.RequestID)
+	executeDeploy(w.store, w.cfg, w.storage, w.drain, job.RequestID)
 }
