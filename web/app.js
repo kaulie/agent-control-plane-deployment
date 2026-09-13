@@ -223,7 +223,7 @@ async function refreshPipelines() {
       tbody.innerHTML = `<tr><td colspan="9" class="muted">暂无流水线记录</td></tr>`;
       return;
     }
-    tbody.innerHTML = jobs.map((j) => `<tr>
+    tbody.innerHTML = jobs.map((j) => `<tr class="rowlink" data-pipe-open="${esc(j.requestId)}">
       <td class="mono">${esc(j.requestId)}</td>
       <td class="mono">${esc(j.serviceId)}</td>
       <td class="mono">${esc(j.ref)}</td>
@@ -252,6 +252,119 @@ $('#pipe-trigger').addEventListener('click', async () => {
     refresh();
   } catch (e) { toast('触发失败：' + e.message, 'err'); }
 });
+
+// ---- pipeline detail -------------------------------------------------------
+let pipeDetailID = null;
+
+$('#pipe-table tbody').addEventListener('click', (e) => {
+  const tr = e.target.closest('[data-pipe-open]');
+  if (!tr) return;
+  openPipelineDetail(tr.dataset.pipeOpen);
+});
+
+$('#pipe-detail-back').addEventListener('click', closePipelineDetail);
+
+function fieldRow(label, value, cls = '') {
+  return `<div class="detail-field"><span class="detail-label">${esc(label)}</span>` +
+    `<span class="detail-value mono ${cls}">${esc(value)}</span></div>`;
+}
+
+async function openPipelineDetail(requestId) {
+  pipeDetailID = requestId;
+  $('#pipe-list-view').hidden = true;
+  $('#pipe-detail').hidden = false;
+  $('#pipe-detail-title').textContent = '流水线 ' + requestId;
+  await refreshPipelineDetail();
+  $('#pipe-detail').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function closePipelineDetail() {
+  pipeDetailID = null;
+  $('#pipe-detail').hidden = true;
+  $('#pipe-list-view').hidden = false;
+}
+
+async function refreshPipelineDetail() {
+  if (!pipeDetailID) return;
+  const id = pipeDetailID;
+  let job = null, events = [], deploy = null;
+  try {
+    job = await apiGet('/api/pipelines/' + encodeURIComponent(id));
+  } catch (e) {
+    $('#pipe-detail-fields').innerHTML =
+      `<div class="muted">加载失败：${esc(e.message)}</div>`;
+    $('#pipe-detail-events').innerHTML = '';
+    $('#pipe-detail-deploy-wrap').hidden = true;
+    return;
+  }
+  try {
+    const ed = await apiGet('/api/pipelines/' + encodeURIComponent(id) + '/events');
+    events = ed.events || [];
+  } catch { events = []; }
+
+  const fields = $('#pipe-detail-fields');
+  fields.innerHTML = [
+    fieldRow('requestId', job.requestId),
+    fieldRow('serviceId', job.serviceId),
+    fieldRow('ref', job.ref),
+    `<div class="detail-field"><span class="detail-label">状态</span>` +
+      `<span class="detail-value">${stateBadge(job.state)}</span></div>`,
+    fieldRow('deployment', job.deployment || '—'),
+    fieldRow('version', job.version || '—'),
+    fieldRow('deployRequestId', job.deployRequestId || '—'),
+    fieldRow('请求时间', fmtTime(job.requestedAt)),
+    fieldRow('开始时间', fmtTime(job.startedAt)),
+    fieldRow('结束时间', fmtTime(job.finishedAt)),
+    `<div class="detail-field detail-field--full"><span class="detail-label">消息</span>` +
+      `<span class="detail-value">${esc(job.message || '—')}</span></div>`,
+    job.error
+      ? `<div class="detail-field detail-field--full"><span class="detail-label">错误</span>` +
+        `<span class="detail-value detail-value--err">${esc(job.error)}</span></div>`
+      : '',
+  ].join('');
+
+  const evList = $('#pipe-detail-events');
+  if (!events.length) {
+    evList.innerHTML = `<li class="muted">暂无事件</li>`;
+  } else {
+    evList.innerHTML = events.map((ev) => {
+      const cls = 'evlog--' + (ev.level || 'info');
+      return `<li class="evlog ${cls}">` +
+        `<span class="evlog__ts mono">${fmtTime(ev.ts)}</span>` +
+        `<span class="evlog__lvl">${esc(ev.level || 'info')}</span>` +
+        `<span class="evlog__msg">${esc(ev.message)}</span>` +
+        `</li>`;
+    }).join('');
+  }
+
+  const depWrap = $('#pipe-detail-deploy-wrap');
+  if (job.deployRequestId) {
+    try {
+      deploy = await apiGet('/api/deploys/' + encodeURIComponent(job.deployRequestId));
+    } catch { deploy = null; }
+  }
+  if (deploy) {
+    depWrap.hidden = false;
+    $('#pipe-detail-deploy').innerHTML = [
+      fieldRow('requestId', deploy.requestId),
+      `<div class="detail-field"><span class="detail-label">状态</span>` +
+        `<span class="detail-value">${stateBadge(deploy.state)}</span></div>`,
+      fieldRow('deployment', deploy.deployment || '—'),
+      fieldRow('version', deploy.version || '—'),
+      fieldRow('请求时间', fmtTime(deploy.requestedAt)),
+      fieldRow('开始时间', fmtTime(deploy.startedAt)),
+      fieldRow('结束时间', fmtTime(deploy.finishedAt)),
+      `<div class="detail-field detail-field--full"><span class="detail-label">消息</span>` +
+        `<span class="detail-value">${esc(deploy.message || '—')}</span></div>`,
+      deploy.error
+        ? `<div class="detail-field detail-field--full"><span class="detail-label">错误</span>` +
+          `<span class="detail-value detail-value--err">${esc(deploy.error)}</span></div>`
+        : '',
+    ].join('');
+  } else {
+    depWrap.hidden = true;
+  }
+}
 
 // ---- deploys --------------------------------------------------------------
 async function refreshDeploys() {
@@ -296,7 +409,10 @@ $('#dep-trigger').addEventListener('click', async () => {
 function refreshActiveTab() {
   const active = $('#tabs .tab--active').dataset.tab;
   if (active === 'services') refreshServices();
-  else if (active === 'pipelines') refreshPipelines();
+  else if (active === 'pipelines') {
+    if (pipeDetailID) refreshPipelineDetail();
+    else refreshPipelines();
+  }
   else if (active === 'deploys') refreshDeploys();
   else if (active === 'meta') refreshMeta();
 }

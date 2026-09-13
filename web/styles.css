@@ -176,3 +176,76 @@ a { color: var(--accent-2); }
 }
 .toast--ok { border-color: var(--green); }
 .toast--err { border-color: var(--red); }
+
+/* Pipeline detail */
+.rowlink { cursor: pointer; }
+.rowlink:hover { background: rgba(79,156,255,.08); }
+
+.detail-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.detail-head h2 { margin: 0; font-size: 15px; }
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+.detail-field {
+  background: var(--panel);
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.detail-field--full { grid-column: 1 / -1; }
+.detail-label { font-size: 11px; color: var(--muted); }
+.detail-value { font-size: 13px; word-break: break-all; }
+.detail-value--err { color: var(--red); }
+
+.detail-section {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  padding: 12px 14px;
+  margin-bottom: 16px;
+}
+.detail-section h3 { margin: 0 0 10px; font-size: 13px; color: var(--muted); font-weight: 600; }
+
+.eventlog { list-style: none; margin: 0; padding: 0; }
+.evlog {
+  display: grid;
+  grid-template-columns: 150px 60px 1fr;
+  gap: 10px;
+  align-items: start;
+  padding: 7px 8px;
+  border-left: 3px solid var(--border);
+  border-radius: 4px;
+  margin-bottom: 6px;
+  background: var(--panel-2);
+  font-size: 13px;
+}
+.evlog__ts { color: var(--muted); font-size: 12px; }
+.evlog__lvl {
+  font-size: 11px; font-weight: 600; text-transform: uppercase;
+  text-align: center; padding: 1px 4px; border-radius: 999px;
+  background: #2a2f3a; color: var(--muted);
+}
+.evlog__msg { word-break: break-word; white-space: normal; }
+.evlog--ok { border-left-color: var(--green); }
+.evlog--ok .evlog__lvl { background: rgba(63,185,80,.15); color: var(--green); }
+.evlog--error { border-left-color: var(--red); }
+.evlog--error .evlog__lvl { background: rgba(248,81,73,.15); color: var(--red); }
+.evlog--warn { border-left-color: var(--amber); }
+.evlog--warn .evlog__lvl { background: rgba(210,153,34,.15); color: var(--amber); }
+.evlog--info { border-left-color: var(--accent); }
+.evlog--info .evlog__lvl { background: rgba(79,156,255,.15); color: var(--accent-2); }

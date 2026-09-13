@@ -99,6 +99,7 @@
 
     <!-- Pipelines -->
     <section id="tab-pipelines" class="tabpanel">
+      <div id="pipe-list-view">
       <div class="actions">
         <div class="form-inline">
           <label>服务
@@ -120,6 +121,22 @@
           </thead>
           <tbody></tbody>
         </table>
+      </div>
+      </div>
+      <div id="pipe-detail" hidden>
+        <div class="detail-head">
+          <button class="btn btn--ghost" id="pipe-detail-back" type="button">← 返回列表</button>
+          <h2 id="pipe-detail-title">流水线详情</h2>
+        </div>
+        <div class="detail-grid" id="pipe-detail-fields"></div>
+        <div class="detail-section">
+          <h3>事件日志</h3>
+          <ul class="eventlog" id="pipe-detail-events"></ul>
+        </div>
+        <div class="detail-section" id="pipe-detail-deploy-wrap" hidden>
+          <h3>关联部署任务</h3>
+          <div class="detail-grid" id="pipe-detail-deploy"></div>
+        </div>
       </div>
     </section>
 
