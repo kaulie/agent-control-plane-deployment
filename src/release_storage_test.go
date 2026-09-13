@@ -173,6 +173,10 @@ func makePkgDir(t *testing.T) string {
 	_ = os.WriteFile(filepath.Join(dir, "bin", "app"), []byte("#!/bin/sh\n"), 0o755)
 	_ = os.WriteFile(filepath.Join(dir, "VERSION"), []byte("hash12345\n"), 0o644)
 	_ = os.WriteFile(filepath.Join(dir, "COMMIT"), []byte("fullcommit\n"), 0o644)
+	// A symlink inside the package (e.g. node_modules/.bin/cli). Without
+	// symlink-aware tarDir this trips "archive/tar: write too long".
+	_ = os.MkdirAll(filepath.Join(dir, "node_modules", ".bin"), 0o755)
+	_ = os.Symlink("../app/entry.js", filepath.Join(dir, "node_modules", ".bin", "cli"))
 	return dir
 }
 
@@ -218,6 +222,14 @@ func TestTarUntarRoundTrip(t *testing.T) {
 	}
 	if !strings.HasPrefix(string(b), "#!/bin/sh") {
 		t.Fatalf("restored app content wrong: %q", b)
+	}
+	// Symlink must be restored as a symlink (not the target's bytes).
+	link, err := os.Readlink(filepath.Join(dest, "node_modules", ".bin", "cli"))
+	if err != nil {
+		t.Fatalf("read restored symlink: %v", err)
+	}
+	if link != "../app/entry.js" {
+		t.Fatalf("restored symlink target wrong: %q", link)
 	}
 }
 

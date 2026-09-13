@@ -283,6 +283,24 @@ func tarDir(dir string, w io.Writer) error {
 		if rel == "." {
 			return nil
 		}
+		// Symlinks: tar.FileInfoHeader sets TypeSymlink with Size=0 but an empty
+		// Linkname. If we then os.Open (which follows the link) and copy the
+		// target's bytes, the writer overflows the 0-size header with
+		// "archive/tar: write too long". Fill Linkname from os.Readlink and write
+		// no content, mirroring how `tar`/`untarGz` handle symlinks.
+		if info.Mode()&os.ModeSymlink != 0 {
+			link, lerr := os.Readlink(path)
+			if lerr != nil {
+				return lerr
+			}
+			hdr, herr := tar.FileInfoHeader(info, link)
+			if herr != nil {
+				return herr
+			}
+			hdr.Name = rel
+			hdr.Linkname = link
+			return tw.WriteHeader(hdr)
+		}
 		hdr, err := tar.FileInfoHeader(info, "")
 		if err != nil {
 			return err
@@ -298,9 +316,11 @@ func tarDir(dir string, w io.Writer) error {
 		if err != nil {
 			return err
 		}
-		defer f.Close()
-		_, err = io.Copy(tw, f)
-		return err
+		// Close immediately rather than deferring: Walk visits many files and
+		// deferred closes would accumulate until tarDir returns, leaking FDs.
+		_, copyErr := io.Copy(tw, f)
+		_ = f.Close()
+		return copyErr
 	})
 }
 
