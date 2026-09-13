@@ -1,27 +1,28 @@
 #!/usr/bin/env bash
 #
-# 发版：从 app 仓库（repo.url）拉取 ref，执行 build.sh，冻结到
-#   $DEPLOYMENT_HOME/packages/<DEPLOY_SERVICE_ID>/deployment-<hash>/
+# 发版：从 app 仓库（repo.url）拉取 ref，执行 build.sh，把 outputs 打成
+# package.tar.gz 上传到该服务仓库的 GitHub Release（tag=deployment-<hash>），
+# 然后删除本地构建产物（release 作为唯一来源，节省本地存储）。
 #
 # 用法：DEPLOY_SERVICE_ID=<serviceId> ./bin/release.sh [ref]
+#
+# 需要环境变量 GITHUB_TOKEN（或已 gh auth login），且对目标仓库有 contents:write。
 #
 set -euo pipefail
 
 BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${BIN_DIR}/.." && pwd)"
 DEPLOYMENT_HOME="${DEPLOYMENT_HOME:-${HOME}/runtime/agent-control-plane-deployment}"
-PACKAGES_DIR="${DEPLOYMENT_HOME}/packages"
 
 log() { echo "[release] $*"; }
 die() { echo "[release][错误] $*" >&2; exit 1; }
 
 SERVICE_ID="${DEPLOY_SERVICE_ID:-}"
 if [ -z "${SERVICE_ID}" ]; then
-  die "未设置 DEPLOY_SERVICE_ID（serviceId，用于 packages 目录隔离）。例如: DEPLOY_SERVICE_ID=web-cursor ./bin/release.sh main"
+  die "未设置 DEPLOY_SERVICE_ID（serviceId）。例如: DEPLOY_SERVICE_ID=web-cursor ./bin/release.sh main"
 fi
 
 REF_INPUT="${1:-main}"
-mkdir -p "${PACKAGES_DIR}/${SERVICE_ID}"
 
 if [ -n "${GIT_REPO_URL:-}" ]; then
   :
@@ -34,7 +35,8 @@ else
 fi
 
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/release-acp.XXXXXX")"
-cleanup() { rm -rf "${WORKDIR}"; }
+PKGDIR="$(mktemp -d "${TMPDIR:-/tmp}/release-pkg.XXXXXX")"
+cleanup() { rm -rf "${WORKDIR}" "${PKGDIR}"; }
 trap cleanup EXIT
 
 log "deploymentHome=${DEPLOYMENT_HOME}"
@@ -52,40 +54,53 @@ fi
 FULL="$(git -C "${WORKDIR}" rev-parse FETCH_HEAD)"
 HASH="$(git -C "${WORKDIR}" rev-parse --short=8 "${FULL}")"
 TAG="deployment-${HASH}"
-DEST="${PACKAGES_DIR}/${SERVICE_ID}/${TAG}"
 
-log "commit=${FULL} hash=${HASH} dest=${DEST}"
+log "commit=${FULL} hash=${HASH} tag=${TAG}"
 
-NEED_BUILD=1
-if [ -f "${DEST}/VERSION" ]; then
-  OLD="$(tr -d '[:space:]' < "${DEST}/VERSION" || true)"
-  if [ "${OLD}" = "${HASH}" ]; then
-    log "发版包已存在，跳过重建"
-    NEED_BUILD=0
+# 跳过判断：release asset 已存在则不再构建。
+if gh release view "${TAG}" --repo "${GIT_REPO_URL%*.git}" >/dev/null 2>&1; then
+  if gh release download "${TAG}" --repo "${GIT_REPO_URL%*.git}" --pattern package.tar.gz --dir "${WORKDIR}" --clobber >/dev/null 2>&1; then
+    log "release asset 已存在，跳过构建 ✓"
+    log "下一步: curl -sS -X POST http://127.0.0.1:4220/api/deploys \\"
+    log "  -H 'content-type: application/json' \\"
+    log "  -d '{\"serviceId\":\"${SERVICE_ID}\",\"deployment\":\"${TAG}\"}'"
+    exit 0
   fi
 fi
 
-if [ "${NEED_BUILD}" -eq 1 ]; then
-  SRC_TREE="${WORKDIR}/src"
-  mkdir -p "${SRC_TREE}"
-  git -C "${WORKDIR}" archive "${FULL}" | tar -x -C "${SRC_TREE}"
-  [ -f "${SRC_TREE}/build.sh" ] || die "缺少 build.sh"
-  (
-    cd "${SRC_TREE}"
-    export APP_VERSION="${HASH}"
-    chmod +x ./build.sh
-    ./build.sh
-  ) || die "build.sh 失败"
-  [ -d "${SRC_TREE}/outputs" ] || die "未生成 outputs/"
-  rm -rf "${DEST}"
-  mkdir -p "${DEST}"
-  rsync -a "${SRC_TREE}/outputs/" "${DEST}/"
-  printf '%s\n' "${HASH}" > "${DEST}/VERSION"
-  printf '%s\n' "${FULL}" > "${DEST}/COMMIT"
-  printf '%s\n' "${GIT_REPO_URL}" > "${DEST}/GIT_REPO_URL"
-fi
+SRC_TREE="${WORKDIR}/src"
+mkdir -p "${SRC_TREE}"
+git -C "${WORKDIR}" archive "${FULL}" | tar -x -C "${SRC_TREE}"
+[ -f "${SRC_TREE}/build.sh" ] || die "缺少 build.sh"
+(
+  cd "${SRC_TREE}"
+  export APP_VERSION="${HASH}"
+  chmod +x ./build.sh
+  ./build.sh
+) || die "build.sh 失败"
+[ -d "${SRC_TREE}/outputs" ] || die "未生成 outputs/"
 
-log "发版包就绪 ✓ ${DEST}"
+# 冻结到临时 PKGDIR 并打 tar.gz
+rsync -a "${SRC_TREE}/outputs/" "${PKGDIR}/"
+printf '%s\n' "${HASH}" > "${PKGDIR}/VERSION"
+printf '%s\n' "${FULL}" > "${PKGDIR}/COMMIT"
+printf '%s\n' "${GIT_REPO_URL}" > "${PKGDIR}/GIT_REPO_URL"
+tar -czf "${WORKDIR}/package.tar.gz" -C "${PKGDIR}" .
+
+REPO_SLUG="${GIT_REPO_URL#https://github.com/}"
+REPO_SLUG="${REPO_SLUG#git@github.com:}"
+REPO_SLUG="${REPO_SLUG%.git}"
+REPO_SLUG="${REPO_SLUG%/}"
+
+# 创建 release（若不存在）并上传 asset（--clobber 覆盖同名）
+if ! gh release view "${TAG}" --repo "${REPO_SLUG}" >/dev/null 2>&1; then
+  gh release create "${TAG}" --repo "${REPO_SLUG}" --title "${TAG}" --notes "deployment package ${HASH}" --target "${FULL}"
+fi
+gh release upload "${TAG}" --repo "${REPO_SLUG}" "${WORKDIR}/package.tar.gz#package.tar.gz" --clobber
+
+log "已上传 release ✓ ${REPO_SLUG}@${TAG} (asset package.tar.gz)"
+log "本地构建产物已清理（release 为唯一来源）"
 log "下一步: curl -sS -X POST http://127.0.0.1:4220/api/deploys \\"
 log "  -H 'content-type: application/json' \\"
-log "  -d '{\"serviceId\":\"web-cursor\",\"deployment\":\"${TAG}\"}'"
+log "  -d '{\"serviceId\":\"${SERVICE_ID}\",\"deployment\":\"${TAG}\"}'"
+

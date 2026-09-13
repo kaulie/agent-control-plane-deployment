@@ -27,16 +27,21 @@ func normalizeDeploymentTag(raw string) (string, error) {
 	return "deployment-" + strings.TrimPrefix(s, "deployment-"), nil
 }
 
-// assertPackage resolves a deployment tag and verifies its package exists under
-// packagesDir/serviceID/tag (per-service isolation keyed by serviceId).
-func assertPackage(packagesDir, serviceID, deployment string) (string, error) {
+// assertRelease resolves a deployment tag and verifies that a GitHub release
+// with the package.tar.gz asset exists on the service's own repo. With
+// release-based storage the release is the single source of truth (no local
+// package needed).
+func assertRelease(token, gitRepoURL, deployment string) (string, error) {
 	tag, err := normalizeDeploymentTag(deployment)
 	if err != nil {
 		return "", err
 	}
-	snap := filepath.Join(packagesDir, serviceID, tag)
-	if _, err := os.Stat(filepath.Join(snap, "VERSION")); err != nil {
-		return "", fmt.Errorf("deployment package not found: %s", snap)
+	exists, err := releaseAssetExists(context.Background(), token, gitRepoURL, tag)
+	if err != nil {
+		return "", fmt.Errorf("check release %s: %w", tag, err)
+	}
+	if !exists {
+		return "", fmt.Errorf("release asset not found for tag %s on %s", tag, gitRepoURL)
 	}
 	return tag, nil
 }
@@ -222,15 +227,25 @@ func executeDeploy(store *Store, cfg Config, drain *GracefulDrain, requestID str
 	hash := strings.TrimPrefix(tag, "deployment-")
 	_ = store.AddDeployEvent(job.RequestID, "info",
 		"开始部署：service="+job.ServiceID+" deployment="+tag+" version="+hash)
-	src := filepath.Join(cfg.PackagesDir, job.ServiceID, tag)
-	if _, err := os.Stat(filepath.Join(src, "VERSION")); err != nil {
-		_ = store.AddDeployEvent(job.RequestID, "error", "找不到部署包："+src)
+	// Download the package from the service repo's GitHub release into a
+	// temp dir; the release is the single source of truth (no local package).
+	src, err := os.MkdirTemp("", "deploy-pkg-*")
+	if err != nil {
+		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{State: StateFailed, Error: err.Error()})
+		return
+	}
+	defer os.RemoveAll(src)
+	dlCtx, dlCancel := context.WithTimeout(context.Background(), time.Duration(cfg.ReleaseMaxSec)*time.Second)
+	defer dlCancel()
+	if err := downloadPackageFromRelease(dlCtx, cfg.GitHubToken, service.GitRepoURL, tag, src); err != nil {
+		_ = store.AddDeployEvent(job.RequestID, "error", "下载制品失败："+err.Error())
 		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 			State: StateFailed,
-			Error: fmt.Sprintf("package not found: %s", src),
+			Error: fmt.Sprintf("download package: %v", err),
 		})
 		return
 	}
+	_ = store.AddDeployEvent(job.RequestID, "ok", "制品已从 release 下载到临时目录："+src)
 
 	self := isSelfDeploy(*service, cfg)
 	if self {

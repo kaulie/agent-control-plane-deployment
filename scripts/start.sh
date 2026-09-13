@@ -21,6 +21,13 @@ export DEPLOYMENT_HOME="${HOME_DIR}"
 export PORT="${DEPLOYMENT_PORT:-4220}"
 export HOST="${DEPLOYMENT_HOST:-127.0.0.1}"
 
+# Load GitHub token from data/github-token (survives self-deploy rsync because
+# data/ is preserved). Used by release-based package upload/download. Falls
+# back to any inherited GITHUB_TOKEN if the file is absent.
+if [ -z "${GITHUB_TOKEN:-}" ] && [ -f "${HOME_DIR}/data/github-token" ]; then
+  export GITHUB_TOKEN="$(tr -d '[:space:]' < "${HOME_DIR}/data/github-token")"
+fi
+
 if [ ! -x "${BIN}" ]; then
   echo "[start][错误] missing ${BIN}; run ./install.sh / go build -o bin/deployment-server ./src first" >&2
   exit 1

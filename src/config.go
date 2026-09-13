@@ -20,6 +20,9 @@ type Config struct {
 	ReleaseMaxSec int
 	// Default max wait for project graceful restart (notify + poll).
 	GracefulMaxWait time.Duration
+	// GitHub token (GITHUB_TOKEN / GH_TOKEN) used to upload/download release
+	// assets on each service's own repo. Empty disables release-based storage.
+	GitHubToken string
 }
 
 func expandHome(p string) string {
@@ -84,6 +87,11 @@ func loadConfig() Config {
 		}
 	}
 
+	githubToken := os.Getenv("GITHUB_TOKEN")
+	if githubToken == "" {
+		githubToken = os.Getenv("GH_TOKEN")
+	}
+
 	return Config{
 		Host:            host,
 		Port:            port,
@@ -95,5 +103,6 @@ func loadConfig() Config {
 		DeployMaxSec:    deployMax,
 		ReleaseMaxSec:   releaseMax,
 		GracefulMaxWait: gracefulMaxWait,
+		GitHubToken:     githubToken,
 	}
 }
