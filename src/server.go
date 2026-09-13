@@ -50,6 +50,7 @@ func (s *apiServer) routes() http.Handler {
 	mux.HandleFunc("POST /api/deploys", s.handleCreateDeploy)
 	mux.HandleFunc("GET /api/deploys", s.handleListDeploys)
 	mux.HandleFunc("GET /api/deploys/{requestId}", s.handleGetDeploy)
+	mux.HandleFunc("GET /api/deploys/{requestId}/events", s.handleListDeployEvents)
 	mux.HandleFunc("POST /api/deploy-notify", s.handleDeployNotify)
 	mux.HandleFunc("GET /api/pipelines", s.handleListPipelines)
 	mux.HandleFunc("GET /api/pipelines/{requestId}", s.handleGetPipeline)
@@ -335,6 +336,25 @@ func (s *apiServer) handleGetDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, job)
+}
+
+func (s *apiServer) handleListDeployEvents(w http.ResponseWriter, r *http.Request) {
+	requestID := r.PathValue("requestId")
+	job, err := s.store.GetDeploy(requestID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if job == nil {
+		writeError(w, http.StatusNotFound, "deploy not found")
+		return
+	}
+	events, err := s.store.ListDeployEvents(requestID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": events})
 }
 
 type deployNotifyBody struct {

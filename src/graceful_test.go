@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -89,7 +91,7 @@ func TestWaitForGracefulRestartReady(t *testing.T) {
 
 	// Monkey: waitForGracefulRestart uses 15s sleep — too slow for unit test.
 	// Test notify + poll helpers directly, then a fast local wait loop mirroring production.
-	if err := postRestartNotify(svc.RestartNotifyURL, restartNotifyBody{
+	if _, _, err := postRestartNotify(svc.RestartNotifyURL, restartNotifyBody{
 		ServiceID:  "svc",
 		RequestID:  "req-1",
 		Deployment: "deployment-abc",
@@ -100,14 +102,14 @@ func TestWaitForGracefulRestartReady(t *testing.T) {
 	if !notified.Load() {
 		t.Fatal("notify not called")
 	}
-	st1, err := getRestartPollStatus(svc.RestartPollURL)
+	st1, _, _, err := getRestartPollStatus(svc.RestartPollURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if pollAllowsDeploy(st1) {
 		t.Fatal("first poll should not be ready")
 	}
-	st2, err := getRestartPollStatus(svc.RestartPollURL)
+	st2, _, _, err := getRestartPollStatus(svc.RestartPollURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,11 +142,89 @@ func TestWaitForGracefulRestartForceTimeout(t *testing.T) {
 	cfg := Config{GracefulMaxWait: 50 * time.Millisecond}
 	job := DeployJob{RequestID: "req-force", Deployment: "deployment-x", ServiceID: "svc"}
 	start := time.Now()
-	forced := waitForGracefulRestart(svc, cfg, job, "x")
+	forced := waitForGracefulRestart(nil, svc, cfg, job, "x")
 	if !forced {
 		t.Fatal("expected force after timeout")
 	}
 	if time.Since(start) > 3*time.Second {
 		t.Fatalf("force wait took too long: %s", time.Since(start))
+	}
+}
+
+// TestGracefulEventsRecordRequestResponse verifies that graceful deploy events
+// capture both the request body and the response status/body for notify + poll.
+func TestGracefulEventsRecordRequestResponse(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /notify", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"accepted":true}`))
+	})
+	mux.HandleFunc("GET /poll", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"canRestart":true,"canDeploy":false,"ready":true}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "test.sqlite"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	svc := ServiceContract{
+		ServiceID:         "svc",
+		RestartNotifyURL:  srv.URL + "/notify",
+		RestartPollURL:    srv.URL + "/poll",
+		GracefulMaxWaitMs: 5000,
+	}
+	cfg := Config{GracefulMaxWait: 5 * time.Second}
+	job := DeployJob{RequestID: "req-evt", Deployment: "deployment-abc12345", ServiceID: "svc"}
+
+	forced := waitForGracefulRestart(store, svc, cfg, job, "v1")
+	if forced {
+		t.Fatal("expected ready (not forced)")
+	}
+
+	events, err := store.ListDeployEvents(job.RequestID)
+	if err != nil {
+		t.Fatalf("ListDeployEvents: %v", err)
+	}
+
+	var notifyEv, pollEv string
+	for _, e := range events {
+		if strings.Contains(e.Message, "graceful 通知：POST") {
+			notifyEv = e.Message
+		}
+		if strings.Contains(e.Message, "graceful 轮询 #1：GET") {
+			pollEv = e.Message
+		}
+	}
+	if notifyEv == "" {
+		t.Fatalf("missing notify event; events=%v", events)
+	}
+	if pollEv == "" {
+		t.Fatalf("missing poll event; events=%v", events)
+	}
+
+	// notify event must include request body + response status + response body
+	if !strings.Contains(notifyEv, "请求体:") || !strings.Contains(notifyEv, `"serviceId":"svc"`) {
+		t.Fatalf("notify event missing request body: %q", notifyEv)
+	}
+	if !strings.Contains(notifyEv, "响应: HTTP 202") || !strings.Contains(notifyEv, `{"accepted":true}`) {
+		t.Fatalf("notify event missing response: %q", notifyEv)
+	}
+
+	// poll event must include the GET url + response status + response body
+	if !strings.Contains(pollEv, "GET ") || !strings.Contains(pollEv, "/poll") {
+		t.Fatalf("poll event missing request url: %q", pollEv)
+	}
+	if !strings.Contains(pollEv, "响应: HTTP 200") || !strings.Contains(pollEv, `"canRestart":true`) {
+		t.Fatalf("poll event missing response body: %q", pollEv)
+	}
+	if !strings.Contains(pollEv, "就绪") {
+		t.Fatalf("poll event missing ready outcome: %q", pollEv)
 	}
 }

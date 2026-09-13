@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 // UpgradeRequest is dropped by deployment-server after artifacts are staged.
@@ -38,6 +41,13 @@ func main() {
 
 	logf("acp-upgrader watching %s (home=%s)", reqDir, home)
 
+	dbPath := filepath.Join(home, "data", "deploy.sqlite")
+	db, err := openEventsDB(dbPath)
+	if err != nil {
+		logf("event db open failed (events will be skipped): %v", err)
+	}
+	defer db.Close()
+
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
@@ -50,14 +60,14 @@ func main() {
 			logf("shutting down")
 			return
 		case <-ticker.C:
-			if err := processOnce(home, reqDir); err != nil {
+			if err := processOnce(home, reqDir, db); err != nil {
 				logf("process error: %v", err)
 			}
 		}
 	}
 }
 
-func processOnce(home, reqDir string) error {
+func processOnce(home, reqDir string, db *sql.DB) error {
 	entries, err := os.ReadDir(reqDir)
 	if err != nil {
 		return err
@@ -71,7 +81,7 @@ func processOnce(home, reqDir string) error {
 			continue
 		}
 		path := filepath.Join(reqDir, name)
-		if err := handleRequest(home, path); err != nil {
+		if err := handleRequest(home, path, db); err != nil {
 			logf("request %s failed: %v", name, err)
 			_ = os.WriteFile(path+".failed", []byte(err.Error()+"\n"), 0o644)
 			_ = os.Rename(path, path+".bad")
@@ -81,7 +91,7 @@ func processOnce(home, reqDir string) error {
 	return nil
 }
 
-func handleRequest(home, path string) error {
+func handleRequest(home, path string, db *sql.DB) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -110,18 +120,26 @@ func handleRequest(home, path string) error {
 
 	stopSh := filepath.Join(home, "scripts", "stop.sh")
 	startSh := filepath.Join(home, "scripts", "start.sh")
+	addEvent(db, req.RequestID, "info", "upgrader：停止旧服务（stop.sh）")
 	if err := runBash(stopSh, home); err != nil {
 		logf("stop: %v (continuing)", err)
+		addEvent(db, req.RequestID, "warn", "stop.sh 返回错误（继续）："+err.Error())
+	} else {
+		addEvent(db, req.RequestID, "ok", "旧服务已停止")
 	}
 	time.Sleep(500 * time.Millisecond)
+	addEvent(db, req.RequestID, "info", "upgrader：启动新服务（start.sh）")
 	if err := runBash(startSh, home); err != nil {
+		addEvent(db, req.RequestID, "error", "start.sh 失败："+err.Error())
 		return fmt.Errorf("start: %w", err)
 	}
+	addEvent(db, req.RequestID, "ok", "新服务已启动")
 
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if healthOK(healthURL) {
 			logf("ok requestId=%s health=%s", req.RequestID, healthURL)
+			addEvent(db, req.RequestID, "ok", "健康检查通过："+healthURL)
 			done := path + ".done"
 			_ = os.WriteFile(done, []byte(fmt.Sprintf("ok %s\n", time.Now().UTC().Format(time.RFC3339))), 0o644)
 			_ = os.Remove(path)
@@ -129,7 +147,41 @@ func handleRequest(home, path string) error {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
+	addEvent(db, req.RequestID, "error", "启动后健康检查超时失败："+healthURL)
 	return fmt.Errorf("health check failed after start: %s", healthURL)
+}
+
+// openEventsDB opens the shared SQLite db (WAL) so the upgrader can append
+// deploy events alongside the server. Returns a usable *sql.DB; callers must
+// tolerate a nil db (events skipped) if open failed.
+func openEventsDB(dbPath string) (*sql.DB, error) {
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	return db, nil
+}
+
+// addEvent appends a deploy_events row. Failures are logged but never fatal.
+func addEvent(db *sql.DB, requestID, level, message string) {
+	if db == nil || requestID == "" {
+		return
+	}
+	if level == "" {
+		level = "info"
+	}
+	ts := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+	_, err := db.Exec(
+		`INSERT INTO deploy_events (request_id, ts, level, message) VALUES (?, ?, ?, ?)`,
+		requestID, ts, level, message,
+	)
+	if err != nil {
+		logf("event insert failed: %v", err)
+	}
 }
 
 func runBash(script, home string) error {

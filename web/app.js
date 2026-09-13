@@ -301,6 +301,18 @@ async function refreshPipelineDetail() {
     const ed = await apiGet('/api/pipelines/' + encodeURIComponent(id) + '/events');
     events = ed.events || [];
   } catch { events = []; }
+  // merge deploy execution events (rsync / restart / stop / start / health)
+  // into the same timeline, keyed by the linked deployRequestId.
+  let deployEvents = [];
+  if (job.deployRequestId) {
+    try {
+      const dd = await apiGet('/api/deploys/' + encodeURIComponent(job.deployRequestId) + '/events');
+      deployEvents = (dd.events || []).map((e) => ({ ...e, source: 'deploy' }));
+    } catch { deployEvents = []; }
+  }
+  const merged = events.map((e) => ({ ...e, source: 'pipeline' }))
+    .concat(deployEvents)
+    .sort((a, b) => (a.ts || '').localeCompare(b.ts || '') || (a.id - b.id));
 
   const fields = $('#pipe-detail-fields');
   fields.innerHTML = [
@@ -324,14 +336,16 @@ async function refreshPipelineDetail() {
   ].join('');
 
   const evList = $('#pipe-detail-events');
-  if (!events.length) {
+  if (!merged.length) {
     evList.innerHTML = `<li class="muted">暂无事件</li>`;
   } else {
-    evList.innerHTML = events.map((ev) => {
+    evList.innerHTML = merged.map((ev) => {
       const cls = 'evlog--' + (ev.level || 'info');
+      const src = ev.source === 'deploy' ? '部署' : '流水线';
       return `<li class="evlog ${cls}">` +
         `<span class="evlog__ts mono">${fmtTime(ev.ts)}</span>` +
         `<span class="evlog__lvl">${esc(ev.level || 'info')}</span>` +
+        `<span class="evlog__src">${src}</span>` +
         `<span class="evlog__msg">${esc(ev.message)}</span>` +
         `</li>`;
     }).join('');
