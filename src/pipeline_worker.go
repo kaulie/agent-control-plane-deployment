@@ -99,6 +99,8 @@ func (w *PipelineWorker) execute(job *PipelineJob) {
 	}
 
 	fmt.Printf("[pipeline] %s packaging service=%s ref=%s repo=%s\n", job.RequestID, job.ServiceID, job.Ref, gitURL)
+	_ = w.store.AddPipelineEvent(job.RequestID, "info",
+		"开始打包：service="+job.ServiceID+" ref="+job.Ref+" repo="+gitURL)
 	pkg, err := packageFromGit(w.cfg.PackagesDir, job.ServiceID, gitURL, job.Ref, w.cfg.ReleaseMaxSec)
 	if err != nil {
 		failPipeline(w.store, job.RequestID, "package failed: "+err.Error())
@@ -107,6 +109,11 @@ func (w *PipelineWorker) execute(job *PipelineJob) {
 	msg := "package ready; enqueueing deploy"
 	if pkg.Skipped {
 		msg = "package already exists; enqueueing deploy"
+		_ = w.store.AddPipelineEvent(job.RequestID, "info",
+			"包已存在，跳过构建：tag="+pkg.Tag+" version="+pkg.Hash)
+	} else {
+		_ = w.store.AddPipelineEvent(job.RequestID, "ok",
+			"打包完成：tag="+pkg.Tag+" version="+pkg.Hash+" commit="+pkg.FullCommit)
 	}
 	_ = w.store.UpdatePipeline(job.RequestID, PipelineJob{
 		State:      PipelineDeploying,
@@ -125,6 +132,7 @@ func (w *PipelineWorker) execute(job *PipelineJob) {
 		failPipeline(w.store, job.RequestID, "enqueue deploy failed: "+err.Error())
 		return
 	}
+	_ = w.store.AddPipelineEvent(job.RequestID, "info", "已入队部署任务：deployRequestId="+deployID)
 	_ = w.store.UpdatePipeline(job.RequestID, PipelineJob{
 		State:           PipelineDeploying,
 		Deployment:      pkg.Tag,
@@ -158,6 +166,8 @@ func (w *PipelineWorker) syncDeploying() {
 				Version:         dep.Version,
 				Message:         "pipeline succeeded",
 			})
+			_ = w.store.AddPipelineEvent(job.RequestID, "ok",
+				"流水线成功：version="+dep.Version)
 		case StateFailed, StateCancelled:
 			_ = w.store.UpdatePipeline(job.RequestID, PipelineJob{
 				State:           PipelineFailed,
@@ -167,6 +177,8 @@ func (w *PipelineWorker) syncDeploying() {
 				Error:           dep.Error,
 				Message:         "deploy failed",
 			})
+			_ = w.store.AddPipelineEvent(job.RequestID, "error",
+				"部署失败："+dep.Error)
 		}
 	}
 }

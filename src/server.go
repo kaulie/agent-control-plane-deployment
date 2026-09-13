@@ -53,6 +53,7 @@ func (s *apiServer) routes() http.Handler {
 	mux.HandleFunc("POST /api/deploy-notify", s.handleDeployNotify)
 	mux.HandleFunc("GET /api/pipelines", s.handleListPipelines)
 	mux.HandleFunc("GET /api/pipelines/{requestId}", s.handleGetPipeline)
+	mux.HandleFunc("GET /api/pipelines/{requestId}/events", s.handleListPipelineEvents)
 	mux.HandleFunc("GET /api/meta", s.handleMeta)
 	s.registerPanel(mux)
 	return withCORS(mux)
@@ -384,6 +385,8 @@ func (s *apiServer) handleDeployNotify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	_ = s.store.AddPipelineEvent(requestID, "info",
+		"流水线已入队：service="+serviceID+" ref="+ref)
 	if s.pipeline != nil {
 		s.pipeline.Kick()
 	}
@@ -429,6 +432,25 @@ func (s *apiServer) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, job)
+}
+
+func (s *apiServer) handleListPipelineEvents(w http.ResponseWriter, r *http.Request) {
+	requestID := r.PathValue("requestId")
+	job, err := s.store.GetPipeline(requestID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if job == nil {
+		writeError(w, http.StatusNotFound, "pipeline not found")
+		return
+	}
+	events, err := s.store.ListPipelineEvents(requestID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": events})
 }
 
 func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
