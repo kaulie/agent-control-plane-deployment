@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ type apiServer struct {
 	cfg      Config
 	worker   *DeployWorker
 	pipeline *PipelineWorker
+	drain    *GracefulDrain
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -55,6 +57,8 @@ func (s *apiServer) routes() http.Handler {
 	mux.HandleFunc("GET /api/pipelines", s.handleListPipelines)
 	mux.HandleFunc("GET /api/pipelines/{requestId}", s.handleGetPipeline)
 	mux.HandleFunc("GET /api/pipelines/{requestId}/events", s.handleListPipelineEvents)
+	mux.HandleFunc("POST /restart/notify", s.handleRestartNotify)
+	mux.HandleFunc("GET /restart/poll", s.handleRestartPoll)
 	mux.HandleFunc("GET /api/meta", s.handleMeta)
 	s.registerPanel(mux)
 	return withCORS(mux)
@@ -471,6 +475,59 @@ func (s *apiServer) handleListPipelineEvents(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+}
+
+func (s *apiServer) handleRestartNotify(w http.ResponseWriter, r *http.Request) {
+	var body restartNotifyBody
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if strings.TrimSpace(body.RequestID) == "" {
+		writeError(w, http.StatusBadRequest, "requestId is required")
+		return
+	}
+	s.drain.Notify(body.RequestID)
+	fmt.Printf("[graceful] drain started for requestId=%s\n", body.RequestID)
+	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "draining": true})
+}
+
+func (s *apiServer) handleRestartPoll(w http.ResponseWriter, r *http.Request) {
+	if !s.drain.IsDraining() {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"canRestart": false, "canDeploy": false, "ready": false,
+			"draining":    false,
+			"reason":      "not notified",
+		})
+		return
+	}
+	restartID := s.drain.RestartingID()
+
+	// in-flight deploys, excluding the restarting job itself
+	runningDeploys, _ := s.store.ListDeploysByState(StateRunning)
+	otherDeploys := 0
+	for _, d := range runningDeploys {
+		if d.RequestID != restartID {
+			otherDeploys++
+		}
+	}
+	// in-flight pipelines (packaging + deploying), excluding the restarting one
+	packaging, _ := s.store.ListPipelinesByState(PipelinePackaging)
+	deploying, _ := s.store.ListPipelinesByState(PipelineDeploying)
+	otherPipelines := 0
+	for _, p := range append(packaging, deploying...) {
+		if p.RequestID != restartID && p.DeployRequestID != restartID {
+			otherPipelines++
+		}
+	}
+
+	canRestart := otherDeploys == 0 && otherPipelines == 0
+	writeJSON(w, http.StatusOK, map[string]any{
+		"canRestart":     canRestart,
+		"canDeploy":      canRestart,
+		"ready":           canRestart,
+		"draining":        true,
+		"restartingId":    restartID,
+		"inflightDeploys": otherDeploys,
+		"inflightPipes":   otherPipelines,
+	})
 }
 
 func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
