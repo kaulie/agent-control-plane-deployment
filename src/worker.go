@@ -229,15 +229,21 @@ func executeDeploy(store *Store, cfg Config, drain *GracefulDrain, requestID str
 		"开始部署：service="+job.ServiceID+" deployment="+tag+" version="+hash)
 	// Download the package from the service repo's GitHub release into a
 	// temp dir; the release is the single source of truth (no local package).
+	// Prefer the access path stored in the local artifacts table (avoids a
+	// release lookup round-trip); fall back to resolving via the GitHub API.
 	src, err := os.MkdirTemp("", "deploy-pkg-*")
 	if err != nil {
 		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{State: StateFailed, Error: err.Error()})
 		return
 	}
 	defer os.RemoveAll(src)
+	var assetURL string
+	if art, _ := store.GetArtifact(job.ServiceID, tag); art != nil {
+		assetURL = art.AssetURL
+	}
 	dlCtx, dlCancel := context.WithTimeout(context.Background(), time.Duration(cfg.ReleaseMaxSec)*time.Second)
 	defer dlCancel()
-	if err := downloadPackageFromRelease(dlCtx, cfg.GitHubToken, service.GitRepoURL, tag, src); err != nil {
+	if err := downloadPackageFromRelease(dlCtx, cfg.GitHubToken, service.GitRepoURL, tag, src, assetURL); err != nil {
 		_ = store.AddDeployEvent(job.RequestID, "error", "下载制品失败："+err.Error())
 		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 			State: StateFailed,

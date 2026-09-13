@@ -122,6 +122,29 @@ func (w *PipelineWorker) execute(job *PipelineJob) {
 		_ = w.store.AddPipelineEvent(job.RequestID, "ok",
 			"打包完成：tag="+pkg.Tag+" version="+pkg.Hash+" commit="+pkg.FullCommit)
 	}
+	// Record artifact metadata locally (GitHub Releases is pure storage;
+	// the table holds the access path so deploys/panel can resolve without
+	// re-querying the GitHub API). Skipped builds already have a row.
+	if pkg.Artifact != nil {
+		if err := w.store.RecordArtifact(Artifact{
+			ServiceID:          job.ServiceID,
+			Tag:                pkg.Tag,
+			Version:            pkg.Hash,
+			Commit:             pkg.FullCommit,
+			GitRepoURL:         gitURL,
+			RepoSlug:           pkg.Artifact.RepoSlug,
+			AssetName:          releaseAssetName,
+			AssetID:            pkg.Artifact.AssetID,
+			AssetURL:           pkg.Artifact.AssetURL,
+			BrowserDownloadURL: pkg.Artifact.BrowserDownloadURL,
+			ReleaseURL:         pkg.Artifact.ReleaseURL,
+			Size:               pkg.Artifact.Size,
+			Storage:            "github_release",
+			CreatedAt:           nowISO(),
+		}); err != nil {
+			fmt.Printf("[pipeline] %s warn: record artifact: %v\n", job.RequestID, err)
+		}
+	}
 	_ = w.store.UpdatePipeline(job.RequestID, PipelineJob{
 		State:      PipelineDeploying,
 		Deployment: pkg.Tag,

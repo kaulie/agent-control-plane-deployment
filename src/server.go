@@ -57,6 +57,9 @@ func (s *apiServer) routes() http.Handler {
 	mux.HandleFunc("GET /api/pipelines", s.handleListPipelines)
 	mux.HandleFunc("GET /api/pipelines/{requestId}", s.handleGetPipeline)
 	mux.HandleFunc("GET /api/pipelines/{requestId}/events", s.handleListPipelineEvents)
+	mux.HandleFunc("GET /api/artifacts", s.handleListArtifacts)
+	mux.HandleFunc("GET /api/artifacts/{tag}", s.handleGetArtifact)
+	mux.HandleFunc("POST /api/artifacts/scan", s.handleScanArtifacts)
 	mux.HandleFunc("POST /restart/notify", s.handleRestartNotify)
 	mux.HandleFunc("GET /restart/poll", s.handleRestartPoll)
 	mux.HandleFunc("GET /api/meta", s.handleMeta)
@@ -475,6 +478,99 @@ func (s *apiServer) handleListPipelineEvents(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+}
+
+// handleListArtifacts returns artifact metadata, optionally filtered by
+// ?serviceId=. The bytes live on GitHub Releases; this is the local index.
+func (s *apiServer) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
+	serviceID := strings.TrimSpace(r.URL.Query().Get("serviceId"))
+	arts, err := s.store.ListArtifacts(serviceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"artifacts": arts})
+}
+
+// handleGetArtifact returns a single artifact by tag (requires ?serviceId=
+// because tags are unique per service, not globally).
+func (s *apiServer) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
+	tag := r.PathValue("tag")
+	serviceID := strings.TrimSpace(r.URL.Query().Get("serviceId"))
+	if serviceID == "" {
+		writeError(w, http.StatusBadRequest, "serviceId query param is required")
+		return
+	}
+	art, err := s.store.GetArtifact(serviceID, tag)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if art == nil {
+		writeError(w, http.StatusNotFound, "artifact not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, art)
+}
+
+// handleScanArtifacts scans the service repo's GitHub Releases and upserts
+// artifact rows, backfilling the local table from existing storage. Requires
+// ?serviceId= whose contract has a gitRepoUrl.
+func (s *apiServer) handleScanArtifacts(w http.ResponseWriter, r *http.Request) {
+	serviceID := strings.TrimSpace(r.URL.Query().Get("serviceId"))
+	if serviceID == "" {
+		writeError(w, http.StatusBadRequest, "serviceId query param is required")
+		return
+	}
+	svc, err := s.store.GetService(serviceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if svc == nil {
+		writeError(w, http.StatusNotFound, "service not found")
+		return
+	}
+	gitURL := strings.TrimSpace(svc.GitRepoURL)
+	if gitURL == "" {
+		writeError(w, http.StatusBadRequest, "service has no gitRepoUrl")
+		return
+	}
+	if s.cfg.GitHubToken == "" {
+		writeError(w, http.StatusServiceUnavailable, "GITHUB_TOKEN not configured; cannot scan releases")
+		return
+	}
+	items, err := listServiceReleases(r.Context(), s.cfg.GitHubToken, gitURL)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "scan releases: "+err.Error())
+		return
+	}
+	owner, repo, _ := parseRepoOwnerName(gitURL)
+	repoSlug := owner + "/" + repo
+	recorded := 0
+	for _, it := range items {
+		version := strings.TrimPrefix(it.Tag, "deployment-")
+		if err := s.store.RecordArtifact(Artifact{
+			ServiceID:          serviceID,
+			Tag:                it.Tag,
+			Version:            version,
+			GitRepoURL:         gitURL,
+			RepoSlug:           repoSlug,
+			AssetName:          releaseAssetName,
+			AssetID:            it.AssetID,
+			AssetURL:           it.AssetURL,
+			BrowserDownloadURL: it.BrowserDownloadURL,
+			ReleaseURL:         it.ReleaseURL,
+			Size:               it.Size,
+			Storage:            "github_release",
+			CreatedAt:           nowISO(),
+		}); err != nil {
+			writeError(w, http.StatusInternalServerError, "record artifact "+it.Tag+": "+err.Error())
+			return
+		}
+		recorded++
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"scanned": len(items), "recorded": recorded, "serviceId": serviceID})
 }
 
 func (s *apiServer) handleRestartNotify(w http.ResponseWriter, r *http.Request) {

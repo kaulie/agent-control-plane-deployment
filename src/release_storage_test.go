@@ -89,6 +89,16 @@ func (f *fakeGitHub) handleGetByTag(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *fakeGitHub) handleReleasesRoot(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		// List releases (GET /repos/o/r/releases). Return all known releases.
+		rels := make([]ghRelease, 0, len(f.releases))
+		for _, rel := range f.releases {
+			rels = append(rels, *rel)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(rels)
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method", http.StatusMethodNotAllowed)
 		return
@@ -106,7 +116,7 @@ func (f *fakeGitHub) handleReleasesRoot(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "exists", http.StatusUnprocessableEntity)
 		return
 	}
-	rel := &ghRelease{ID: f.nextID, TagName: body.TagName}
+	rel := &ghRelease{ID: f.nextID, TagName: body.TagName, HTMLURL: f.srvURL + "/releases/" + body.TagName}
 	f.nextID++
 	f.releases[body.TagName] = rel
 	w.Header().Set("Content-Type", "application/json")
@@ -157,13 +167,21 @@ func (f *fakeGitHub) handleUploadAsset(w http.ResponseWriter, r *http.Request) {
 	f.nextID++
 	f.assets[aid] = b
 	assetURL := f.srvURL + "/asset/" + strconv.FormatInt(aid, 10)
+	browserURL := f.srvURL + "/download/" + strconv.FormatInt(aid, 10) + "/" + name
+	asset := ghAsset{
+		ID:                 aid,
+		Name:               name,
+		URL:                assetURL,
+		BrowserDownloadURL: browserURL,
+		Size:               int64(len(b)),
+	}
 	for _, rel := range f.releases {
 		if rel.ID == rid {
-			rel.Assets = append(rel.Assets, ghAsset{ID: aid, Name: name, URL: assetURL})
+			rel.Assets = append(rel.Assets, asset)
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"id": aid})
+	_ = json.NewEncoder(w).Encode(asset)
 }
 
 func (f *fakeGitHub) handleDownloadAsset(w http.ResponseWriter, r *http.Request) {
@@ -263,8 +281,12 @@ func TestUploadDownloadReleaseFlow(t *testing.T) {
 
 	// Upload package.
 	pkg := makePkgDir(t)
-	if err := uploadPackageToRelease(ctx, "tok", repoURL, tag, pkg); err != nil {
+	meta, err := uploadPackageToRelease(ctx, "tok", repoURL, tag, pkg)
+	if err != nil {
 		t.Fatalf("upload: %v", err)
+	}
+	if meta == nil || meta.AssetURL == "" {
+		t.Fatalf("upload returned no asset metadata: %+v", meta)
 	}
 	exists, _ = releaseAssetExists(ctx, "tok", repoURL, tag)
 	if !exists {
@@ -273,7 +295,7 @@ func TestUploadDownloadReleaseFlow(t *testing.T) {
 
 	// Download into a fresh dir and verify content.
 	dest := t.TempDir()
-	if err := downloadPackageFromRelease(ctx, "tok", repoURL, tag, dest); err != nil {
+	if err := downloadPackageFromRelease(ctx, "tok", repoURL, tag, dest, ""); err != nil {
 		t.Fatalf("download: %v", err)
 	}
 	b, err := os.ReadFile(filepath.Join(dest, "VERSION"))
@@ -284,8 +306,17 @@ func TestUploadDownloadReleaseFlow(t *testing.T) {
 		t.Fatalf("VERSION = %q", b)
 	}
 
+	// Download directly via the stored access path (skip release lookup).
+	dest2 := t.TempDir()
+	if err := downloadPackageFromRelease(ctx, "tok", repoURL, tag, dest2, meta.AssetURL); err != nil {
+		t.Fatalf("download by assetURL: %v", err)
+	}
+	if b2, _ := os.ReadFile(filepath.Join(dest2, "VERSION")); strings.TrimSpace(string(b2)) != "hash12345" {
+		t.Fatalf("VERSION by assetURL = %q", b2)
+	}
+
 	// Re-upload replaces the asset (delete + re-add), still exactly one asset.
-	if err := uploadPackageToRelease(ctx, "tok", repoURL, tag, pkg); err != nil {
+	if _, err := uploadPackageToRelease(ctx, "tok", repoURL, tag, pkg); err != nil {
 		t.Fatalf("re-upload: %v", err)
 	}
 	rel := fg.releases[tag]
@@ -294,12 +325,12 @@ func TestUploadDownloadReleaseFlow(t *testing.T) {
 	}
 
 	// Missing token -> upload error.
-	if err := uploadPackageToRelease(ctx, "", repoURL, tag, pkg); err == nil {
+	if _, err := uploadPackageToRelease(ctx, "", repoURL, tag, pkg); err == nil {
 		t.Fatal("expected error uploading without token")
 	}
 
 	// Missing tag -> download error.
-	if err := downloadPackageFromRelease(ctx, "tok", repoURL, "deployment-nope", dest); err == nil {
+	if err := downloadPackageFromRelease(ctx, "tok", repoURL, "deployment-nope", dest, ""); err == nil {
 		t.Fatal("expected error downloading missing release")
 	}
 }

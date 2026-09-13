@@ -16,6 +16,7 @@ type PackageResult struct {
 	FullCommit string
 	Dir        string
 	Skipped    bool
+	Artifact   *ArtifactMeta
 }
 
 // packageFromGit clones/fetches ref, runs build.sh, and uploads the frozen
@@ -171,8 +172,10 @@ func packageFromGit(packagesDir, serviceID, gitRepoURL, ref string, maxSec int, 
 	_ = os.WriteFile(filepath.Join(pkgDir, "COMMIT"), []byte(full+"\n"), 0o644)
 	_ = os.WriteFile(filepath.Join(pkgDir, "GIT_REPO_URL"), []byte(gitRepoURL+"\n"), 0o644)
 
-	if err := uploadPackageToRelease(context.Background(), token, gitRepoURL, tag, pkgDir); err != nil {
+	meta, err := uploadPackageToRelease(context.Background(), token, gitRepoURL, tag, pkgDir)
+	if err != nil {
 		return out, fmt.Errorf("upload release: %w", err)
 	}
+	out.Artifact = meta
 	return out, nil
 }
