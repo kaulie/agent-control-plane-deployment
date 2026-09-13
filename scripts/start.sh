@@ -28,6 +28,15 @@ if [ -z "${GITHUB_TOKEN:-}" ] && [ -f "${HOME_DIR}/data/github-token" ]; then
   export GITHUB_TOKEN="$(tr -d '[:space:]' < "${HOME_DIR}/data/github-token")"
 fi
 
+# Default Go module/toolchain proxy to a reachable mirror. The build env
+# (packageFromGit runs each service's build.sh inheriting this process env)
+# often needs to download the Go toolchain (when go.mod's go directive exceeds
+# the installed go) and modules; the default proxy.golang.org is unreachable
+# via IPv6 in some networks. Respect an explicit GOPROXY if already set.
+if [ -z "${GOPROXY:-}" ]; then
+  export GOPROXY="https://goproxy.cn,direct"
+fi
+
 if [ ! -x "${BIN}" ]; then
   echo "[start][错误] missing ${BIN}; run ./install.sh / go build -o bin/deployment-server ./src first" >&2
   exit 1

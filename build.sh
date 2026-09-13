@@ -29,6 +29,12 @@ export GOCACHE="${ROOT}/.gocache"
 export GOPATH="${ROOT}/.gopath"
 # Keep build output out of the package too.
 export GOFLAGS="${GOFLAGS:-}"
+# Default to a reachable module/toolchain proxy if the caller didn't set one
+# (proxy.golang.org is unreachable via IPv6 on some networks; the Go toolchain
+# auto-download triggered by go.mod's go directive needs a working proxy).
+if [ -z "${GOPROXY:-}" ]; then
+  export GOPROXY="https://goproxy.cn,direct"
+fi
 
 echo "[build] version=${VERSION}"
 
