@@ -128,6 +128,15 @@ function populateServiceSelects() {
       `<option value="${esc(s.serviceId)}">${esc(s.serviceId)}</option>`).join('');
     if (services.find((s) => s.serviceId === prev)) sel.value = prev;
   }
+  // Artifacts filter: keep an "全部" (all) option so the tab can list every
+  // service's artifacts, not just one.
+  const artSel = $('#art-service');
+  if (artSel) {
+    const prev = artSel.value;
+    artSel.innerHTML = `<option value="">全部</option>` +
+      services.map((s) => `<option value="${esc(s.serviceId)}">${esc(s.serviceId)}</option>`).join('');
+    artSel.value = prev && services.find((s) => s.serviceId === prev) ? prev : '';
+  }
 }
 
 // service editor: in-page form card (no modal, no forced popup)
@@ -419,6 +428,72 @@ $('#dep-trigger').addEventListener('click', async () => {
   } catch (e) { toast('提交失败：' + e.message, 'err'); }
 });
 
+// ---- artifacts -------------------------------------------------------------
+// Human-readable byte size (e.g. 12.3 MB) for the artifact table.
+function fmtSize(n) {
+  if (n === null || n === undefined || n === '') return '—';
+  let v = Number(n);
+  if (!Number.isFinite(v) || v <= 0) return v === 0 ? '0 B' : '—';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return (i === 0 ? v : v.toFixed(1)) + ' ' + units[i];
+}
+const shortCommit = (c) => (c ? String(c).slice(0, 10) : '—');
+
+// Download / release links for an artifact row.
+function artifactLinks(a) {
+  const links = [];
+  const dl = a.browserDownloadUrl || a.assetUrl;
+  if (dl) links.push(`<a class="btn btn--sm" href="${esc(dl)}" target="_blank" rel="noopener">下载</a>`);
+  if (a.releaseUrl) links.push(`<a class="btn btn--sm" href="${esc(a.releaseUrl)}" target="_blank" rel="noopener">Release</a>`);
+  return links.join('') || '—';
+}
+
+async function refreshArtifacts() {
+  const tbody = $('#art-table tbody');
+  const serviceId = $('#art-service').value;
+  const path = '/api/artifacts' + (serviceId ? '?serviceId=' + encodeURIComponent(serviceId) : '');
+  try {
+    const data = await apiGet(path);
+    const arts = data.artifacts || [];
+    if (!arts.length) {
+      tbody.innerHTML = `<tr><td colspan="8" class="muted">暂无制品记录</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = arts.map((a) => `<tr>
+      <td class="mono">${esc(a.serviceId)}</td>
+      <td class="mono">${esc(a.tag)}</td>
+      <td class="mono">${esc(a.version || '—')}</td>
+      <td class="mono">${esc(shortCommit(a.commit))}</td>
+      <td class="mono">${fmtSize(a.size)}</td>
+      <td class="mono">${esc(a.storage || '—')}</td>
+      <td class="mono">${fmtTime(a.createdAt)}</td>
+      <td class="cell-actions">${artifactLinks(a)}</td>
+    </tr>`).join('');
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="8" class="muted">加载失败：${esc(e.message)}</td></tr>`;
+  }
+}
+
+$('#art-service').addEventListener('change', refreshArtifacts);
+$('#art-refresh').addEventListener('click', refreshArtifacts);
+
+$('#art-scan').addEventListener('click', async () => {
+  const serviceId = $('#art-service').value;
+  if (!serviceId) { toast('请先选择一个服务再扫描', 'err'); return; }
+  $('#art-msg').textContent = '扫描中…';
+  try {
+    const r = await apiSend('POST', '/api/artifacts/scan?serviceId=' + encodeURIComponent(serviceId));
+    toast(`扫描完成：发现 ${r.scanned}，记录 ${r.recorded}`, 'ok');
+    refreshArtifacts();
+  } catch (e) {
+    toast('扫描失败：' + e.message, 'err');
+  } finally {
+    $('#art-msg').textContent = '';
+  }
+});
+
 // ---- refresh loop ---------------------------------------------------------
 function refreshActiveTab() {
   const active = $('#tabs .tab--active').dataset.tab;
@@ -428,6 +503,7 @@ function refreshActiveTab() {
     else refreshPipelines();
   }
   else if (active === 'deploys') refreshDeploys();
+  else if (active === 'artifacts') refreshArtifacts();
   else if (active === 'meta') refreshMeta();
 }
 

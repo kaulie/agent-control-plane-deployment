@@ -26,6 +26,7 @@
     <button class="tab tab--active" data-tab="services">服务契约</button>
     <button class="tab" data-tab="pipelines">部署流水线</button>
     <button class="tab" data-tab="deploys">部署任务</button>
+    <button class="tab" data-tab="artifacts">制品</button>
     <button class="tab" data-tab="meta">元信息</button>
   </nav>
 
@@ -159,6 +160,31 @@
             <tr>
               <th>requestId</th><th>service</th><th>deployment</th><th>状态</th>
               <th>version</th><th>请求时间</th><th>开始</th><th>结束</th><th>消息 / 错误</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Artifacts -->
+    <section id="tab-artifacts" class="tabpanel">
+      <div class="actions">
+        <div class="form-inline">
+          <label>服务
+            <select id="art-service"></select>
+          </label>
+          <button class="btn btn--primary" id="art-scan">扫描制品</button>
+          <button class="btn" id="art-refresh">刷新</button>
+          <span id="art-msg" class="muted"></span>
+        </div>
+      </div>
+      <div class="tablewrap">
+        <table class="grid" id="art-table">
+          <thead>
+            <tr>
+              <th>service</th><th>tag</th><th>version</th><th>commit</th>
+              <th>大小</th><th>存储</th><th>创建时间</th><th>操作</th>
             </tr>
           </thead>
           <tbody></tbody>
