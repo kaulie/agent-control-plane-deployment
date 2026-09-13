@@ -28,6 +28,19 @@ if [ -z "${GITHUB_TOKEN:-}" ] && [ -f "${HOME_DIR}/data/github-token" ]; then
   export GITHUB_TOKEN="$(tr -d '[:space:]' < "${HOME_DIR}/data/github-token")"
 fi
 
+# Load HTTP(S) proxy from data/proxy.env (survives self-deploy rsync). The
+# server process needs to reach github.com for git fetch (packageFromGit) and
+# the GitHub releases API; in some networks direct access is flaky (IPv6
+# timeouts), so route through a local proxy. Keep localhost out of the proxy
+# so self-deploy graceful notify/poll (127.0.0.1) and /health go direct.
+if [ -f "${HOME_DIR}/data/proxy.env" ]; then
+  # shellcheck source=/dev/null
+  . "${HOME_DIR}/data/proxy.env"
+fi
+if [ -n "${HTTPS_PROXY:-}${HTTP_PROXY:-}${ALL_PROXY:-}" ] && [ -z "${NO_PROXY:-}" ]; then
+  export NO_PROXY="localhost,127.0.0.1,::1"
+fi
+
 # Default Go module/toolchain proxy to a reachable mirror. The build env
 # (packageFromGit runs each service's build.sh inheriting this process env)
 # often needs to download the Go toolchain (when go.mod's go directive exceeds
