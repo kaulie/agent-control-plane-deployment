@@ -167,6 +167,7 @@ curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 制品存储做成**可插拔**后端：本地磁盘（`local`）、GitHub Releases（`github_release`）或阿里云制品仓库（`aliyun`），后续可扩展其它云存储（S3 等）。无论哪种后端，本地 `artifacts` 表始终是**存储无关的元数据索引**（含访问路径 `assetUrl`），部署/面板据此解析包，无需每次回查后端。
 
 - 选择后端：环境变量 `ARTIFACT_STORAGE`，取值 `local` | `github_release` | `aliyun`。留空时：配置了 `GITHUB_TOKEN` → `github_release`，否则 → `local`。`/api/meta` 的 `artifactStorage` 反映当前后端。
+  - 本控制面自身的 `scripts/start.sh` 已默认 `export ARTIFACT_STORAGE=aliyun`（可用环境变量覆盖）。选择 `aliyun` 时若缺少凭证，`start.sh` 会**快速失败并给出明确提示**（否则服务会起不来）。
 - `local`：包存 `<packagesDir>/<serviceId>/deployment-<hash>/`（原始本地布局，无需凭证）。上传=rsync 落盘，下载=rsync 到临时目录→rsync 到 runtime。
 - `github_release`：包打成 `package.tar.gz` 上传到**每个服务自己仓库**的 GitHub Release（tag=`deployment-<hash>`，asset=`package.tar.gz`），不再落本地 `packages/`（release 作为唯一来源，节省本地存储）。需 `GITHUB_TOKEN`（回退 `GH_TOKEN`），对被部署服务仓库有 `contents:write`（上传）/`contents:read`（下载私有 repo）。`/api/meta` 的 `githubReleaseEnabled` 反映 token 是否配置。
 - `aliyun`：包打成 `package.tar.gz` 上传到**阿里云制品仓库的 generic 仓库**（`packages.aliyun.com`），路径 `<serviceId>/<tag>/package.tar.gz`，version=`<tag>`。使用 HTTP basic 鉴权：

@@ -21,6 +21,11 @@ export DEPLOYMENT_HOME="${HOME_DIR}"
 export PORT="${DEPLOYMENT_PORT:-4220}"
 export HOST="${DEPLOYMENT_HOST:-127.0.0.1}"
 
+# Artifact storage backend for this deployment. This control plane uses the
+# Aliyun packages (制品仓库) generic repo; override with
+# ARTIFACT_STORAGE=local|github_release|aliyun if needed.
+export ARTIFACT_STORAGE="${ARTIFACT_STORAGE:-aliyun}"
+
 # Load GitHub token from data/github-token (survives self-deploy rsync because
 # data/ is preserved). Used by release-based package upload/download. Falls
 # back to any inherited GITHUB_TOKEN if the file is absent.
@@ -48,6 +53,14 @@ fi
 
 if [ ! -x "${BIN}" ]; then
   echo "[start][错误] missing ${BIN}; run ./install.sh / go build -o bin/deployment-server ./src first" >&2
+  exit 1
+fi
+
+# Fail fast with a clear message if the Aliyun backend is selected but its
+# credentials are missing; otherwise the server would exit on NewArtifactStorage
+# with a less obvious error in the log.
+if [ "${ARTIFACT_STORAGE}" = "aliyun" ] && { [ -z "${ALIYUN_PACKAGES_USER:-}" ] || [ -z "${ALIYUN_PACKAGES_PASSWORD:-}" ]; }; then
+  echo "[start][错误] ARTIFACT_STORAGE=aliyun 需要凭证：设置环境变量 ALIYUN_PACKAGES_USER / ALIYUN_PACKAGES_PASSWORD，或写入 ${HOME_DIR}/data/aliyun-credentials（第1行用户名，第2行密码）" >&2
   exit 1
 fi
 
