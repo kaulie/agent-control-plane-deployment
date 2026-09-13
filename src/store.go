@@ -129,7 +129,10 @@ func (s *Store) migrate() error {
 	if err := s.migratePipelines(); err != nil {
 		return err
 	}
-	return s.migratePipelineEvents()
+	if err := s.migratePipelineEvents(); err != nil {
+		return err
+	}
+	return s.migrateDeployEvents()
 }
 
 func (s *Store) ensureServiceExtraColumns() error {

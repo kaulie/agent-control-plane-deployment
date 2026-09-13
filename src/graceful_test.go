@@ -140,7 +140,7 @@ func TestWaitForGracefulRestartForceTimeout(t *testing.T) {
 	cfg := Config{GracefulMaxWait: 50 * time.Millisecond}
 	job := DeployJob{RequestID: "req-force", Deployment: "deployment-x", ServiceID: "svc"}
 	start := time.Now()
-	forced := waitForGracefulRestart(svc, cfg, job, "x")
+	forced := waitForGracefulRestart(nil, svc, cfg, job, "x")
 	if !forced {
 		t.Fatal("expected force after timeout")
 	}
