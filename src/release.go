@@ -18,10 +18,11 @@ type PackageResult struct {
 	Skipped    bool
 }
 
-// packageFromGit clones/fetches ref, runs build.sh, freezes outputs into packagesDir.
-// The package is written under packagesDir/serviceID/tag so that packages for
-// different services are isolated into their own subdirectory (keyed by serviceId).
-func packageFromGit(packagesDir, serviceID, gitRepoURL, ref string, maxSec int) (PackageResult, error) {
+// packageFromGit clones/fetches ref, runs build.sh, and uploads the frozen
+// outputs as a package.tar.gz asset of a GitHub release (tag deployment-<hash>)
+// on the service's own git repo. Nothing is persisted under packagesDir;
+// the release is the single source of truth (saves local disk space).
+func packageFromGit(packagesDir, serviceID, gitRepoURL, ref string, maxSec int, token string) (PackageResult, error) {
 	var out PackageResult
 	gitRepoURL = strings.TrimSpace(gitRepoURL)
 	ref = strings.TrimSpace(ref)
@@ -83,17 +84,14 @@ func packageFromGit(packagesDir, serviceID, gitRepoURL, ref string, maxSec int) 
 	}
 	hash := strings.TrimSpace(hashOut)
 	tag := "deployment-" + hash
-	dest := filepath.Join(packagesDir, serviceID, tag)
 	out.Tag = tag
 	out.Hash = hash
 	out.FullCommit = full
-	out.Dir = dest
 
-	if b, err := os.ReadFile(filepath.Join(dest, "VERSION")); err == nil {
-		if strings.TrimSpace(string(b)) == hash {
-			out.Skipped = true
-			return out, nil
-		}
+	// Skip build if the release asset already exists (idempotent re-deploys).
+	if exists, err := releaseAssetExists(context.Background(), token, gitRepoURL, tag); err == nil && exists {
+		out.Skipped = true
+		return out, nil
 	}
 
 	srcTree := filepath.Join(workDir, "src")
@@ -158,16 +156,23 @@ func packageFromGit(packagesDir, serviceID, gitRepoURL, ref string, maxSec int) 
 	if st, err := os.Stat(outputs); err != nil || !st.IsDir() {
 		return out, fmt.Errorf("build.sh did not produce outputs/")
 	}
-	_ = os.RemoveAll(dest)
-	if err := os.MkdirAll(dest, 0o755); err != nil {
+	// Stage the package in a temp dir, then upload to the service repo's
+	// GitHub release. Nothing is written under packagesDir.
+	pkgDir, err := os.MkdirTemp("", "release-pkg-*")
+	if err != nil {
 		return out, err
 	}
-	rsync := exec.Command("rsync", "-a", outputs+"/", dest+"/")
+	defer os.RemoveAll(pkgDir)
+	rsync := exec.Command("rsync", "-a", outputs+"/", pkgDir+"/")
 	if b, err := rsync.CombinedOutput(); err != nil {
 		return out, fmt.Errorf("rsync outputs: %w\n%s", err, string(b))
 	}
-	_ = os.WriteFile(filepath.Join(dest, "VERSION"), []byte(hash+"\n"), 0o644)
-	_ = os.WriteFile(filepath.Join(dest, "COMMIT"), []byte(full+"\n"), 0o644)
-	_ = os.WriteFile(filepath.Join(dest, "GIT_REPO_URL"), []byte(gitRepoURL+"\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(pkgDir, "VERSION"), []byte(hash+"\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(pkgDir, "COMMIT"), []byte(full+"\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(pkgDir, "GIT_REPO_URL"), []byte(gitRepoURL+"\n"), 0o644)
+
+	if err := uploadPackageToRelease(context.Background(), token, gitRepoURL, tag, pkgDir); err != nil {
+		return out, fmt.Errorf("upload release: %w", err)
+	}
 	return out, nil
 }

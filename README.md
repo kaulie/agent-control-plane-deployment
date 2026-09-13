@@ -37,10 +37,10 @@ cd agent-control-plane-deployment
 
 deployment **不**在 worker 内对自己执行 `restartCmd`。流程：
 
-1. 发版包 `packages/<serviceId>/deployment-<hash>/` 内必须已有可执行 `bin/deployment-server`（制品由 `build.sh` 产出 `outputs/`，upgrader 不编译）。本仓库自带 `build.sh`，因此 `POST /api/deploy-notify {serviceId:"agent-control-plane-deployment"}`（或 `DEPLOY_SERVICE_ID=agent-control-plane-deployment ./bin/release.sh main`）可直接打包+部署自身。
+1. 制品由 `build.sh` 产出 `outputs/`，打成 `package.tar.gz` 上传到该服务仓库的 GitHub Release（tag=`deployment-<hash>`）；**不再落本地 `packages/`**（release 作为唯一来源，节省本地存储）。本仓库自带 `build.sh`，因此 `POST /api/deploy-notify {serviceId:"agent-control-plane-deployment"}`（或 `DEPLOY_SERVICE_ID=agent-control-plane-deployment ./bin/release.sh main`）可直接打包+部署自身。需环境变量 `GITHUB_TOKEN`（或 `gh auth`），且对目标仓库有 `contents:write`。
 2. `POST /api/deploys` 且 `serviceId=agent-control-plane-deployment`（`runtimeDir` 等于 `DEPLOYMENT_HOME`）：
    - **graceful**：ACP 自身也注册了 `restartNotifyUrl`/`restartPollUrl`（`POST /restart/notify`、`GET /restart/poll`，端口同 API）。部署前先通知自己进入 drain（worker 停止认领新任务），轮询直到无其它在途部署/流水线，再继续。
-   - rsync 制品到 runtime（保留 `data/`、`packages/`、`logs/`、pid、upgrade-requests）
+   - 从 release 下载 `package.tar.gz` 到临时目录 → rsync 到 runtime（保留 `data/`、`packages/`、`logs/`、pid、upgrade-requests）→ 删临时目录
    - 写入 `upgrade-requests/<requestId>.json`
    - 任务保持 `running`，等待独立 upgrader
 3. `acp-upgrader`：`stop` → `start`（强制 `PORT=4220`）→ 探活；新进程 `reconcileOrphanDeploys` 收尾。
@@ -158,6 +158,15 @@ curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 | GET | `/api/meta` | 含 graceful / release 配置 |
 
 旧的 `ops/` 文件队列守护已废弃，保留目录仅作历史参考；请用本 HTTP 服务。
+
+## 制品存储（GitHub Releases）
+
+制品不再落本地 `packages/`，而是上传到**每个服务自己的仓库**的 GitHub Release：
+
+- 打包：`packageFromGit`（`POST /api/deploy-notify` 或 `bin/release.sh`）clone+build 后，把 `outputs/` + `VERSION`/`COMMIT`/`GIT_REPO_URL` 打成 `package.tar.gz`，上传到 `<gitRepoUrl>` 仓库的 release（tag=`deployment-<hash>`，asset=`package.tar.gz`），随后删除本地临时构建目录。重复打包同 commit 会跳过构建（asset 已存在）。
+- 部署：`POST /api/deploys` 校验 release asset 存在；`executeDeploy` 从 release 下载 `package.tar.gz` 到临时目录 → rsync 到 runtime → 删临时目录。
+- 鉴权：环境变量 `GITHUB_TOKEN`（回退 `GH_TOKEN`），需对每个被部署服务仓库有 `contents:write`（上传）/`contents:read`（下载私有 repo）。`/api/meta` 的 `githubReleaseEnabled` 反映 token 是否配置。
+- 一次性迁移旧本地包：`./bin/upload-existing-packages.sh [--purge]`，遍历 `packages/<serviceId>/deployment-<hash>/` 上传到对应 release，`--purge` 上传成功后删本地包。
 
 ## Web 控制面板（独立 panel）
 

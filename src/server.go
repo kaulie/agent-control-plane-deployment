@@ -281,7 +281,7 @@ func (s *apiServer) handleCreateDeploy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "service not found: "+serviceID)
 		return
 	}
-	deployment, err := assertPackage(s.cfg.PackagesDir, serviceID, raw)
+	deployment, err := assertRelease(s.cfg.GitHubToken, svc.GitRepoURL, raw)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -540,6 +540,7 @@ func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
 		"gracefulPollIntervalSec": int(gracefulPollInterval / time.Second),
 		"gracefulMaxWaitMs":       int(s.cfg.GracefulMaxWait / time.Millisecond),
 		"releaseMaxSec":           s.cfg.ReleaseMaxSec,
+		"githubReleaseEnabled":    s.cfg.GitHubToken != "",
 		"deployNotify":            "POST /api/deploy-notify {serviceId, ref?}",
 	})
 }
