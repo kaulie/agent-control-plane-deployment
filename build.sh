@@ -18,6 +18,18 @@ OUT="${ROOT}/outputs"
 rm -rf "${OUT}"
 mkdir -p "${OUT}/bin" "${OUT}/scripts"
 
+# Isolate Go caches inside the (temporary) build tree so they never land in
+# the runtime / DEPLOYMENT_HOME — regardless of whatever HOME the caller
+# (packageFromGit, inheriting the deployment-server env) has. Without this,
+# a wrong HOME pointed at the runtime dir caused `go build` to download the
+# module cache into <runtime>/go (read-only), which then broke the
+# self-deploy rsync (--delete could not remove it).
+export GOMODCACHE="${ROOT}/.gomodcache"
+export GOCACHE="${ROOT}/.gocache"
+export GOPATH="${ROOT}/.gopath"
+# Keep build output out of the package too.
+export GOFLAGS="${GOFLAGS:-}"
+
 echo "[build] version=${VERSION}"
 
 go build -o "${OUT}/bin/deployment-server" ./src

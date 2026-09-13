@@ -86,6 +86,12 @@ func selfDeployRsyncCmd(src, dest string) string {
 		"--filter='P deployment.pid'",
 		"--filter='P upgrader.pid'",
 		"--filter='P upgrade-requests/'",
+		// Defensive: never let a stray Go cache (e.g. GOMODCACHE under <runtime>/go,
+		// or GOCACHE under .cache / Library) break the --delete rsync — those files
+		// are read-only and unlinkat would fail, leaving the deploy stuck.
+		"--filter='P go/'",
+		"--filter='P .cache/'",
+		"--filter='P Library/'",
 		"--exclude='packages/'",
 		"--exclude='data/'",
 		"--exclude='logs/'",
@@ -93,6 +99,9 @@ func selfDeployRsyncCmd(src, dest string) string {
 		"--exclude='upgrader.pid'",
 		"--exclude='upgrade-requests/'",
 		"--exclude='.git/'",
+		"--exclude='go/'",
+		"--exclude='.cache/'",
+		"--exclude='Library/'",
 		fmt.Sprintf("%q", src+"/"),
 		fmt.Sprintf("%q", dest+"/"),
 	}, " ")

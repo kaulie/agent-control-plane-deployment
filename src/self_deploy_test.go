@@ -44,7 +44,7 @@ func TestEnqueueACPUpgrade(t *testing.T) {
 
 func TestSelfDeployRsyncPreservesData(t *testing.T) {
 	cmd := selfDeployRsyncCmd("/pkg", "/home")
-	for _, needle := range []string{"packages/", "data/", "upgrade-requests/", "upgrader.pid"} {
+	for _, needle := range []string{"packages/", "data/", "upgrade-requests/", "upgrader.pid", "go/", ".cache/", "Library/"} {
 		if !strings.Contains(cmd, needle) {
 			t.Fatalf("rsync cmd missing protect for %s: %s", needle, cmd)
 		}
