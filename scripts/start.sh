@@ -28,6 +28,15 @@ if [ -z "${GITHUB_TOKEN:-}" ] && [ -f "${HOME_DIR}/data/github-token" ]; then
   export GITHUB_TOKEN="$(tr -d '[:space:]' < "${HOME_DIR}/data/github-token")"
 fi
 
+# Load Aliyun packages (制品仓库) basic-auth credentials for the "aliyun"
+# artifact storage backend from data/aliyun-credentials (preserved across
+# self-deploy because data/ is). File format: line 1 = username, line 2 =
+# password. Inherited ALIYUN_PACKAGES_USER / ALIYUN_PACKAGES_PASSWORD win.
+if [ -z "${ALIYUN_PACKAGES_USER:-}" ] && [ -f "${HOME_DIR}/data/aliyun-credentials" ]; then
+  export ALIYUN_PACKAGES_USER="$(sed -n '1p' "${HOME_DIR}/data/aliyun-credentials" | tr -d '\r\n')"
+  export ALIYUN_PACKAGES_PASSWORD="$(sed -n '2p' "${HOME_DIR}/data/aliyun-credentials" | tr -d '\r\n')"
+fi
+
 # Default Go module/toolchain proxy to a reachable mirror. The build env
 # (packageFromGit runs each service's build.sh inheriting this process env)
 # often needs to download the Go toolchain (when go.mod's go directive exceeds

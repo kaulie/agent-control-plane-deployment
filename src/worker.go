@@ -28,14 +28,16 @@ func normalizeDeploymentTag(raw string) (string, error) {
 }
 
 // assertRelease resolves a deployment tag and verifies that the artifact for
-// that tag exists in the configured storage (local disk or GitHub Releases,
-// etc.). The storage backend is the single source of truth for the bytes.
-func assertRelease(storage ArtifactStorage, gitRepoURL, deployment string) (string, error) {
+// that tag exists in the configured storage (local disk, GitHub Releases or
+// Aliyun packages, etc.). The storage backend is the single source of truth
+// for the bytes. serviceID is passed through to the backend because some
+// backends (local disk, Aliyun) scope packages by service.
+func assertRelease(storage ArtifactStorage, serviceID, gitRepoURL, deployment string) (string, error) {
 	tag, err := normalizeDeploymentTag(deployment)
 	if err != nil {
 		return "", err
 	}
-	exists, err := storage.Exists(context.Background(), "", gitRepoURL, tag)
+	exists, err := storage.Exists(context.Background(), serviceID, gitRepoURL, tag)
 	if err != nil {
 		return "", fmt.Errorf("check artifact %s: %w", tag, err)
 	}

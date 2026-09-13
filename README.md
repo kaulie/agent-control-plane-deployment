@@ -164,11 +164,16 @@ curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 
 ## 制品存储（可插拔）+ 本地 artifacts 表
 
-制品存储做成**可插拔**后端：本地磁盘（`local`）或 GitHub Releases（`github_release`），后续可扩展其它云存储（S3 等）。无论哪种后端，本地 `artifacts` 表始终是**存储无关的元数据索引**（含访问路径 `assetUrl`），部署/面板据此解析包，无需每次回查后端。
+制品存储做成**可插拔**后端：本地磁盘（`local`）、GitHub Releases（`github_release`）或阿里云制品仓库（`aliyun`），后续可扩展其它云存储（S3 等）。无论哪种后端，本地 `artifacts` 表始终是**存储无关的元数据索引**（含访问路径 `assetUrl`），部署/面板据此解析包，无需每次回查后端。
 
-- 选择后端：环境变量 `ARTIFACT_STORAGE`，取值 `local` | `github_release`。留空时：配置了 `GITHUB_TOKEN` → `github_release`，否则 → `local`。`/api/meta` 的 `artifactStorage` 反映当前后端。
+- 选择后端：环境变量 `ARTIFACT_STORAGE`，取值 `local` | `github_release` | `aliyun`。留空时：配置了 `GITHUB_TOKEN` → `github_release`，否则 → `local`。`/api/meta` 的 `artifactStorage` 反映当前后端。
 - `local`：包存 `<packagesDir>/<serviceId>/deployment-<hash>/`（原始本地布局，无需凭证）。上传=rsync 落盘，下载=rsync 到临时目录→rsync 到 runtime。
 - `github_release`：包打成 `package.tar.gz` 上传到**每个服务自己仓库**的 GitHub Release（tag=`deployment-<hash>`，asset=`package.tar.gz`），不再落本地 `packages/`（release 作为唯一来源，节省本地存储）。需 `GITHUB_TOKEN`（回退 `GH_TOKEN`），对被部署服务仓库有 `contents:write`（上传）/`contents:read`（下载私有 repo）。`/api/meta` 的 `githubReleaseEnabled` 反映 token 是否配置。
+- `aliyun`：包打成 `package.tar.gz` 上传到**阿里云制品仓库的 generic 仓库**（`packages.aliyun.com`），路径 `<serviceId>/<tag>/package.tar.gz`，version=`<tag>`。使用 HTTP basic 鉴权：
+  - `ALIYUN_PACKAGES_USER` / `ALIYUN_PACKAGES_PASSWORD`（**必填，不入库也不进 git**；可由 `scripts/start.sh` 从 `data/aliyun-credentials` 加载，格式：第 1 行用户名、第 2 行密码，随 `data/` 在自升级时保留）。
+  - `ALIYUN_PACKAGES_PRODUCT_ID`（默认 `6a1940346e68a85a0d176340`）、`ALIYUN_PACKAGES_REPO`（默认 `deployment-artifact`）、`ALIYUN_PACKAGES_BASE_URL`（默认 `https://packages.aliyun.com`）均非机密。
+  - 上传调用 `POST {base}/api/protocol/{productId}/generic/{repo}/files/{filePath}?version=&fileName=&downloadFileName=`；下载调用 `GET .../files/{filePath}?version=`。`artifacts.assetUrl` 记录的是**带鉴权的持久下载地址**（上传接口返回的临时免密地址会过期，不落表）；`browserDownloadUrl` 留空（浏览器下载需 basic 凭证）。
+  - 该协议未提供版本列举接口，故 `aliyun` 后端的 `List`（`POST /api/artifacts/scan` 回填）返回「不支持」；制品在**上传时**即写入本地 `artifacts` 表，正常打包/部署路径不受影响。
 - 打包：`packageFromGit`（`POST /api/deploy-notify` 或 `bin/release.sh`）clone+build 后，经当前后端 `Upload` 存储包，随后删本地临时构建目录。重复打包同 commit 会跳过构建（后端 `Exists` 命中）。上传成功后在本地 `artifacts` 表记录一行（`assetUrl`/`browserDownloadUrl`/`size`/`storage` 等）。
 - 部署：`POST /api/deploys` 经后端 `Exists` 校验制品存在；`executeDeploy` 优先用 `artifacts` 表里的 `assetUrl` 直接下载（跳过解析），缺则回退到按 tag 解析；下载到临时目录 → rsync 到 runtime → 删临时目录。
 - 一次性迁移旧本地包到 GitHub Releases：`./bin/upload-existing-packages.sh [--purge]`，遍历 `packages/<serviceId>/deployment-<hash>/` 上传到对应 release，`--purge` 上传成功后删本地包。

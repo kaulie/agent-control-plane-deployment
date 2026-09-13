@@ -64,8 +64,8 @@ type ReleaseScanItem struct {
 }
 
 // NewArtifactStorage picks the storage backend from cfg.ArtifactStorageType
-// ("local" | "github_release"). An empty type defaults to github_release when
-// a GitHub token is configured, else local.
+// ("local" | "github_release" | "aliyun"). An empty type defaults to
+// github_release when a GitHub token is configured, else local.
 func NewArtifactStorage(cfg Config) (ArtifactStorage, error) {
 	t := strings.TrimSpace(cfg.ArtifactStorageType)
 	if t == "" {
@@ -83,9 +83,27 @@ func NewArtifactStorage(cfg Config) (ArtifactStorage, error) {
 			return nil, fmt.Errorf("artifact storage %q requires GITHUB_TOKEN", t)
 		}
 		return &githubReleaseStorage{token: cfg.GitHubToken}, nil
+	case "aliyun":
+		if cfg.AliyunUsername == "" || cfg.AliyunPassword == "" {
+			return nil, fmt.Errorf("artifact storage %q requires ALIYUN_PACKAGES_USER and ALIYUN_PACKAGES_PASSWORD", t)
+		}
+		return &aliyunPackagesStorage{
+			baseURL:   firstNonEmpty(cfg.AliyunBaseURL, defaultAliyunBaseURL),
+			productID: firstNonEmpty(cfg.AliyunProductID, defaultAliyunProductID),
+			repo:      firstNonEmpty(cfg.AliyunRepo, defaultAliyunRepo),
+			username:  cfg.AliyunUsername,
+			password:  cfg.AliyunPassword,
+		}, nil
 	default:
-		return nil, fmt.Errorf("unknown artifact storage %q (want local|github_release)", t)
+		return nil, fmt.Errorf("unknown artifact storage %q (want local|github_release|aliyun)", t)
 	}
+}
+
+func firstNonEmpty(a, b string) string {
+	if strings.TrimSpace(a) != "" {
+		return a
+	}
+	return b
 }
 
 // dirSize returns the total byte size of a directory tree (best-effort).

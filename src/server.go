@@ -285,7 +285,7 @@ func (s *apiServer) handleCreateDeploy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "service not found: "+serviceID)
 		return
 	}
-	deployment, err := assertRelease(s.storage, svc.GitRepoURL, raw)
+	deployment, err := assertRelease(s.storage, serviceID, svc.GitRepoURL, raw)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
