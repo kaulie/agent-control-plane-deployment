@@ -42,13 +42,15 @@ func seedACPService(store *Store, cfg Config) {
 		return
 	}
 	_, err = store.UpsertService(ServiceContract{
-		ServiceID:  "agent-control-plane-deployment",
-		Name:       "Agent Control Plane Deployment",
-		RuntimeDir: cfg.Home,
-		HealthURL:  fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Port),
-		StartCmd:   fmt.Sprintf("bash %q", filepath.Join(cfg.Home, "scripts", "start.sh")),
-		StopCmd:    fmt.Sprintf("bash %q", filepath.Join(cfg.Home, "scripts", "stop.sh")),
-		RestartCmd: fmt.Sprintf("bash %q", filepath.Join(cfg.Home, "scripts", "restart.sh")),
+		ServiceID:         "agent-control-plane-deployment",
+		Name:               "Agent Control Plane Deployment",
+		RuntimeDir:         cfg.Home,
+		HealthURL:          fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Port),
+		StartCmd:           fmt.Sprintf("bash %q", filepath.Join(cfg.Home, "scripts", "start.sh")),
+		StopCmd:            fmt.Sprintf("bash %q", filepath.Join(cfg.Home, "scripts", "stop.sh")),
+		RestartCmd:         fmt.Sprintf("bash %q", filepath.Join(cfg.Home, "scripts", "restart.sh")),
+		RestartNotifyURL:   fmt.Sprintf("http://127.0.0.1:%d/restart/notify", cfg.Port),
+		RestartPollURL:     fmt.Sprintf("http://127.0.0.1:%d/restart/poll", cfg.Port),
 	})
 	if err != nil {
 		log.Printf("[seed] acp service failed: %v", err)
@@ -68,9 +70,10 @@ func main() {
 	seedDefaultService(store)
 	seedACPService(store, cfg)
 
-	worker := NewDeployWorker(store, cfg)
-	pipeline := NewPipelineWorker(store, cfg, worker)
-	api := &apiServer{store: store, cfg: cfg, worker: worker, pipeline: pipeline}
+	drain := &GracefulDrain{}
+	worker := NewDeployWorker(store, cfg, drain)
+	pipeline := NewPipelineWorker(store, cfg, worker, drain)
+	api := &apiServer{store: store, cfg: cfg, worker: worker, pipeline: pipeline, drain: drain}
 
 	pidFile := filepath.Join(cfg.Home, "deployment.pid")
 	_ = os.WriteFile(pidFile, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644)

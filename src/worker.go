@@ -189,11 +189,22 @@ func clearStaleDeployPauses(store *Store) int {
 	return n
 }
 
-func executeDeploy(store *Store, cfg Config, requestID string) {
+func executeDeploy(store *Store, cfg Config, drain *GracefulDrain, requestID string) {
 	job, err := store.GetDeploy(requestID)
 	if err != nil || job == nil || job.State != StateRunning {
 		return
 	}
+	// On exit, if this is the draining self-deploy that did NOT hand off to
+	// the upgrader (i.e. failed before handoff), release the drain so workers
+	// can resume. On a successful handoff the process is killed, so we keep
+	// draining to prevent new work starting right before the kill.
+	handedOff := false
+	defer func() {
+		if !handedOff && drain != nil && drain.IsDraining() && drain.RestartingID() == requestID {
+			drain.Clear()
+			fmt.Printf("[graceful] drain cleared (deploy %s did not hand off)\n", requestID)
+		}
+	}()
 	service, err := store.GetService(job.ServiceID)
 	if err != nil || service == nil {
 		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
@@ -329,6 +340,7 @@ func executeDeploy(store *Store, cfg Config, requestID string) {
 		fmt.Printf("[deploy] %s self-upgrade staged; handed off to acp-upgrader (job stays running until reconcile)\n", job.RequestID)
 		_ = store.AddDeployEvent(job.RequestID, "info",
 			"已移交 acp-upgrader：停止旧服务 → 启动新服务 → 探活（任务保持 running 直到新进程 reconcile）")
+		handedOff = true
 		return
 	}
 
@@ -440,16 +452,18 @@ func reconcileOrphanDeploys(store *Store) int {
 type DeployWorker struct {
 	store  *Store
 	cfg    Config
+	drain  *GracefulDrain
 	mu     sync.Mutex
 	busy   bool
 	stopCh chan struct{}
 	wg     sync.WaitGroup
 }
 
-func NewDeployWorker(store *Store, cfg Config) *DeployWorker {
+func NewDeployWorker(store *Store, cfg Config, drain *GracefulDrain) *DeployWorker {
 	return &DeployWorker{
 		store:  store,
 		cfg:    cfg,
+		drain:  drain,
 		stopCh: make(chan struct{}),
 	}
 }
@@ -491,6 +505,11 @@ func (w *DeployWorker) tick() {
 		w.mu.Unlock()
 		return
 	}
+	if w.drain.IsDraining() {
+		// graceful self-restart in progress: do not claim new deploys
+		w.mu.Unlock()
+		return
+	}
 	w.busy = true
 	w.mu.Unlock()
 
@@ -508,5 +527,5 @@ func (w *DeployWorker) tick() {
 	if job == nil {
 		return
 	}
-	executeDeploy(w.store, w.cfg, job.RequestID)
+	executeDeploy(w.store, w.cfg, w.drain, job.RequestID)
 }

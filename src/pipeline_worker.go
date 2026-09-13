@@ -14,17 +14,19 @@ type PipelineWorker struct {
 	store  *Store
 	cfg    Config
 	deploy *DeployWorker
+	drain  *GracefulDrain
 	mu     sync.Mutex
 	busy   bool
 	stopCh chan struct{}
 	wg     sync.WaitGroup
 }
 
-func NewPipelineWorker(store *Store, cfg Config, deploy *DeployWorker) *PipelineWorker {
+func NewPipelineWorker(store *Store, cfg Config, deploy *DeployWorker, drain *GracefulDrain) *PipelineWorker {
 	return &PipelineWorker{
 		store:  store,
 		cfg:    cfg,
 		deploy: deploy,
+		drain:  drain,
 		stopCh: make(chan struct{}),
 	}
 }
@@ -64,6 +66,11 @@ func (w *PipelineWorker) Kick() {
 func (w *PipelineWorker) tick() {
 	w.mu.Lock()
 	if w.busy {
+		w.mu.Unlock()
+		return
+	}
+	if w.drain.IsDraining() {
+		// graceful self-restart in progress: do not claim new pipelines
 		w.mu.Unlock()
 		return
 	}

@@ -39,6 +39,7 @@ deployment **不**在 worker 内对自己执行 `restartCmd`。流程：
 
 1. 发版包 `packages/<serviceId>/deployment-<hash>/` 内必须已有可执行 `bin/deployment-server`（制品由 `build.sh` 产出 `outputs/`，upgrader 不编译）。本仓库自带 `build.sh`，因此 `POST /api/deploy-notify {serviceId:"agent-control-plane-deployment"}`（或 `DEPLOY_SERVICE_ID=agent-control-plane-deployment ./bin/release.sh main`）可直接打包+部署自身。
 2. `POST /api/deploys` 且 `serviceId=agent-control-plane-deployment`（`runtimeDir` 等于 `DEPLOYMENT_HOME`）：
+   - **graceful**：ACP 自身也注册了 `restartNotifyUrl`/`restartPollUrl`（`POST /restart/notify`、`GET /restart/poll`，端口同 API）。部署前先通知自己进入 drain（worker 停止认领新任务），轮询直到无其它在途部署/流水线，再继续。
    - rsync 制品到 runtime（保留 `data/`、`packages/`、`logs/`、pid、upgrade-requests）
    - 写入 `upgrade-requests/<requestId>.json`
    - 任务保持 `running`，等待独立 upgrader
@@ -148,8 +149,12 @@ curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 | GET/PUT/DELETE | `/api/services[/:id]` | 服务契约（含 `gitRepoUrl`、可选 graceful URL） |
 | POST | `/api/deploy-notify` | 服务方通知：打包 → 再部署 |
 | GET | `/api/pipelines[/:id]` | 打包+部署流水线状态 |
+| GET | `/api/pipelines/:id/events` | 流水线事件日志 |
 | POST | `/api/deploys` | 已有包直接入队部署 |
 | GET | `/api/deploys[/:id]` | 查询部署任务 |
+| GET | `/api/deploys/:id/events` | 部署执行事件日志 |
+| POST | `/restart/notify` | ACP 自身 graceful：通知进入 drain |
+| GET | `/restart/poll` | ACP 自身 graceful：轮询是否可重启 |
 | GET | `/api/meta` | 含 graceful / release 配置 |
 
 旧的 `ops/` 文件队列守护已废弃，保留目录仅作历史参考；请用本 HTTP 服务。
