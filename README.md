@@ -173,7 +173,7 @@ curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 - `aliyun`：包打成 `package.tar.gz` 上传到**阿里云制品仓库的 generic 仓库**（`packages.aliyun.com`），路径 `<serviceId>/<tag>/package.tar.gz`，version=`<tag>`。使用 HTTP basic 鉴权：
   - `ALIYUN_PACKAGES_USER` / `ALIYUN_PACKAGES_PASSWORD`（**必填，不入库也不进 git**；可由 `scripts/start.sh` 从 `data/aliyun-credentials` 加载，格式：第 1 行用户名、第 2 行密码，随 `data/` 在自升级时保留）。
   - `ALIYUN_PACKAGES_PRODUCT_ID`（默认 `6a1940346e68a85a0d176340`）、`ALIYUN_PACKAGES_REPO`（默认 `deployment-artifact`）、`ALIYUN_PACKAGES_BASE_URL`（默认 `https://packages.aliyun.com`）均非机密。
-  - 上传调用 `POST {base}/api/protocol/{productId}/generic/{repo}/files/{filePath}?version=&fileName=&downloadFileName=`；下载调用 `GET .../files/{filePath}?version=`。`artifacts.assetUrl` 记录的是**带鉴权的持久下载地址**（上传接口返回的临时免密地址会过期，不落表）；`browserDownloadUrl` 留空（浏览器下载需 basic 凭证）。
+  - 上传调用 `POST {base}/api/protocol/{productId}/generic/{repo}/files/{filePath}?version=&fileName=&downloadFileName=`；下载调用 `GET .../files/{filePath}?version=`。**对象实际存储名 = `fileName`**（已实测；`downloadFileName` 只决定浏览器下载名），故本实现把两者都设为 `package.tar.gz`，与下载路径一致。`artifacts.assetUrl` 记录的是**带鉴权的持久下载地址**（上传接口返回的临时免密地址会过期，不落表）；`browserDownloadUrl` 留空（浏览器下载需 basic 凭证）。
   - 该协议未提供版本列举接口，故 `aliyun` 后端的 `List`（`POST /api/artifacts/scan` 回填）返回「不支持」；制品在**上传时**即写入本地 `artifacts` 表，正常打包/部署路径不受影响。
 - 打包：`packageFromGit`（`POST /api/deploy-notify` 或 `bin/release.sh`）clone+build 后，经当前后端 `Upload` 存储包，随后删本地临时构建目录。重复打包同 commit 会跳过构建（后端 `Exists` 命中）。上传成功后在本地 `artifacts` 表记录一行（`assetUrl`/`browserDownloadUrl`/`size`/`storage` 等）。
 - 部署：`POST /api/deploys` 经后端 `Exists` 校验制品存在；`executeDeploy` 优先用 `artifacts` 表里的 `assetUrl` 直接下载（跳过解析），缺则回退到按 tag 解析；下载到临时目录 → rsync 到 runtime → 删临时目录。

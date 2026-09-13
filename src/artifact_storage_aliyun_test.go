@@ -53,7 +53,9 @@ func (f *fakeAliyun) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		defer fh.Close()
 		b, _ := io.ReadAll(fh)
-		storedPath := r.URL.Path + "/" + r.URL.Query().Get("downloadFileName")
+		// Mirror the real Aliyun API: the object is stored at
+		// <filePath>/<fileName>; downloadFileName only sets the browser name.
+		storedPath := r.URL.Path + "/" + r.URL.Query().Get("fileName")
 		f.objects[storedPath+"?version="+version] = b
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{

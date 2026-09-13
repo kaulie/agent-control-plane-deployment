@@ -159,7 +159,12 @@ func (s *aliyunPackagesStorage) Upload(ctx context.Context, serviceID, gitRepoUR
 
 	q := url.Values{}
 	q.Set("version", tag)
-	q.Set("fileName", "package")
+	// The Aliyun API stores the object at <filePath>/<fileName> (empirically
+	// verified), NOT <filePath>/<downloadFileName>. downloadFileName only sets
+	// the browser download name. We therefore set fileName to the same
+	// package.tar.gz name the Download path expects, otherwise the uploaded
+	// object is stored as "package" and every later GET 404s.
+	q.Set("fileName", releaseAssetName)
 	q.Set("downloadFileName", releaseAssetName)
 	q.Set("versionDescription", "deployment package "+strings.TrimPrefix(tag, "deployment-"))
 	uploadURL := s.uploadURL(serviceID, tag) + "?" + q.Encode()
