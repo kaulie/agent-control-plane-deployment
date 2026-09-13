@@ -25,14 +25,25 @@ type Config struct {
 	// running restartCmd (polls every 2s). Avoids marking a deploy failed
 	// just because the service takes a few seconds to rebind its port.
 	HealthCheckTimeout time.Duration
-	// Artifact storage backend: "local" (on-disk under packagesDir) or
-	// "github_release" (GitHub Releases on each service's own repo). Empty
-	// defaults to github_release when GITHUB_TOKEN is set, else local. Env
-	// ARTIFACT_STORAGE. Future backends (S3, etc.) plug in via NewArtifactStorage.
+	// Artifact storage backend: "local" (on-disk under packagesDir),
+	// "github_release" (GitHub Releases on each service's own repo) or
+	// "aliyun" (Aliyun packages generic repo). Empty defaults to
+	// github_release when GITHUB_TOKEN is set, else local. Env
+	// ARTIFACT_STORAGE. Future backends (S3, etc.) plug in via
+	// NewArtifactStorage.
 	ArtifactStorageType string
 	// GitHub token (GITHUB_TOKEN / GH_TOKEN) used to upload/download release
 	// assets on each service's own repo. Empty disables release-based storage.
 	GitHubToken string
+	// Aliyun packages (制品仓库) generic-repo settings for the "aliyun"
+	// backend. baseURL/productID/repo default to the deployment control
+	// plane's repo; credentials (ALIYUN_PACKAGES_USER / ALIYUN_PACKAGES_PASSWORD)
+	// are required and never hardcoded.
+	AliyunBaseURL   string
+	AliyunProductID string
+	AliyunRepo      string
+	AliyunUsername  string
+	AliyunPassword  string
 }
 
 func expandHome(p string) string {
@@ -111,6 +122,22 @@ func loadConfig() Config {
 
 	artifactStorageType := strings.TrimSpace(os.Getenv("ARTIFACT_STORAGE"))
 
+	// Aliyun packages (制品仓库) backend. baseURL/productID/repo are non-secret
+	// and default to the control plane's own generic repo; credentials have no
+	// defaults and must be supplied (ALIYUN_PACKAGES_USER / ALIYUN_PACKAGES_PASSWORD).
+	aliyunBase := strings.TrimSpace(os.Getenv("ALIYUN_PACKAGES_BASE_URL"))
+	if aliyunBase == "" {
+		aliyunBase = defaultAliyunBaseURL
+	}
+	aliyunProduct := strings.TrimSpace(os.Getenv("ALIYUN_PACKAGES_PRODUCT_ID"))
+	if aliyunProduct == "" {
+		aliyunProduct = defaultAliyunProductID
+	}
+	aliyunRepo := strings.TrimSpace(os.Getenv("ALIYUN_PACKAGES_REPO"))
+	if aliyunRepo == "" {
+		aliyunRepo = defaultAliyunRepo
+	}
+
 	return Config{
 		Host:            host,
 		Port:            port,
@@ -125,5 +152,10 @@ func loadConfig() Config {
 		HealthCheckTimeout: healthCheckTimeout,
 		ArtifactStorageType: artifactStorageType,
 		GitHubToken:     githubToken,
+		AliyunBaseURL:   aliyunBase,
+		AliyunProductID: aliyunProduct,
+		AliyunRepo:      aliyunRepo,
+		AliyunUsername:  os.Getenv("ALIYUN_PACKAGES_USER"),
+		AliyunPassword:  os.Getenv("ALIYUN_PACKAGES_PASSWORD"),
 	}
 }

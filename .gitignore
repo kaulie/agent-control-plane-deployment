@@ -10,6 +10,14 @@ ops/*.log
 ops/*.pid
 .DS_Store
 *.swp
+# Secrets — never commit (Aliyun packages basic auth, etc.). Runtime creds
+# live in data/ (already ignored) or the environment.
+.env
+.env.*
+*credentials
+*credentials.*
+*secret*
+*token*
 bin/deployment-server
 bin/acp-upgrader
 # stray binary produced by `go build` (no -o) inside src/
