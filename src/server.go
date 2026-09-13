@@ -275,7 +275,7 @@ func (s *apiServer) handleCreateDeploy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "service not found: "+serviceID)
 		return
 	}
-	deployment, err := assertPackage(s.cfg.PackagesDir, raw)
+	deployment, err := assertPackage(s.cfg.PackagesDir, serviceID, raw)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

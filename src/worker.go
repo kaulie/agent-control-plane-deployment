@@ -27,12 +27,14 @@ func normalizeDeploymentTag(raw string) (string, error) {
 	return "deployment-" + strings.TrimPrefix(s, "deployment-"), nil
 }
 
-func assertPackage(packagesDir, deployment string) (string, error) {
+// assertPackage resolves a deployment tag and verifies its package exists under
+// packagesDir/serviceID/tag (per-service isolation keyed by serviceId).
+func assertPackage(packagesDir, serviceID, deployment string) (string, error) {
 	tag, err := normalizeDeploymentTag(deployment)
 	if err != nil {
 		return "", err
 	}
-	snap := filepath.Join(packagesDir, tag)
+	snap := filepath.Join(packagesDir, serviceID, tag)
 	if _, err := os.Stat(filepath.Join(snap, "VERSION")); err != nil {
 		return "", fmt.Errorf("deployment package not found: %s", snap)
 	}
@@ -207,7 +209,7 @@ func executeDeploy(store *Store, cfg Config, requestID string) {
 		return
 	}
 	hash := strings.TrimPrefix(tag, "deployment-")
-	src := filepath.Join(cfg.PackagesDir, tag)
+	src := filepath.Join(cfg.PackagesDir, job.ServiceID, tag)
 	if _, err := os.Stat(filepath.Join(src, "VERSION")); err != nil {
 		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 			State: StateFailed,

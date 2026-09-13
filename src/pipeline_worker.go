@@ -99,7 +99,7 @@ func (w *PipelineWorker) execute(job *PipelineJob) {
 	}
 
 	fmt.Printf("[pipeline] %s packaging service=%s ref=%s repo=%s\n", job.RequestID, job.ServiceID, job.Ref, gitURL)
-	pkg, err := packageFromGit(w.cfg.PackagesDir, gitURL, job.Ref, w.cfg.ReleaseMaxSec)
+	pkg, err := packageFromGit(w.cfg.PackagesDir, job.ServiceID, gitURL, job.Ref, w.cfg.ReleaseMaxSec)
 	if err != nil {
 		failPipeline(w.store, job.RequestID, "package failed: "+err.Error())
 		return
