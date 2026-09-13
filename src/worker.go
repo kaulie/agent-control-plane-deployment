@@ -209,8 +209,11 @@ func executeDeploy(store *Store, cfg Config, requestID string) {
 		return
 	}
 	hash := strings.TrimPrefix(tag, "deployment-")
+	_ = store.AddDeployEvent(job.RequestID, "info",
+		"开始部署：service="+job.ServiceID+" deployment="+tag+" version="+hash)
 	src := filepath.Join(cfg.PackagesDir, job.ServiceID, tag)
 	if _, err := os.Stat(filepath.Join(src, "VERSION")); err != nil {
+		_ = store.AddDeployEvent(job.RequestID, "error", "找不到部署包："+src)
 		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 			State: StateFailed,
 			Error: fmt.Sprintf("package not found: %s", src),
@@ -254,7 +257,7 @@ func executeDeploy(store *Store, cfg Config, requestID string) {
 
 	if service.SupportsGracefulRestart() {
 		fmt.Printf("[deploy] %s graceful restart enabled (notify+poll)\n", job.RequestID)
-		if waitForGracefulRestart(*service, cfg, *job, hash) {
+		if waitForGracefulRestart(store, *service, cfg, *job, hash) {
 			fmt.Printf("[deploy] %s proceeding after graceful force timeout\n", job.RequestID)
 		}
 	} else {
@@ -290,18 +293,23 @@ func executeDeploy(store *Store, cfg Config, requestID string) {
 		if len(out) > 2000 {
 			out = out[len(out)-2000:]
 		}
+		_ = store.AddDeployEvent(job.RequestID, "error", "rsync 失败："+out)
 		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 			State: StateFailed,
 			Error: "rsync failed: " + out,
 		})
 		return
 	}
+	_ = store.AddDeployEvent(job.RequestID, "ok",
+		"制品已 rsync 到 runtime："+service.RuntimeDir)
 
 	_ = os.WriteFile(filepath.Join(service.RuntimeDir, "VERSION"), []byte(hash+"\n"), 0o644)
 	_ = os.WriteFile(filepath.Join(service.RuntimeDir, "DEPLOYMENT"), []byte(tag+"\n"), 0o644)
 
 	if self {
 		if !upgraderRunning(cfg.Home) {
+			_ = store.AddDeployEvent(job.RequestID, "error",
+				"acp-upgrader 未运行；请启动 scripts/upgrader-start.sh")
 			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 				State:   StateFailed,
 				Version: hash,
@@ -310,6 +318,7 @@ func executeDeploy(store *Store, cfg Config, requestID string) {
 			return
 		}
 		if err := enqueueACPUpgrade(cfg, *job, *service, hash, tag); err != nil {
+			_ = store.AddDeployEvent(job.RequestID, "error", "写入 upgrade-requests 失败："+err.Error())
 			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 				State:   StateFailed,
 				Version: hash,
@@ -318,6 +327,8 @@ func executeDeploy(store *Store, cfg Config, requestID string) {
 			return
 		}
 		fmt.Printf("[deploy] %s self-upgrade staged; handed off to acp-upgrader (job stays running until reconcile)\n", job.RequestID)
+		_ = store.AddDeployEvent(job.RequestID, "info",
+			"已移交 acp-upgrader：停止旧服务 → 启动新服务 → 探活（任务保持 running 直到新进程 reconcile）")
 		return
 	}
 
@@ -334,6 +345,8 @@ func executeDeploy(store *Store, cfg Config, requestID string) {
 
 	fmt.Printf("[deploy] %s restart via contract (PORT=%s): %s\n",
 		job.RequestID, portFromHealthURL(service.HealthURL), restartCmd)
+	_ = store.AddDeployEvent(job.RequestID, "info",
+		"执行 restartCmd（PORT="+portFromHealthURL(service.HealthURL)+"）："+restartCmd)
 	restart := runShell(
 		restartCmd,
 		service.RuntimeDir,
@@ -345,6 +358,7 @@ func executeDeploy(store *Store, cfg Config, requestID string) {
 		if len(out) > 2000 {
 			out = out[len(out)-2000:]
 		}
+		_ = store.AddDeployEvent(job.RequestID, "error", "restart 失败："+out)
 		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 			State:   StateFailed,
 			Version: hash,
@@ -354,6 +368,7 @@ func executeDeploy(store *Store, cfg Config, requestID string) {
 	}
 
 	if !healthOK(service.HealthURL) {
+		_ = store.AddDeployEvent(job.RequestID, "error", "健康检查失败："+service.HealthURL)
 		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 			State:   StateFailed,
 			Version: hash,
@@ -361,12 +376,15 @@ func executeDeploy(store *Store, cfg Config, requestID string) {
 		})
 		return
 	}
+	_ = store.AddDeployEvent(job.RequestID, "ok",
+		"健康检查通过："+service.HealthURL)
 
 	_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 		State:   StateSucceeded,
 		Version: hash,
 		Message: "deploy succeeded",
 	})
+	_ = store.AddDeployEvent(job.RequestID, "ok", "部署成功：version="+hash)
 	fmt.Printf("[deploy] %s ok version=%s\n", job.RequestID, hash)
 }
 

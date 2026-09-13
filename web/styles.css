@@ -224,7 +224,7 @@ a { color: var(--accent-2); }
 .eventlog { list-style: none; margin: 0; padding: 0; }
 .evlog {
   display: grid;
-  grid-template-columns: 150px 60px 1fr;
+  grid-template-columns: 150px 60px 50px 1fr;
   gap: 10px;
   align-items: start;
   padding: 7px 8px;
@@ -239,6 +239,10 @@ a { color: var(--accent-2); }
   font-size: 11px; font-weight: 600; text-transform: uppercase;
   text-align: center; padding: 1px 4px; border-radius: 999px;
   background: #2a2f3a; color: var(--muted);
+}
+.evlog__src {
+  font-size: 11px; color: var(--muted); text-align: center;
+  padding: 1px 4px; border-radius: 999px; border: 1px solid var(--border);
 }
 .evlog__msg { word-break: break-word; white-space: normal; }
 .evlog--ok { border-left-color: var(--green); }
