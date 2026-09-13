@@ -131,6 +131,8 @@ a { color: var(--accent-2); }
 .grid td.wrap, .grid th.wrap { white-space: normal; max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 .cell-actions { display: flex; gap: 6px; }
+a.btn { text-decoration: none; display: inline-block; }
+a.btn:hover { color: var(--text); }
 
 /* In-page form card (replaces modal) */
 .form-card {
