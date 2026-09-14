@@ -143,7 +143,7 @@ func waitForGracefulRestart(
 		recordDeployEvent(store, job.RequestID, "warn",
 			"graceful：通知失败（继续轮询）："+err.Error())
 	} else {
-		recordDeployEvent(store, job.RequestID, "ok", "graceful：通知已送达")
+		recordDeployEvent(store, job.RequestID, "success", "graceful：通知已送达")
 	}
 
 	attempt := 0
@@ -156,7 +156,7 @@ func waitForGracefulRestart(
 				fmt.Sprintf("graceful 轮询 #%d 失败：%v", attempt, err))
 		} else if pollAllowsDeploy(st) {
 			fmt.Printf("[deploy] %s graceful: project ready (poll #%d)\n", job.RequestID, attempt)
-			recordDeployEvent(store, job.RequestID, "ok",
+			recordDeployEvent(store, job.RequestID, "success",
 				fmt.Sprintf("graceful 轮询 #%d：项目就绪，继续部署", attempt))
 			return false
 		} else {
