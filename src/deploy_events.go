@@ -7,7 +7,7 @@ type DeployEvent struct {
 	ID        int64  `json:"id"`
 	RequestID string `json:"requestId"`
 	Ts        string `json:"ts"`
-	Level     string `json:"level"` // info | ok | warn | error
+	Level     string `json:"level"` // info | success | warn | error
 	Message   string `json:"message"`
 }
 
