@@ -21,7 +21,7 @@ type PackageResult struct {
 
 // PackageEventFunc receives progress lines emitted by packageFromGit (build /
 // upload) so the caller can record them on the pipeline timeline. level is one
-// of info|ok|warn|error. A nil sink simply discards the lines.
+// of info|success|warn|error. A nil sink simply discards the lines.
 type PackageEventFunc func(level, message string)
 
 // packageFromGit clones/fetches ref, runs build.sh, and stores the frozen
@@ -190,7 +190,7 @@ func packageFromGit(serviceID, gitRepoURL, ref string, maxSec int, storage Artif
 		return out, fmt.Errorf("upload artifact: %w", err)
 	}
 	if events != nil {
-		events("ok", "上传结束：storage="+storage.Name()+" tag="+tag+
+		events("success", "上传结束：storage="+storage.Name()+" tag="+tag+
 			" size="+humanBytes(meta.Size)+" 耗时="+humanDuration(time.Since(uploadStart)))
 	}
 	out.Artifact = meta
