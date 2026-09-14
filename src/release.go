@@ -19,11 +19,17 @@ type PackageResult struct {
 	Artifact   *ArtifactMeta
 }
 
+// PackageEventFunc receives progress lines emitted by packageFromGit (build /
+// upload) so the caller can record them on the pipeline timeline. level is one
+// of info|ok|warn|error. A nil sink simply discards the lines.
+type PackageEventFunc func(level, message string)
+
 // packageFromGit clones/fetches ref, runs build.sh, and stores the frozen
 // outputs via the configured ArtifactStorage (local disk or GitHub Releases,
 // etc.). Nothing is persisted under packagesDir unless the storage is local;
-// the storage backend is the single source of truth for the bytes.
-func packageFromGit(serviceID, gitRepoURL, ref string, maxSec int, storage ArtifactStorage) (PackageResult, error) {
+// the storage backend is the single source of truth for the bytes. events, when
+// non-nil, receives granular build/upload progress lines (e.g. 上传开始/上传结束).
+func packageFromGit(serviceID, gitRepoURL, ref string, maxSec int, storage ArtifactStorage, events PackageEventFunc) (PackageResult, error) {
 	var out PackageResult
 	gitRepoURL = strings.TrimSpace(gitRepoURL)
 	ref = strings.TrimSpace(ref)
@@ -172,10 +178,44 @@ func packageFromGit(serviceID, gitRepoURL, ref string, maxSec int, storage Artif
 	_ = os.WriteFile(filepath.Join(pkgDir, "COMMIT"), []byte(full+"\n"), 0o644)
 	_ = os.WriteFile(filepath.Join(pkgDir, "GIT_REPO_URL"), []byte(gitRepoURL+"\n"), 0o644)
 
+	if events != nil {
+		events("info", "上传开始：storage="+storage.Name()+" tag="+tag)
+	}
+	uploadStart := time.Now()
 	meta, err := storage.Upload(context.Background(), serviceID, gitRepoURL, tag, pkgDir)
 	if err != nil {
+		if events != nil {
+			events("error", "上传失败：storage="+storage.Name()+" tag="+tag+" err="+err.Error())
+		}
 		return out, fmt.Errorf("upload artifact: %w", err)
+	}
+	if events != nil {
+		events("ok", "上传结束：storage="+storage.Name()+" tag="+tag+
+			" size="+humanBytes(meta.Size)+" 耗时="+humanDuration(time.Since(uploadStart)))
 	}
 	out.Artifact = meta
 	return out, nil
+}
+
+// humanBytes renders a byte count like "12.3 MB" (used in event lines).
+func humanBytes(n int64) string {
+	if n <= 0 {
+		return "0 B"
+	}
+	units := []string{"B", "KB", "MB", "GB", "TB"}
+	v := float64(n)
+	i := 0
+	for v >= 1024 && i < len(units)-1 {
+		v /= 1024
+		i++
+	}
+	if i == 0 {
+		return fmt.Sprintf("%d %s", n, units[i])
+	}
+	return fmt.Sprintf("%.1f %s", v, units[i])
+}
+
+// humanDuration renders a duration like "3.4s" (used in event lines).
+func humanDuration(d time.Duration) string {
+	return fmt.Sprintf("%.1fs", d.Seconds())
 }

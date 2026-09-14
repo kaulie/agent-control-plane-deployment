@@ -263,15 +263,20 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 	}
 	dlCtx, dlCancel := context.WithTimeout(context.Background(), time.Duration(cfg.ReleaseMaxSec)*time.Second)
 	defer dlCancel()
+	_ = store.AddDeployEvent(job.RequestID, "info",
+		"下载开始：storage="+storage.Name()+" tag="+tag)
+	dlStart := time.Now()
 	if err := storage.Download(dlCtx, job.ServiceID, service.GitRepoURL, tag, src, accessPath); err != nil {
-		_ = store.AddDeployEvent(job.RequestID, "error", "下载制品失败："+err.Error())
+		_ = store.AddDeployEvent(job.RequestID, "error", "下载失败："+err.Error())
 		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 			State: StateFailed,
 			Error: fmt.Sprintf("download package: %v", err),
 		})
 		return
 	}
-	_ = store.AddDeployEvent(job.RequestID, "ok", "制品已下载到临时目录："+src)
+	_ = store.AddDeployEvent(job.RequestID, "ok",
+		"下载结束：storage="+storage.Name()+" tag="+tag+
+			" size="+humanBytes(dirSize(src))+" 耗时="+humanDuration(time.Since(dlStart)))
 
 	self := isSelfDeploy(*service, cfg)
 	if self {
