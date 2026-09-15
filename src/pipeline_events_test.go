@@ -29,8 +29,8 @@ func TestPipelineEvents(t *testing.T) {
 	if err := s.AddPipelineEvent(id, "", "默认 info 级别"); err != nil {
 		t.Fatalf("AddPipelineEvent default: %v", err)
 	}
-	if err := s.AddPipelineEvent(id, "ok", "打包完成"); err != nil {
-		t.Fatalf("AddPipelineEvent ok: %v", err)
+	if err := s.AddPipelineEvent(id, "success", "打包完成"); err != nil {
+		t.Fatalf("AddPipelineEvent success: %v", err)
 	}
 	if err := s.AddPipelineEvent(id, "error", "失败原因"); err != nil {
 		t.Fatalf("AddPipelineEvent error: %v", err)
@@ -50,7 +50,7 @@ func TestPipelineEvents(t *testing.T) {
 	if events[1].Level != "info" {
 		t.Fatalf("default level should be info, got %q", events[1].Level)
 	}
-	if events[2].Level != "ok" || events[2].Message != "打包完成" {
+	if events[2].Level != "success" || events[2].Message != "打包完成" {
 		t.Fatalf("event2 = %+v", events[2])
 	}
 	if events[3].Level != "error" {
