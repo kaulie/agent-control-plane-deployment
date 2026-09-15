@@ -247,8 +247,8 @@ a.btn:hover { color: var(--text); }
   padding: 1px 4px; border-radius: 999px; border: 1px solid var(--border);
 }
 .evlog__msg { word-break: break-word; white-space: normal; }
-.evlog--ok { border-left-color: var(--green); }
-.evlog--ok .evlog__lvl { background: rgba(63,185,80,.15); color: var(--green); }
+.evlog--success { border-left-color: var(--green); }
+.evlog--success .evlog__lvl { background: rgba(63,185,80,.15); color: var(--green); }
 .evlog--error { border-left-color: var(--red); }
 .evlog--error .evlog__lvl { background: rgba(248,81,73,.15); color: var(--red); }
 .evlog--warn { border-left-color: var(--amber); }
