@@ -124,7 +124,7 @@ func (w *PipelineWorker) execute(job *PipelineJob) {
 		_ = w.store.AddPipelineEvent(job.RequestID, "info",
 			"包已存在，跳过构建：tag="+pkg.Tag+" version="+pkg.Hash)
 	} else {
-		_ = w.store.AddPipelineEvent(job.RequestID, "ok",
+		_ = w.store.AddPipelineEvent(job.RequestID, "success",
 			"打包完成：tag="+pkg.Tag+" version="+pkg.Hash+" commit="+pkg.FullCommit)
 	}
 	// Record artifact metadata locally (the storage backend is pure storage;
@@ -201,7 +201,7 @@ func (w *PipelineWorker) syncDeploying() {
 				Version:         dep.Version,
 				Message:         "pipeline succeeded",
 			})
-			_ = w.store.AddPipelineEvent(job.RequestID, "ok",
+			_ = w.store.AddPipelineEvent(job.RequestID, "success",
 				"流水线成功：version="+dep.Version)
 		case StateFailed, StateCancelled:
 			_ = w.store.UpdatePipeline(job.RequestID, PipelineJob{
