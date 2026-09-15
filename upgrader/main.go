@@ -125,7 +125,7 @@ func handleRequest(home, path string, db *sql.DB) error {
 		logf("stop: %v (continuing)", err)
 		addEvent(db, req.RequestID, "warn", "stop.sh 返回错误（继续）："+err.Error())
 	} else {
-		addEvent(db, req.RequestID, "ok", "旧服务已停止")
+		addEvent(db, req.RequestID, "success", "旧服务已停止")
 	}
 	time.Sleep(500 * time.Millisecond)
 	addEvent(db, req.RequestID, "info", "upgrader：启动新服务（start.sh）")
@@ -133,13 +133,13 @@ func handleRequest(home, path string, db *sql.DB) error {
 		addEvent(db, req.RequestID, "error", "start.sh 失败："+err.Error())
 		return fmt.Errorf("start: %w", err)
 	}
-	addEvent(db, req.RequestID, "ok", "新服务已启动")
+	addEvent(db, req.RequestID, "success", "新服务已启动")
 
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if healthOK(healthURL) {
 			logf("ok requestId=%s health=%s", req.RequestID, healthURL)
-			addEvent(db, req.RequestID, "ok", "健康检查通过："+healthURL)
+			addEvent(db, req.RequestID, "success", "健康检查通过："+healthURL)
 			done := path + ".done"
 			_ = os.WriteFile(done, []byte(fmt.Sprintf("ok %s\n", time.Now().UTC().Format(time.RFC3339))), 0o644)
 			_ = os.Remove(path)
