@@ -24,8 +24,8 @@ func TestDeployEvents(t *testing.T) {
 	if err := s.AddDeployEvent(id, "", "默认 info"); err != nil {
 		t.Fatalf("AddDeployEvent default: %v", err)
 	}
-	if err := s.AddDeployEvent(id, "ok", "部署成功"); err != nil {
-		t.Fatalf("AddDeployEvent ok: %v", err)
+	if err := s.AddDeployEvent(id, "success", "部署成功"); err != nil {
+		t.Fatalf("AddDeployEvent success: %v", err)
 	}
 
 	events, err := s.ListDeployEvents(id)
@@ -41,7 +41,7 @@ func TestDeployEvents(t *testing.T) {
 	if events[1].Level != "info" {
 		t.Fatalf("default level should be info, got %q", events[1].Level)
 	}
-	if events[2].Level != "ok" || events[2].Message != "部署成功" {
+	if events[2].Level != "success" || events[2].Message != "部署成功" {
 		t.Fatalf("event2 = %+v", events[2])
 	}
 	for i := 1; i < len(events); i++ {
