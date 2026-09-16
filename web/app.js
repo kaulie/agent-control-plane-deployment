@@ -188,6 +188,15 @@ function populateServiceSelects() {
       `<option value="${esc(s.serviceId)}">${esc(s.serviceId)}</option>`).join('');
     if (services.find((s) => s.serviceId === prev)) sel.value = prev;
   }
+  // History filters: keep an empty "全部" option so a filter can be cleared.
+  for (const id of ['#pipe-f-service', '#dep-f-service']) {
+    const sel = $(id);
+    if (!sel) continue;
+    const prev = sel.value;
+    sel.innerHTML = `<option value="">全部</option>` +
+      services.map((s) => `<option value="${esc(s.serviceId)}">${esc(s.serviceId)}</option>`).join('');
+    sel.value = prev && services.find((s) => s.serviceId === prev) ? prev : '';
+  }
   // Artifacts filter: keep an "全部" (all) option so the tab can list every
   // service's artifacts, not just one.
   const artSel = $('#art-service');
@@ -282,17 +291,145 @@ $('#svc-table tbody').addEventListener('click', (e) => {
   if (svc) openServiceForm(svc);
 });
 
-// ---- pipelines ------------------------------------------------------------
-async function refreshPipelines() {
-  const tbody = $('#pipe-table tbody');
-  try {
-    const data = await apiGet('/api/pipelines?limit=100');
-    const jobs = data.pipelines || [];
-    if (!jobs.length) {
-      tbody.innerHTML = `<tr><td colspan="10" class="muted">暂无流水线记录</td></tr>`;
-      return;
+// ---- sub-tabs: 「发起」 / 「历史列表」 -------------------------------------
+// Each top tab (部署流水线 / 部署任务) is split into a 发起 sub-panel and a
+// 历史列表 sub-panel. A sub-tab click toggles the button + matching sub-panel.
+$$('.subtabs').forEach((nav) => {
+  $$('.subtab', nav).forEach((btn) => {
+    btn.addEventListener('click', () => {
+      $$('.subtab', nav).forEach((b) => b.classList.toggle('subtab--active', b === btn));
+      const section = nav.parentElement;
+      $$('.subpanel', section).forEach((p) => p.classList.toggle('subpanel--active', p.id === btn.dataset.subtab));
+      refresh();
+    });
+  });
+});
+
+// Id of the currently visible sub-panel of a tab nav (e.g. 'pipe-history').
+function activeSubPanel(navId) {
+  const nav = $('#' + navId);
+  const active = nav ? $('.subtab--active', nav) : null;
+  return active ? active.dataset.subtab : '';
+}
+
+// ---- history lists (filters + server-side pagination) --------------------
+// One controller per history tab. Both share the API query contract:
+//   ?serviceId=&state=&triggeredByRole=&triggeredById=&ref=&deployment=
+//    &version=&q=&from=&to=&page=&pageSize=
+// and the response { <listKey>: [...], total, page, pageSize }.
+// Filters live in an "applied" snapshot so the 3s auto-refresh never picks up
+// half-typed values: only 查询 / 重置 / 每页 change the applied set.
+function makeHistory(cfg) {
+  const state = { page: 1, pageSize: 20, applied: {} };
+  const el = (name) => $('#' + cfg.prefix + '-f-' + name);
+
+  function readUI() {
+    const out = {};
+    for (const name of cfg.fields) {
+      const e = el(name);
+      out[name] = e ? e.value.trim() : '';
     }
-    tbody.innerHTML = jobs.map((j) => `<tr class="rowlink" data-pipe-open="${esc(j.requestId)}">
+    return out;
+  }
+
+  function queryString() {
+    const p = new URLSearchParams();
+    for (const name of cfg.fields) {
+      let v = state.applied[name];
+      if (!v) continue;
+      // date inputs -> inclusive full-day UTC bounds on requested_at
+      if (name === 'from') v = v + 'T00:00:00.000Z';
+      else if (name === 'to') v = v + 'T23:59:59.999Z';
+      p.set(name, v);
+    }
+    p.set('page', String(state.page));
+    p.set('pageSize', String(state.pageSize));
+    return p.toString();
+  }
+
+  async function refresh() {
+    const tb = $(cfg.tableSel);
+    const pager = $('#' + cfg.prefix + '-pager');
+    try {
+      const data = await apiGet(cfg.endpoint + '?' + queryString());
+      const list = data[cfg.listKey] || [];
+      const total = data.total != null ? data.total : list.length;
+      const pageSize = data.pageSize || state.pageSize;
+      const pages = Math.max(1, Math.ceil(total / pageSize));
+      if (state.page > pages) { state.page = pages; return refresh(); }
+      tb.innerHTML = list.length
+        ? list.map(cfg.renderRow).join('')
+        : `<tr><td colspan="${cfg.colspan}" class="muted">没有匹配的记录</td></tr>`;
+      renderPager(pager, total, state.page, pageSize, (p) => { state.page = p; refresh(); });
+    } catch (e) {
+      tb.innerHTML = `<tr><td colspan="${cfg.colspan}" class="muted">加载失败：${esc(e.message)}</td></tr>`;
+      if (pager) pager.innerHTML = '';
+    }
+  }
+
+  // 查询: snapshot the form into the applied filters and jump back to page 1.
+  function apply() {
+    state.applied = readUI();
+    state.pageSize = Number(el('pageSize') && el('pageSize').value) || 20;
+    state.page = 1;
+    refresh();
+  }
+  // 重置: clear the form + applied filters.
+  function reset() {
+    for (const name of cfg.fields) { const e = el(name); if (e) e.value = ''; }
+    if (el('pageSize')) el('pageSize').value = '20';
+    state.applied = {};
+    state.pageSize = 20;
+    state.page = 1;
+    refresh();
+  }
+
+  const applyBtn = $('#' + cfg.prefix + '-f-apply');
+  if (applyBtn) applyBtn.addEventListener('click', apply);
+  const resetBtn = $('#' + cfg.prefix + '-f-reset');
+  if (resetBtn) resetBtn.addEventListener('click', reset);
+  const pageSizeEl = el('pageSize');
+  if (pageSizeEl) pageSizeEl.addEventListener('change', apply);
+  for (const name of cfg.fields) {
+    const e = el(name);
+    if (e && e.tagName === 'INPUT' && e.type !== 'date') {
+      e.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); apply(); } });
+    }
+  }
+
+  state.applied = readUI();
+  return { refresh, apply, reset, state };
+}
+
+// renderPager paints "共 N 条 · 第 p/t 页" + prev/next onto a .pager element.
+function renderPager(host, total, page, pageSize, setPage) {
+  if (!host) return;
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  const cur = Math.min(Math.max(1, page), pages);
+  const info = document.createElement('span');
+  info.className = 'pager__info';
+  info.textContent = `共 ${total} 条 · 第 ${cur}/${pages} 页`;
+  const prev = document.createElement('button');
+  prev.className = 'btn btn--sm';
+  prev.textContent = '← 上一页';
+  prev.disabled = cur <= 1;
+  prev.addEventListener('click', () => setPage(cur - 1));
+  const next = document.createElement('button');
+  next.className = 'btn btn--sm';
+  next.textContent = '下一页 →';
+  next.disabled = cur >= pages;
+  next.addEventListener('click', () => setPage(cur + 1));
+  host.replaceChildren(info, prev, next);
+}
+
+const historyPipelines = makeHistory({
+  prefix: 'pipe',
+  endpoint: '/api/pipelines',
+  listKey: 'pipelines',
+  tableSel: '#pipe-table tbody',
+  colspan: 10,
+  fields: ['serviceId', 'state', 'triggeredByRole', 'triggeredById', 'ref', 'deployment', 'version', 'q', 'from', 'to'],
+  renderRow: (j) => `<tr class="rowlink" data-pipe-open="${esc(j.requestId)}">
       <td class="mono">${esc(j.requestId)}</td>
       <td class="mono">${esc(j.serviceId)}</td>
       <td class="mono">${esc(j.ref)}</td>
@@ -303,12 +440,34 @@ async function refreshPipelines() {
       <td>${identityCell(j)}</td>
       <td class="mono">${fmtTime(j.requestedAt)}</td>
       <td class="wrap">${esc(j.error || j.message || '—')}</td>
-    </tr>`).join('');
-  } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="10" class="muted">加载失败：${esc(e.message)}</td></tr>`;
-  }
-}
+    </tr>`,
+});
 
+const historyDeploys = makeHistory({
+  prefix: 'dep',
+  endpoint: '/api/deploys',
+  listKey: 'deploys',
+  tableSel: '#dep-table tbody',
+  colspan: 10,
+  fields: ['serviceId', 'state', 'triggeredByRole', 'triggeredById', 'deployment', 'version', 'q', 'from', 'to'],
+  renderRow: (j) => `<tr>
+      <td class="mono">${esc(j.requestId)}</td>
+      <td class="mono">${esc(j.serviceId)}</td>
+      <td class="mono">${esc(j.deployment)}</td>
+      <td>${stateBadge(j.state)}</td>
+      <td class="mono">${esc(j.version || '—')}</td>
+      <td>${identityCell(j)}</td>
+      <td class="mono">${fmtTime(j.requestedAt)}</td>
+      <td class="mono">${fmtTime(j.startedAt)}</td>
+      <td class="mono">${fmtTime(j.finishedAt)}</td>
+      <td class="wrap">${esc(j.error || j.message || '—')}</td>
+    </tr>`,
+});
+
+function refreshPipelines() { return historyPipelines.refresh(); }
+function refreshDeploys() { return historyDeploys.refresh(); }
+
+// ---- pipelines: 发起（触发打包+部署） -------------------------------------
 $('#pipe-trigger').addEventListener('click', async () => {
   const serviceId = $('#pipe-service').value;
   const ref = $('#pipe-ref').value.trim();
@@ -454,33 +613,7 @@ async function refreshPipelineDetail() {
   }
 }
 
-// ---- deploys --------------------------------------------------------------
-async function refreshDeploys() {
-  const tbody = $('#dep-table tbody');
-  try {
-    const data = await apiGet('/api/deploys?limit=100');
-    const jobs = data.deploys || [];
-    if (!jobs.length) {
-      tbody.innerHTML = `<tr><td colspan="10" class="muted">暂无部署任务</td></tr>`;
-      return;
-    }
-    tbody.innerHTML = jobs.map((j) => `<tr>
-      <td class="mono">${esc(j.requestId)}</td>
-      <td class="mono">${esc(j.serviceId)}</td>
-      <td class="mono">${esc(j.deployment)}</td>
-      <td>${stateBadge(j.state)}</td>
-      <td class="mono">${esc(j.version || '—')}</td>
-      <td>${identityCell(j)}</td>
-      <td class="mono">${fmtTime(j.requestedAt)}</td>
-      <td class="mono">${fmtTime(j.startedAt)}</td>
-      <td class="mono">${fmtTime(j.finishedAt)}</td>
-      <td class="wrap">${esc(j.error || j.message || '—')}</td>
-    </tr>`).join('');
-  } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="10" class="muted">加载失败：${esc(e.message)}</td></tr>`;
-  }
-}
-
+// ---- deploys: 发起（触发部署已有制品） ------------------------------------
 $('#dep-trigger').addEventListener('click', async () => {
   const serviceId = $('#dep-service').value;
   const deployment = $('#dep-deployment').value.trim();
@@ -565,10 +698,15 @@ function refreshActiveTab() {
   const active = $('#tabs .tab--active').dataset.tab;
   if (active === 'services') refreshServices();
   else if (active === 'pipelines') {
+    // only the 历史列表 sub-panel has a list to poll
+    if (activeSubPanel('pipe-subtabs') !== 'pipe-history') return;
     if (pipeDetailID) refreshPipelineDetail();
     else refreshPipelines();
   }
-  else if (active === 'deploys') refreshDeploys();
+  else if (active === 'deploys') {
+    if (activeSubPanel('dep-subtabs') !== 'dep-history') return;
+    refreshDeploys();
+  }
   else if (active === 'artifacts') refreshArtifacts();
   else if (active === 'meta') refreshMeta();
 }

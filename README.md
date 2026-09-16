@@ -151,10 +151,12 @@ curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 | GET | `/health` | 本服务探活 |
 | GET/PUT/DELETE | `/api/services[/:id]` | 服务契约（含 `gitRepoUrl`、可选 graceful URL） |
 | POST | `/api/deploy-notify` | 服务方通知：打包 → 再部署（**需身份头**） |
-| GET | `/api/pipelines[/:id]` | 打包+部署流水线状态 |
+| GET | `/api/pipelines` | 流水线列表（**多属性筛选 + 分页**，见下） |
+| GET | `/api/pipelines/:id` | 单条流水线状态 |
 | GET | `/api/pipelines/:id/events` | 流水线事件日志 |
 | POST | `/api/deploys` | 已有包直接入队部署（**需身份头**） |
-| GET | `/api/deploys[/:id]` | 查询部署任务 |
+| GET | `/api/deploys` | 部署任务列表（**多属性筛选 + 分页**，见下） |
+| GET | `/api/deploys/:id` | 查询单条部署任务 |
 | GET | `/api/deploys/:id/events` | 部署执行事件日志 |
 | GET | `/api/artifacts[?serviceId=]` | 制品元数据列表（本地表，存储后端为纯存储） |
 | GET | `/api/artifacts/:tag?serviceId=` | 单个制品元数据（含访问路径 `assetUrl`/`browserDownloadUrl`） |
@@ -162,6 +164,28 @@ curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 | POST | `/restart/notify` | ACP 自身 graceful：通知进入 drain |
 | GET | `/restart/poll` | ACP 自身 graceful：轮询是否可重启 |
 | GET | `/api/meta` | 含 graceful / release / 身份校验 配置 |
+
+### 列表查询（`GET /api/deploys`、`GET /api/pipelines`）
+
+两个列表接口支持同一组筛选 + 分页参数（都不传 = 全部 / 第 1 页），响应统一含 `total` / `page` / `pageSize`。
+
+| 参数 | 说明 |
+|---|---|
+| `serviceId` | 精确匹配服务 |
+| `state` | 精确匹配状态（deploy：`queued`/`running`/`succeeded`/`failed`/`cancelled`；pipeline：`queued`/`packaging`/`deploying`/`succeeded`/`failed`） |
+| `triggeredByRole` / `triggeredById` | 触发者身份（精确匹配） |
+| `deployment` / `version` | 包含匹配 |
+| `ref` | 仅 pipeline：包含匹配 |
+| `q` | 关键字：对 `request_id` / `deployment` / `version` / `message` / `error` / `triggered_by_id` 做包含匹配 |
+| `from` / `to` | `requested_at` 闭区间，ISO 字符串（面板按 UTC 整天传入） |
+| `page` / `pageSize` | 分页（默认 `1` / `20`，`pageSize` 上限 200；`limit` 仍是 `pageSize` 的别名） |
+
+```bash
+# 失败的部署，第 2 页，每页 10 条
+curl -sS 'http://127.0.0.1:4220/api/deploys?state=failed&page=2&pageSize=10'
+# web-cursor 的流水线，ref 含 "feature"
+curl -sS 'http://127.0.0.1:4220/api/pipelines?serviceId=web-cursor&ref=feature'
+```
 
 旧的 `ops/` 文件队列守护已废弃，保留目录仅作历史参考；请用本 HTTP 服务。
 
@@ -223,10 +247,12 @@ curl -sS -X POST http://127.0.0.1:4220/api/deploys \
 | 面板 | 能力 |
 |---|---|
 | 服务契约 | 列表 / 新建 / 编辑 / 删除（`PUT`/`DELETE /api/services`） |
-| 部署流水线 | 列表 + 触发打包→部署（`POST /api/deploy-notify`），实时状态轮询 |
-| 部署任务 | 列表 + 触发已有包部署（`POST /api/deploys`） |
+| 部署流水线 | 两个子页：**发起**（触发打包→部署，`POST /api/deploy-notify`） / **历史列表**（多属性筛选 + 分页，实时轮询） |
+| 部署任务 | 两个子页：**发起**（触发已有包部署，`POST /api/deploys`） / **历史列表**（多属性筛选 + 分页，实时轮询） |
 | 元信息 | 展示 `/api/meta` |
 
 状态徽标：`queued`/`packaging`/`deploying`/`running`/`succeeded`/`failed`/`cancelled`。
 默认每 3s 自动刷新当前页签，可在右上角关闭。`install.sh` 已把 `web/` 一并 rsync 到 runtime。
+
+- **发起 / 历史列表 分离**：流水线、部署各自拆成「发起」与「历史列表」两个子页；历史列表支持按 服务 / 状态 / 触发者 / ref / deployment / version / 关键字 / 时间范围 筛选，并在**服务端分页**（每页 10/20/50/100）。筛选只有点「查询」（或在输入框回车 / 改每页）才作为"已应用"快照生效，避免 3s 自动刷新把正在输入的内容当成筛选条件。
 

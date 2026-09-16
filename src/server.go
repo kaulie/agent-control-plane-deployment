@@ -324,24 +324,18 @@ func (s *apiServer) handleCreateDeploy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *apiServer) handleListDeploys(w http.ResponseWriter, r *http.Request) {
-	limit := 50
-	if q := r.URL.Query().Get("limit"); q != "" {
-		if n, err := strconv.Atoi(q); err == nil {
-			limit = n
-		}
-	}
-	if limit < 1 {
-		limit = 1
-	}
-	if limit > 200 {
-		limit = 200
-	}
-	deploys, err := s.store.ListDeploys(limit)
+	f := parseListFilter(r)
+	deploys, total, err := s.store.ListDeploysFiltered(f)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"deploys": deploys})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deploys": deploys,
+		"total":   total,
+		"page":    f.Page,
+		"pageSize": f.PageSize,
+	})
 }
 
 func (s *apiServer) handleGetDeploy(w http.ResponseWriter, r *http.Request) {
@@ -451,24 +445,47 @@ func (s *apiServer) handleDeployNotify(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *apiServer) handleListPipelines(w http.ResponseWriter, r *http.Request) {
-	limit := 50
-	if q := r.URL.Query().Get("limit"); q != "" {
-		if n, err := strconv.Atoi(q); err == nil {
-			limit = n
-		}
-	}
-	if limit < 1 {
-		limit = 1
-	}
-	if limit > 200 {
-		limit = 200
-	}
-	jobs, err := s.store.ListPipelines(limit)
+	f := parseListFilter(r)
+	jobs, total, err := s.store.ListPipelinesFiltered(f)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"pipelines": jobs})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"pipelines": jobs,
+		"total":     total,
+		"page":      f.Page,
+		"pageSize":  f.PageSize,
+	})
+}
+
+// parseListFilter reads the shared history-list query params (filters +
+// pagination) for GET /api/deploys and GET /api/pipelines.
+func parseListFilter(r *http.Request) ListFilter {
+	q := r.URL.Query()
+	f := ListFilter{
+		ServiceID:       strings.TrimSpace(q.Get("serviceId")),
+		State:           strings.TrimSpace(q.Get("state")),
+		TriggeredByRole: strings.TrimSpace(q.Get("triggeredByRole")),
+		TriggeredByID:   strings.TrimSpace(q.Get("triggeredById")),
+		Deployment:      strings.TrimSpace(q.Get("deployment")),
+		Version:         strings.TrimSpace(q.Get("version")),
+		Ref:             strings.TrimSpace(q.Get("ref")),
+		Keyword:         strings.TrimSpace(q.Get("q")),
+		From:            strings.TrimSpace(q.Get("from")),
+		To:              strings.TrimSpace(q.Get("to")),
+	}
+	if n, err := strconv.Atoi(q.Get("page")); err == nil {
+		f.Page = n
+	}
+	// pageSize wins; "limit" is kept as an alias for older callers.
+	if n, err := strconv.Atoi(q.Get("pageSize")); err == nil {
+		f.PageSize = n
+	} else if n, err := strconv.Atoi(q.Get("limit")); err == nil {
+		f.PageSize = n
+	}
+	f.normalize()
+	return f
 }
 
 func (s *apiServer) handleGetPipeline(w http.ResponseWriter, r *http.Request) {

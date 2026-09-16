@@ -113,26 +113,11 @@ func (s *Store) GetPipeline(requestID string) (*PipelineJob, error) {
 	return job, err
 }
 
+// ListPipelines returns the most recent pipelines (no filters). Kept as a thin
+// wrapper over ListPipelinesFiltered for callers that only need a limit.
 func (s *Store) ListPipelines(limit int) ([]PipelineJob, error) {
-	rows, err := s.db.Query(`
-		SELECT `+pipelineColumns+`
-		FROM pipelines ORDER BY requested_at DESC LIMIT ?`, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []PipelineJob
-	for rows.Next() {
-		job, err := scanPipeline(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, *job)
-	}
-	if out == nil {
-		out = []PipelineJob{}
-	}
-	return out, rows.Err()
+	jobs, _, err := s.ListPipelinesFiltered(ListFilter{Page: 1, PageSize: limit})
+	return jobs, err
 }
 
 func (s *Store) ClaimNextPipeline() (*PipelineJob, error) {
