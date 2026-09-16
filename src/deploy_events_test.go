@@ -74,7 +74,7 @@ func TestDeployEventLevelNormalization(t *testing.T) {
 		"queued"); err != nil {
 		t.Fatalf("CreateDeploy: %v", err)
 	}
-	if err := s.AddDeployEvent(id, "ok", "旧版 ok 成功事件"); err != nil {
+	if err := s.AddDeployEvent(id, eventlevel.LegacySuccessAlias, "旧版 ok 成功事件"); err != nil {
 		t.Fatalf("AddDeployEvent legacy ok: %v", err)
 	}
 
