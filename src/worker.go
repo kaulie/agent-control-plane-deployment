@@ -274,7 +274,7 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		})
 		return
 	}
-	_ = store.AddDeployEvent(job.RequestID, "ok",
+	_ = store.AddDeployEvent(job.RequestID, "success",
 		"下载结束：storage="+storage.Name()+" tag="+tag+
 			" size="+humanBytes(dirSize(src))+" 耗时="+humanDuration(time.Since(dlStart)))
 
@@ -357,7 +357,7 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		})
 		return
 	}
-	_ = store.AddDeployEvent(job.RequestID, "ok",
+	_ = store.AddDeployEvent(job.RequestID, "success",
 		"制品已 rsync 到 runtime："+service.RuntimeDir)
 
 	_ = os.WriteFile(filepath.Join(service.RuntimeDir, "VERSION"), []byte(hash+"\n"), 0o644)
@@ -434,7 +434,7 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		})
 		return
 	}
-	_ = store.AddDeployEvent(job.RequestID, "ok",
+	_ = store.AddDeployEvent(job.RequestID, "success",
 		"健康检查通过："+service.HealthURL)
 
 	_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
@@ -442,7 +442,7 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		Version: hash,
 		Message: "deploy succeeded",
 	})
-	_ = store.AddDeployEvent(job.RequestID, "ok", "部署成功：version="+hash)
+	_ = store.AddDeployEvent(job.RequestID, "success", "部署成功：version="+hash)
 	fmt.Printf("[deploy] %s ok version=%s\n", job.RequestID, hash)
 }
 
