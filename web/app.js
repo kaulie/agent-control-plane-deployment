@@ -40,7 +40,10 @@ async function apiGet(path) {
   return res.json();
 }
 async function apiSend(method, path, body) {
-  const opt = { method, headers: { 'content-type': 'application/json' } };
+  const opt = {
+    method,
+    headers: { 'content-type': 'application/json', ...identityHeaders() },
+  };
   if (body !== undefined) opt.body = JSON.stringify(body);
   const res = await fetch(API + path, opt);
   const text = await res.text();
@@ -49,6 +52,63 @@ async function apiSend(method, path, body) {
   if (!res.ok) throw new Error((data && data.error) || `${res.status} ${text}`);
   return data;
 }
+
+// ---- caller identity (phase 1) --------------------------------------------
+// The deploy APIs require two plain headers identifying who triggers a deploy:
+// identity_role (user|agent) + identity_id (user_001 / agent_002 / ...). The
+// picker in the top bar is remembered in localStorage and attached to every
+// write request.
+const IDENTITY_KEY = 'acp.identity';
+const IDENTITY_DEFAULT = { role: 'user', id: 'user_001' };
+
+function loadIdentity() {
+  try {
+    const raw = localStorage.getItem(IDENTITY_KEY);
+    if (raw) return { ...IDENTITY_DEFAULT, ...JSON.parse(raw) };
+  } catch { /* ignore malformed storage */ }
+  return { ...IDENTITY_DEFAULT };
+}
+let identity = loadIdentity();
+
+function identityHeaders() {
+  return { identity_role: identity.role, identity_id: identity.id };
+}
+
+function identityLabel(role, id) {
+  if (!role && !id) return '—';
+  return (role || '?') + ':' + (id || '?');
+}
+
+// Renders the triggerer of a deploy/pipeline job (role badge + id).
+function identityCell(job) {
+  const role = job.triggeredByRole;
+  const id = job.triggeredById;
+  if (!role && !id) return '<span class="muted">—</span>';
+  const cls = role === 'agent' ? 'badge--violet' : 'badge--run';
+  return `<span class="badge ${cls}">${esc(role || '?')}</span> ` +
+    `<span class="mono">${esc(id || '?')}</span>`;
+}
+
+function syncIdentityInputs() {
+  $('#identity-role').value = identity.role;
+  $('#identity-id').value = identity.id;
+}
+
+function saveIdentity() {
+  const id = $('#identity-id').value.trim() || IDENTITY_DEFAULT.id;
+  identity = { role: $('#identity-role').value, id };
+  try { localStorage.setItem(IDENTITY_KEY, JSON.stringify(identity)); } catch { /* ignore */ }
+  syncIdentityInputs();
+  toast('当前身份：' + identityLabel(identity.role, identity.id));
+}
+
+$$('#identity-role, #identity-id').forEach((el) => {
+  el.addEventListener('change', saveIdentity);
+});
+$('#identity-id').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); saveIdentity(); }
+});
+syncIdentityInputs();
 
 // ---- tabs -----------------------------------------------------------------
 $$('#tabs .tab').forEach((btn) => {
@@ -229,7 +289,7 @@ async function refreshPipelines() {
     const data = await apiGet('/api/pipelines?limit=100');
     const jobs = data.pipelines || [];
     if (!jobs.length) {
-      tbody.innerHTML = `<tr><td colspan="9" class="muted">暂无流水线记录</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="10" class="muted">暂无流水线记录</td></tr>`;
       return;
     }
     tbody.innerHTML = jobs.map((j) => `<tr class="rowlink" data-pipe-open="${esc(j.requestId)}">
@@ -240,11 +300,12 @@ async function refreshPipelines() {
       <td class="mono">${esc(j.deployment || '—')}</td>
       <td class="mono">${esc(j.version || '—')}</td>
       <td class="mono">${esc(j.deployRequestId || '—')}</td>
+      <td>${identityCell(j)}</td>
       <td class="mono">${fmtTime(j.requestedAt)}</td>
       <td class="wrap">${esc(j.error || j.message || '—')}</td>
     </tr>`).join('');
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="9" class="muted">加载失败：${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="muted">加载失败：${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -256,7 +317,7 @@ $('#pipe-trigger').addEventListener('click', async () => {
     const body = { serviceId };
     if (ref) body.ref = ref;
     const r = await apiSend('POST', '/api/deploy-notify', body);
-    toast('已触发流水线 ' + r.requestId, 'ok');
+    toast('已触发流水线 ' + r.requestId + '（' + identityLabel(identity.role, identity.id) + '）', 'ok');
     $('#pipe-ref').value = '';
     refresh();
   } catch (e) { toast('触发失败：' + e.message, 'err'); }
@@ -333,6 +394,8 @@ async function refreshPipelineDetail() {
     fieldRow('deployment', job.deployment || '—'),
     fieldRow('version', job.version || '—'),
     fieldRow('deployRequestId', job.deployRequestId || '—'),
+    `<div class="detail-field"><span class="detail-label">触发者</span>` +
+      `<span class="detail-value">${identityCell(job)}</span></div>`,
     fieldRow('请求时间', fmtTime(job.requestedAt)),
     fieldRow('开始时间', fmtTime(job.startedAt)),
     fieldRow('结束时间', fmtTime(job.finishedAt)),
@@ -374,6 +437,8 @@ async function refreshPipelineDetail() {
         `<span class="detail-value">${stateBadge(deploy.state)}</span></div>`,
       fieldRow('deployment', deploy.deployment || '—'),
       fieldRow('version', deploy.version || '—'),
+      `<div class="detail-field"><span class="detail-label">触发者</span>` +
+        `<span class="detail-value">${identityCell(deploy)}</span></div>`,
       fieldRow('请求时间', fmtTime(deploy.requestedAt)),
       fieldRow('开始时间', fmtTime(deploy.startedAt)),
       fieldRow('结束时间', fmtTime(deploy.finishedAt)),
@@ -396,7 +461,7 @@ async function refreshDeploys() {
     const data = await apiGet('/api/deploys?limit=100');
     const jobs = data.deploys || [];
     if (!jobs.length) {
-      tbody.innerHTML = `<tr><td colspan="9" class="muted">暂无部署任务</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="10" class="muted">暂无部署任务</td></tr>`;
       return;
     }
     tbody.innerHTML = jobs.map((j) => `<tr>
@@ -405,13 +470,14 @@ async function refreshDeploys() {
       <td class="mono">${esc(j.deployment)}</td>
       <td>${stateBadge(j.state)}</td>
       <td class="mono">${esc(j.version || '—')}</td>
+      <td>${identityCell(j)}</td>
       <td class="mono">${fmtTime(j.requestedAt)}</td>
       <td class="mono">${fmtTime(j.startedAt)}</td>
       <td class="mono">${fmtTime(j.finishedAt)}</td>
       <td class="wrap">${esc(j.error || j.message || '—')}</td>
     </tr>`).join('');
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="9" class="muted">加载失败：${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="muted">加载失败：${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -422,7 +488,7 @@ $('#dep-trigger').addEventListener('click', async () => {
   if (!deployment) { toast('请输入 deployment / hash', 'err'); return; }
   try {
     const r = await apiSend('POST', '/api/deploys', { serviceId, deployment });
-    toast('已提交部署 ' + r.requestId, 'ok');
+    toast('已提交部署 ' + r.requestId + '（' + identityLabel(identity.role, identity.id) + '）', 'ok');
     $('#dep-deployment').value = '';
     refresh();
   } catch (e) { toast('提交失败：' + e.message, 'err'); }

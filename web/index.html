@@ -16,6 +16,17 @@
     <div class="topbar__meta">
       <span id="meta-home" class="muted"></span>
       <span id="meta-port" class="muted"></span>
+      <div class="identity" title="部署接口身份校验：写入 identity_role / identity_id 请求头">
+        <label class="identity__field">身份
+          <select id="identity-role">
+            <option value="user">user</option>
+            <option value="agent">agent</option>
+          </select>
+        </label>
+        <label class="identity__field">id
+          <input type="text" id="identity-id" size="10" placeholder="user_001" />
+        </label>
+      </div>
       <label class="autorefresh">
         <input type="checkbox" id="autorefresh" checked /> 自动刷新
       </label>
@@ -117,7 +128,7 @@
           <thead>
             <tr>
               <th>requestId</th><th>service</th><th>ref</th><th>状态</th>
-              <th>deployment</th><th>version</th><th>deployReq</th><th>请求时间</th><th>消息</th>
+              <th>deployment</th><th>version</th><th>deployReq</th><th>触发者</th><th>请求时间</th><th>消息</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -159,7 +170,7 @@
           <thead>
             <tr>
               <th>requestId</th><th>service</th><th>deployment</th><th>状态</th>
-              <th>version</th><th>请求时间</th><th>开始</th><th>结束</th><th>消息 / 错误</th>
+              <th>version</th><th>触发者</th><th>请求时间</th><th>开始</th><th>结束</th><th>消息 / 错误</th>
             </tr>
           </thead>
           <tbody></tbody>
