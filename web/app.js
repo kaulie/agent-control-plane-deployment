@@ -396,7 +396,7 @@ function refreshDeploys() { return historyDeploys.refresh(); }
 $('#pipe-trigger').addEventListener('click', async () => {
   const serviceId = $('#pipe-service').value;
   const ref = $('#pipe-ref').value.trim();
-  if (!serviceId) { toast('请先注册服务契约', 'err'); return; }
+  if (!serviceId) { toast('请先选择服务', 'err'); return; }
   try {
     const body = { serviceId };
     if (ref) body.ref = ref;
@@ -544,7 +544,7 @@ async function refreshPipelineDetail() {
 $('#dep-trigger').addEventListener('click', async () => {
   const serviceId = $('#dep-service').value;
   const deployment = $('#dep-deployment').value.trim();
-  if (!serviceId) { toast('请先注册服务契约', 'err'); return; }
+  if (!serviceId) { toast('请先选择服务', 'err'); return; }
   if (!deployment) { toast('请输入 deployment / hash', 'err'); return; }
   try {
     const r = await apiSend('POST', '/api/deploys', { serviceId, deployment });
