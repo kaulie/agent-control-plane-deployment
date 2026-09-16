@@ -4,6 +4,8 @@
 // keep the naming convention consistent across binaries.
 package eventlevel
 
+import "strings"
+
 // Level is a deployment pipeline event level.
 type Level string
 
@@ -36,7 +38,7 @@ func CanonicalNames() []string {
 // panel, so no inconsistent event-level names are written to either event
 // table.
 func Normalize(level string) Level {
-	switch level {
+	switch strings.ToLower(strings.TrimSpace(level)) {
 	case string(Info):
 		return Info
 	case LegacySuccessAlias, string(Success):
