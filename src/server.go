@@ -264,6 +264,12 @@ type createDeployBody struct {
 func (s *apiServer) handleCreateDeploy(w http.ResponseWriter, r *http.Request) {
 	var body createDeployBody
 	_ = json.NewDecoder(r.Body).Decode(&body)
+	// Phase-1 identity: the caller must identify itself (identity_role /
+	// identity_id) so the deploy is attributable.
+	by, ok := s.requireIdentity(w, r)
+	if !ok {
+		return
+	}
 	serviceID := strings.TrimSpace(body.ServiceID)
 	raw := strings.TrimSpace(body.Deployment)
 	if raw == "" {
@@ -299,12 +305,16 @@ func (s *apiServer) handleCreateDeploy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "request already exists: "+requestID)
 		return
 	}
-	job, err := s.store.CreateDeploy(requestID, serviceID, deployment, "queued for deployment worker")
+	job, err := s.store.CreateDeploy(requestID, serviceID, deployment, by, "queued for deployment worker")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.worker.Kick()
+	fmt.Printf("[deploy] %s service=%s deployment=%s by=%s\n",
+		requestID, serviceID, deployment, by.String())
+	if s.worker != nil {
+		s.worker.Kick()
+	}
 
 	type resp struct {
 		DeployJob
@@ -376,6 +386,12 @@ type deployNotifyBody struct {
 func (s *apiServer) handleDeployNotify(w http.ResponseWriter, r *http.Request) {
 	var body deployNotifyBody
 	_ = json.NewDecoder(r.Body).Decode(&body)
+	// Phase-1 identity: the caller must identify itself so the pipeline (and the
+	// deploy it enqueues) is attributable in the panel/audit trail.
+	by, ok := s.requireIdentity(w, r)
+	if !ok {
+		return
+	}
 	serviceID := strings.TrimSpace(body.ServiceID)
 	if serviceID == "" {
 		writeError(w, http.StatusBadRequest, "serviceId is required")
@@ -408,14 +424,19 @@ func (s *apiServer) handleDeployNotify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "request already exists: "+requestID)
 		return
 	}
-	job, err := s.store.CreatePipeline(requestID, serviceID, ref,
+	job, err := s.store.CreatePipeline(requestID, serviceID, ref, by,
 		"accepted; package "+ref+" (latest) then deploy with graceful notify+poll")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	byLabel := by.String()
+	if byLabel == "" {
+		byLabel = "未知"
+	}
 	_ = s.store.AddPipelineEvent(requestID, eventlevel.Info,
-		"流水线已入队：service="+serviceID+" ref="+ref)
+		"流水线已入队：service="+serviceID+" ref="+ref+" 触发者="+byLabel)
+	fmt.Printf("[pipeline] %s service=%s ref=%s by=%s\n", requestID, serviceID, ref, by.String())
 	if s.pipeline != nil {
 		s.pipeline.Kick()
 	}
@@ -636,6 +657,8 @@ func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
 		"packagesDir":             s.cfg.PackagesDir,
 		"port":                    s.cfg.Port,
 		"normalizeExample":        example,
+		"identityEnforce":         s.cfg.IdentityEnforce,
+		"identityHeaders":         []string{identityRoleHeader, identityIDHeader},
 		"gracefulPollIntervalSec": int(gracefulPollInterval / time.Second),
 		"gracefulMaxWaitMs":       int(s.cfg.GracefulMaxWait / time.Millisecond),
 		"releaseMaxSec":           s.cfg.ReleaseMaxSec,

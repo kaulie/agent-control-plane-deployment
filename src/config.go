@@ -44,6 +44,11 @@ type Config struct {
 	AliyunRepo      string
 	AliyunUsername  string
 	AliyunPassword  string
+	// Require the phase-1 identity headers (identity_role / identity_id) on the
+	// deployment-triggering APIs. Default true; IDENTITY_ENFORCE=0 turns the
+	// check into log-only (deploys are then recorded as unidentified) — a
+	// rollback hatch while every caller is migrated.
+	IdentityEnforce bool
 }
 
 func expandHome(p string) string {
@@ -138,6 +143,13 @@ func loadConfig() Config {
 		aliyunRepo = defaultAliyunRepo
 	}
 
+	// Identity enforcement on deploy APIs: on unless explicitly disabled.
+	identityEnforce := true
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("IDENTITY_ENFORCE"))) {
+	case "0", "false", "no", "off":
+		identityEnforce = false
+	}
+
 	return Config{
 		Host:            host,
 		Port:            port,
@@ -157,5 +169,6 @@ func loadConfig() Config {
 		AliyunRepo:      aliyunRepo,
 		AliyunUsername:  os.Getenv("ALIYUN_PACKAGES_USER"),
 		AliyunPassword:  os.Getenv("ALIYUN_PACKAGES_PASSWORD"),
+		IdentityEnforce: identityEnforce,
 	}
 }

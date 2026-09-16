@@ -52,6 +52,23 @@ type DeployJob struct {
 	Version     string      `json:"version,omitempty"`
 	Error       string      `json:"error,omitempty"`
 	Message     string      `json:"message,omitempty"`
+	// Who triggered this deploy (phase-1 identity headers). Empty = unidentified
+	// (requests recorded before the feature, or IDENTITY_ENFORCE=0).
+	TriggeredByRole string `json:"triggeredByRole,omitempty"`
+	TriggeredByID   string `json:"triggeredById,omitempty"`
+	TriggeredBy     string `json:"triggeredBy,omitempty"`
+}
+
+// Identity returns the recorded caller identity (zero value = unidentified).
+func (j DeployJob) Identity() Identity {
+	return Identity{Role: j.TriggeredByRole, ID: j.TriggeredByID}
+}
+
+// setIdentity fills the identity fields (and the derived "role:id" label).
+func (j *DeployJob) setIdentity(id Identity) {
+	j.TriggeredByRole = id.Role
+	j.TriggeredByID = id.ID
+	j.TriggeredBy = id.String()
 }
 
 type Store struct {
@@ -126,6 +143,9 @@ func (s *Store) migrate() error {
 	if err := s.ensureServiceExtraColumns(); err != nil {
 		return err
 	}
+	if err := s.ensureDeployExtraColumns(); err != nil {
+		return err
+	}
 	if err := s.migratePipelines(); err != nil {
 		return err
 	}
@@ -139,15 +159,34 @@ func (s *Store) migrate() error {
 }
 
 func (s *Store) ensureServiceExtraColumns() error {
-	cols := map[string]string{
+	return s.ensureColumns("services", map[string]string{
 		"restart_notify_url":   `ALTER TABLE services ADD COLUMN restart_notify_url TEXT NOT NULL DEFAULT ''`,
 		"restart_poll_url":     `ALTER TABLE services ADD COLUMN restart_poll_url TEXT NOT NULL DEFAULT ''`,
 		"graceful_max_wait_ms": `ALTER TABLE services ADD COLUMN graceful_max_wait_ms INTEGER NOT NULL DEFAULT 0`,
 		"git_repo_url":         `ALTER TABLE services ADD COLUMN git_repo_url TEXT NOT NULL DEFAULT ''`,
 		"default_branch":       `ALTER TABLE services ADD COLUMN default_branch TEXT NOT NULL DEFAULT 'main'`,
+	})
+}
+
+// ensureDeployExtraColumns adds the phase-1 identity columns to existing rows
+// (unidentified deploys keep the empty default).
+func (s *Store) ensureDeployExtraColumns() error {
+	return s.ensureColumns("deploys", identityColumnDDL("deploys"))
+}
+
+// identityColumnDDL is the shared ALTER list for the identity columns; both the
+// deploys and the pipelines table carry them.
+func identityColumnDDL(table string) map[string]string {
+	return map[string]string{
+		"triggered_by_role": `ALTER TABLE ` + table + ` ADD COLUMN triggered_by_role TEXT NOT NULL DEFAULT ''`,
+		"triggered_by_id":   `ALTER TABLE ` + table + ` ADD COLUMN triggered_by_id TEXT NOT NULL DEFAULT ''`,
 	}
+}
+
+// ensureColumns ALTERs in any of cols missing from table (idempotent).
+func (s *Store) ensureColumns(table string, cols map[string]string) error {
 	existing := map[string]bool{}
-	rows, err := s.db.Query(`PRAGMA table_info(services)`)
+	rows, err := s.db.Query(`PRAGMA table_info(` + table + `)`)
 	if err != nil {
 		return err
 	}
@@ -175,7 +214,6 @@ func (s *Store) ensureServiceExtraColumns() error {
 	}
 	return nil
 }
-
 func (s *Store) ensureServiceGracefulColumns() error {
 	return s.ensureServiceExtraColumns()
 }
@@ -272,7 +310,13 @@ func (s *Store) DeleteService(serviceID string) (bool, error) {
 	return n > 0, nil
 }
 
-func (s *Store) CreateDeploy(requestID, serviceID, deployment, message string) (DeployJob, error) {
+// deployColumns is the canonical SELECT list for deploys rows (shared by every
+// query so a new column is added in one place).
+const deployColumns = `request_id, service_id, deployment, state, requested_at,
+	started_at, finished_at, version, error, message,
+	triggered_by_role, triggered_by_id`
+
+func (s *Store) CreateDeploy(requestID, serviceID, deployment string, by Identity, message string) (DeployJob, error) {
 	requestedAt := nowISO()
 	job := DeployJob{
 		RequestID:   requestID,
@@ -282,19 +326,21 @@ func (s *Store) CreateDeploy(requestID, serviceID, deployment, message string) (
 		RequestedAt: requestedAt,
 		Message:     message,
 	}
+	job.setIdentity(by)
 	_, err := s.db.Exec(`
 		INSERT INTO deploys (
-		  request_id, service_id, deployment, state, requested_at, message
-		) VALUES (?, ?, ?, ?, ?, ?)`,
-		job.RequestID, job.ServiceID, job.Deployment, string(job.State), job.RequestedAt, nullIfEmpty(message),
+		  request_id, service_id, deployment, state, requested_at, message,
+		  triggered_by_role, triggered_by_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		job.RequestID, job.ServiceID, job.Deployment, string(job.State), job.RequestedAt,
+		nullIfEmpty(message), job.TriggeredByRole, job.TriggeredByID,
 	)
 	return job, err
 }
 
 func (s *Store) GetDeploy(requestID string) (*DeployJob, error) {
 	row := s.db.QueryRow(`
-		SELECT request_id, service_id, deployment, state, requested_at,
-		       started_at, finished_at, version, error, message
+		SELECT `+deployColumns+`
 		FROM deploys WHERE request_id = ?`, requestID)
 	job, err := scanDeploy(row)
 	if err == sql.ErrNoRows {
@@ -305,8 +351,7 @@ func (s *Store) GetDeploy(requestID string) (*DeployJob, error) {
 
 func (s *Store) ListDeploys(limit int) ([]DeployJob, error) {
 	rows, err := s.db.Query(`
-		SELECT request_id, service_id, deployment, state, requested_at,
-		       started_at, finished_at, version, error, message
+		SELECT `+deployColumns+`
 		FROM deploys ORDER BY requested_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -328,8 +373,7 @@ func (s *Store) ListDeploys(limit int) ([]DeployJob, error) {
 
 func (s *Store) ListDeploysByState(state DeployState) ([]DeployJob, error) {
 	rows, err := s.db.Query(`
-		SELECT request_id, service_id, deployment, state, requested_at,
-		       started_at, finished_at, version, error, message
+		SELECT `+deployColumns+`
 		FROM deploys WHERE state = ? ORDER BY requested_at ASC`, string(state))
 	if err != nil {
 		return nil, err
@@ -442,6 +486,7 @@ func scanDeploy(row scannable) (*DeployJob, error) {
 	err := row.Scan(
 		&job.RequestID, &job.ServiceID, &job.Deployment, &state, &job.RequestedAt,
 		&started, &finished, &version, &errStr, &message,
+		&job.TriggeredByRole, &job.TriggeredByID,
 	)
 	if err != nil {
 		return nil, err
@@ -452,6 +497,7 @@ func scanDeploy(row scannable) (*DeployJob, error) {
 	job.Version = version.String
 	job.Error = errStr.String
 	job.Message = message.String
+	job.TriggeredBy = job.Identity().String()
 	return &job, nil
 }
 

@@ -30,10 +30,27 @@ type PipelineJob struct {
 	RequestedAt     string        `json:"requestedAt"`
 	StartedAt       string        `json:"startedAt,omitempty"`
 	FinishedAt      string        `json:"finishedAt,omitempty"`
+	// Who triggered this pipeline (phase-1 identity headers). Empty =
+	// unidentified (recorded before the feature, or IDENTITY_ENFORCE=0).
+	TriggeredByRole string `json:"triggeredByRole,omitempty"`
+	TriggeredByID   string `json:"triggeredById,omitempty"`
+	TriggeredBy     string `json:"triggeredBy,omitempty"`
+}
+
+// Identity returns the recorded caller identity (zero value = unidentified).
+func (j PipelineJob) Identity() Identity {
+	return Identity{Role: j.TriggeredByRole, ID: j.TriggeredByID}
+}
+
+// setIdentity fills the identity fields (and the derived "role:id" label).
+func (j *PipelineJob) setIdentity(id Identity) {
+	j.TriggeredByRole = id.Role
+	j.TriggeredByID = id.ID
+	j.TriggeredBy = id.String()
 }
 
 func (s *Store) migratePipelines() error {
-	_, err := s.db.Exec(`
+	if _, err := s.db.Exec(`
       CREATE TABLE IF NOT EXISTS pipelines (
         request_id TEXT PRIMARY KEY,
         service_id TEXT NOT NULL,
@@ -46,14 +63,23 @@ func (s *Store) migratePipelines() error {
         message TEXT,
         requested_at TEXT NOT NULL,
         started_at TEXT,
-        finished_at TEXT
+        finished_at TEXT,
+        triggered_by_role TEXT NOT NULL DEFAULT '',
+        triggered_by_id TEXT NOT NULL DEFAULT ''
       );
       CREATE INDEX IF NOT EXISTS idx_pipelines_state ON pipelines(state);
-    `)
-	return err
+    `); err != nil {
+		return err
+	}
+	return s.ensureColumns("pipelines", identityColumnDDL("pipelines"))
 }
 
-func (s *Store) CreatePipeline(requestID, serviceID, ref, message string) (PipelineJob, error) {
+// pipelineColumns is the canonical SELECT list for pipelines rows.
+const pipelineColumns = `request_id, service_id, ref, state, deployment, deploy_request_id,
+	version, error, message, requested_at, started_at, finished_at,
+	triggered_by_role, triggered_by_id`
+
+func (s *Store) CreatePipeline(requestID, serviceID, ref string, by Identity, message string) (PipelineJob, error) {
 	requestedAt := nowISO()
 	job := PipelineJob{
 		RequestID:   requestID,
@@ -63,20 +89,22 @@ func (s *Store) CreatePipeline(requestID, serviceID, ref, message string) (Pipel
 		RequestedAt: requestedAt,
 		Message:     message,
 	}
+	job.setIdentity(by)
 	_, err := s.db.Exec(`
 		INSERT INTO pipelines (
-		  request_id, service_id, ref, state, message, requested_at
-		) VALUES (?, ?, ?, ?, ?, ?)`,
+		  request_id, service_id, ref, state, message, requested_at,
+		  triggered_by_role, triggered_by_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		job.RequestID, job.ServiceID, job.Ref, string(job.State),
 		nullIfEmpty(message), job.RequestedAt,
+		job.TriggeredByRole, job.TriggeredByID,
 	)
 	return job, err
 }
 
 func (s *Store) GetPipeline(requestID string) (*PipelineJob, error) {
 	row := s.db.QueryRow(`
-		SELECT request_id, service_id, ref, state, deployment, deploy_request_id,
-		       version, error, message, requested_at, started_at, finished_at
+		SELECT `+pipelineColumns+`
 		FROM pipelines WHERE request_id = ?`, requestID)
 	job, err := scanPipeline(row)
 	if err == sql.ErrNoRows {
@@ -87,8 +115,7 @@ func (s *Store) GetPipeline(requestID string) (*PipelineJob, error) {
 
 func (s *Store) ListPipelines(limit int) ([]PipelineJob, error) {
 	rows, err := s.db.Query(`
-		SELECT request_id, service_id, ref, state, deployment, deploy_request_id,
-		       version, error, message, requested_at, started_at, finished_at
+		SELECT `+pipelineColumns+`
 		FROM pipelines ORDER BY requested_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -158,8 +185,7 @@ func (s *Store) UpdatePipeline(requestID string, patch PipelineJob) error {
 
 func (s *Store) ListPipelinesByState(state PipelineState) ([]PipelineJob, error) {
 	rows, err := s.db.Query(`
-		SELECT request_id, service_id, ref, state, deployment, deploy_request_id,
-		       version, error, message, requested_at, started_at, finished_at
+		SELECT `+pipelineColumns+`
 		FROM pipelines WHERE state = ? ORDER BY requested_at ASC`, string(state))
 	if err != nil {
 		return nil, err
@@ -187,6 +213,7 @@ func scanPipeline(row scannable) (*PipelineJob, error) {
 		&job.RequestID, &job.ServiceID, &job.Ref, &state,
 		&deployment, &deployID, &version, &errStr, &message,
 		&job.RequestedAt, &started, &finished,
+		&job.TriggeredByRole, &job.TriggeredByID,
 	)
 	if err != nil {
 		return nil, err
@@ -199,6 +226,7 @@ func scanPipeline(row scannable) (*PipelineJob, error) {
 	job.Message = message.String
 	job.StartedAt = started.String
 	job.FinishedAt = finished.String
+	job.TriggeredBy = job.Identity().String()
 	return &job, nil
 }
 

@@ -162,7 +162,7 @@ func (w *PipelineWorker) execute(job *PipelineJob) {
 	if existing, _ := w.store.GetDeploy(deployID); existing != nil {
 		deployID = "deploy-req-" + uuid.NewString()[:8]
 	}
-	_, err = w.store.CreateDeploy(deployID, job.ServiceID, pkg.Tag,
+	_, err = w.store.CreateDeploy(deployID, job.ServiceID, pkg.Tag, job.Identity(),
 		"queued after package (graceful notify+poll before restart)")
 	if err != nil {
 		failPipeline(w.store, job.RequestID, "enqueue deploy failed: "+err.Error())
@@ -177,7 +177,8 @@ func (w *PipelineWorker) execute(job *PipelineJob) {
 		Message:         "deploy queued; waiting for graceful restart window then apply",
 	})
 	w.deploy.Kick()
-	fmt.Printf("[pipeline] %s packaged %s → deploy %s\n", job.RequestID, pkg.Tag, deployID)
+	fmt.Printf("[pipeline] %s packaged %s → deploy %s (by=%s)\n",
+		job.RequestID, pkg.Tag, deployID, job.Identity().String())
 }
 
 func (w *PipelineWorker) syncDeploying() {
