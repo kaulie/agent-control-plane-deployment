@@ -126,7 +126,7 @@ func (s *Store) countRows(table string, w *wb) (int, error) {
 func (s *Store) ListDeploysFiltered(f ListFilter) ([]DeployJob, int, error) {
 	f.normalize()
 	w := f.baseFilter()
-	w.keyword([]string{"request_id", "deployment", "version", "message", "error", "triggered_by_id"}, f.Keyword)
+	w.keyword([]string{"request_id", "service_id", "deployment", "version", "message", "error", "triggered_by_id"}, f.Keyword)
 
 	total, err := s.countRows("deploys", w)
 	if err != nil {
@@ -157,7 +157,7 @@ func (s *Store) ListPipelinesFiltered(f ListFilter) ([]PipelineJob, int, error) 
 	f.normalize()
 	w := f.baseFilter()
 	w.like("ref", f.Ref)
-	w.keyword([]string{"request_id", "ref", "deployment", "version", "message", "error", "triggered_by_id"}, f.Keyword)
+	w.keyword([]string{"request_id", "service_id", "ref", "deployment", "version", "message", "error", "triggered_by_id"}, f.Keyword)
 
 	total, err := s.countRows("pipelines", w)
 	if err != nil {
