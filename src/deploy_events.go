@@ -1,6 +1,10 @@
 package main
 
-import "github.com/kaulie/agent-control-plane-deployment/eventlevel"
+import (
+	"strings"
+
+	"github.com/kaulie/agent-control-plane-deployment/eventlevel"
+)
 
 // DeployEvent is a single timestamped log line attached to a deploy job,
 // recorded by executeDeploy (rsync / restart / health) and, for self-deploys,
@@ -27,14 +31,40 @@ func (s *Store) migrateDeployEvents() error {
     `); err != nil {
 		return err
 	}
-	// Migrate the legacy non-standard success level name to the canonical one.
+	// Migrate any legacy/non-canonical level names to the canonical set:
+	// "ok" stays meaningful as a success, every other unknown name becomes info.
+	if err := s.migrateEventLevels("deploy_events"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// migrateEventLevels rewrites a shared event table so only the canonical
+// eventlevel names remain. The legacy success alias is preserved as success;
+// every other non-canonical value is collapsed to info. Table names are fixed
+// internal identifiers, never user input.
+func (s *Store) migrateEventLevels(table string) error {
 	if _, err := s.db.Exec(
-		`UPDATE deploy_events SET level = ? WHERE level = ?`,
+		`UPDATE `+table+` SET level = ? WHERE level = ?`,
 		string(eventlevel.Success), eventlevel.LegacySuccessAlias,
 	); err != nil {
 		return err
 	}
-	return nil
+
+	canonical := eventlevel.CanonicalNames()
+	placeholders := make([]string, len(canonical))
+	args := make([]any, 0, len(canonical)+1)
+	args = append(args, string(eventlevel.Info))
+	for i, name := range canonical {
+		placeholders[i] = "?"
+		args = append(args, name)
+	}
+	_, err := s.db.Exec(
+		`UPDATE `+table+` SET level = ? WHERE level NOT IN (`+
+			strings.Join(placeholders, ", ")+`)`,
+		args...,
+	)
+	return err
 }
 
 // AddDeployEvent appends one event row. Level names are normalized to the

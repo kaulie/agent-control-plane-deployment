@@ -176,7 +176,7 @@ curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 | `warn` | 非致命问题（流程继续） |
 | `error` | 当前步骤致命失败 |
 
-写入事件时会把空级别规范为 `info`，并把历史遗留的 `ok` 规范为 `success`；服务启动迁移也会把事件表中已存在的 `ok` 改写为 `success`。面板按同一套名称渲染，缺失/未知级别回退为 `info`。
+写入事件时会把空级别规范为 `info`，把历史遗留的 `ok` 规范为 `success`，其它未知名称也统一规范为 `info`；服务启动迁移会把事件表中已存在的 `ok` 改写为 `success`、其它非 canonical 名称改写为 `info`。面板与 API 按同一套名称渲染。
 
 ### 列表查询（`GET /api/deploys`、`GET /api/pipelines`）
 

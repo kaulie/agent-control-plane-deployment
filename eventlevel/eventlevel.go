@@ -24,12 +24,20 @@ const (
 	LegacySuccessAlias = "ok"
 )
 
-// Normalize maps an empty level to Info and maps the legacy "ok" alias to
-// Success. Unknown values are returned unchanged so callers never silently
-// reclassify their data.
+// CanonicalNames returns the only level names the deployment pipeline should
+// emit, store, or consume, in their canonical lowercase form.
+func CanonicalNames() []string {
+	return []string{string(Info), string(Success), string(Warn), string(Error)}
+}
+
+// Normalize maps every level name to the canonical set: an empty level and any
+// unknown value fall back to Info, and the legacy "ok" alias maps to Success.
+// This keeps the same convention used by the server, the upgrader, and the web
+// panel, so no inconsistent event-level names are written to either event
+// table.
 func Normalize(level string) Level {
 	switch level {
-	case "", string(Info):
+	case string(Info):
 		return Info
 	case LegacySuccessAlias, string(Success):
 		return Success
@@ -38,6 +46,6 @@ func Normalize(level string) Level {
 	case string(Error):
 		return Error
 	default:
-		return Level(level)
+		return Info
 	}
 }
