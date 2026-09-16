@@ -16,6 +16,12 @@ const (
 	Warn Level = "warn"
 	// Error marks a fatal problem for the current step.
 	Error Level = "error"
+
+	// LegacySuccessAlias is the deprecated pre-standardization name that used
+	// to be stored for successful events. It is kept so Normalize and the
+	// event-table migrations reference that legacy name from one definition
+	// instead of hard-coding "ok".
+	LegacySuccessAlias = "ok"
 )
 
 // Normalize maps an empty level to Info and maps the legacy "ok" alias to
@@ -25,7 +31,7 @@ func Normalize(level string) Level {
 	switch level {
 	case "", string(Info):
 		return Info
-	case "ok", string(Success):
+	case LegacySuccessAlias, string(Success):
 		return Success
 	case string(Warn):
 		return Warn

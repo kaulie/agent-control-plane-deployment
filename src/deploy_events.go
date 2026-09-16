@@ -19,7 +19,7 @@ func (s *Store) migrateDeployEvents() error {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         request_id TEXT NOT NULL,
         ts TEXT NOT NULL,
-        level TEXT NOT NULL DEFAULT 'info',
+        level TEXT NOT NULL DEFAULT '` + string(eventlevel.Info) + `',
         message TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_deploy_events_request
@@ -30,7 +30,7 @@ func (s *Store) migrateDeployEvents() error {
 	// Migrate the legacy non-standard success level name to the canonical one.
 	if _, err := s.db.Exec(
 		`UPDATE deploy_events SET level = ? WHERE level = ?`,
-		string(eventlevel.Success), "ok",
+		string(eventlevel.Success), eventlevel.LegacySuccessAlias,
 	); err != nil {
 		return err
 	}
