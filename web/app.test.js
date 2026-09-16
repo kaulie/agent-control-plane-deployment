@@ -153,3 +153,34 @@ test('deploy history: text/date filters also wait for 查询', async (t) => {
   assert.match(lastCall, /to=2026-09-16T23%3A59%3A59\.999Z/);
 });
 
+test('deploy history: remaining select filters also wait for 查询', async (t) => {
+  const { dom, flush, deploysCalls } = makePanel();
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+
+  doc.querySelector('[data-tab="deploys"]').click();
+  await flush();
+  doc.querySelector('#dep-subtabs [data-subtab="dep-history"]').click();
+  await flush();
+
+  const before = deploysCalls().length;
+  assert.ok(before > 0, 'the history list should have loaded at least once');
+
+  const serviceId = doc.querySelector('#dep-f-serviceId');
+  serviceId.value = 'acp';
+  serviceId.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  const role = doc.querySelector('#dep-f-triggeredByRole');
+  role.value = 'agent';
+  role.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  await flush();
+  assert.equal(deploysCalls().length, before, 'changing any filter select must not refresh');
+
+  doc.querySelector('#dep-f-apply').click();
+  await flush();
+  assert.equal(deploysCalls().length, before + 1, 'the query button must refresh exactly once');
+  const lastCall = deploysCalls().at(-1);
+  assert.match(lastCall, /serviceId=acp/, 'the query must send the selected service');
+  assert.match(lastCall, /triggeredByRole=agent/, 'the query must send the selected trigger role');
+});
+
+
