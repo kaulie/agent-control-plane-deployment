@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 
@@ -88,4 +89,96 @@ func TestDeployEventLevelNormalization(t *testing.T) {
 	if events[0].Level != string(eventlevel.Success) {
 		t.Fatalf("legacy ok should normalize to success, got %q", events[0].Level)
 	}
+}
+
+func TestEventLevelMigrationNormalizesLegacyAndUnknownLevels(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.sqlite")
+
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw db: %v", err)
+	}
+	for _, stmt := range []string{
+		`CREATE TABLE deploy_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			request_id TEXT NOT NULL,
+			ts TEXT NOT NULL,
+			level TEXT NOT NULL DEFAULT 'info',
+			message TEXT NOT NULL
+		)`,
+		`CREATE TABLE pipeline_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			request_id TEXT NOT NULL,
+			ts TEXT NOT NULL,
+			level TEXT NOT NULL DEFAULT 'info',
+			message TEXT NOT NULL
+		)`,
+	} {
+		if _, err := raw.Exec(stmt); err != nil {
+			_ = raw.Close()
+			t.Fatalf("create raw event table: %v", err)
+		}
+	}
+
+	insert := func(table, requestID string, levels []string) {
+		t.Helper()
+		for _, level := range levels {
+			if _, err := raw.Exec(
+				`INSERT INTO `+table+` (request_id, ts, level, message) VALUES (?, ?, ?, ?)`,
+				requestID, nowISO(), level, "legacy "+level,
+			); err != nil {
+				_ = raw.Close()
+				t.Fatalf("insert %s level %q: %v", table, level, err)
+			}
+		}
+	}
+	insert("deploy_events", "legacy-deploy", []string{"ok", "custom", "", "info", "warn", "error"})
+	insert("pipeline_events", "legacy-pipeline", []string{"ok", "custom", "success", "error"})
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	s, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer s.Close()
+
+	assertLevels := func(table, requestID string, want []string) {
+		t.Helper()
+		rows, err := s.db.Query(
+			`SELECT level FROM `+table+` WHERE request_id = ? ORDER BY id ASC`,
+			requestID,
+		)
+		if err != nil {
+			t.Fatalf("query %s levels: %v", table, err)
+		}
+		defer rows.Close()
+		var got []string
+		for rows.Next() {
+			var level string
+			if err := rows.Scan(&level); err != nil {
+				t.Fatalf("scan %s level: %v", table, err)
+			}
+			got = append(got, level)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("iterate %s levels: %v", table, err)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("%s levels = %v, want %v", table, got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("%s levels = %v, want %v", table, got, want)
+			}
+		}
+	}
+	assertLevels("deploy_events", "legacy-deploy",
+		[]string{string(eventlevel.Success), string(eventlevel.Info), string(eventlevel.Info),
+			string(eventlevel.Info), string(eventlevel.Warn), string(eventlevel.Error)})
+	assertLevels("pipeline_events", "legacy-pipeline",
+		[]string{string(eventlevel.Success), string(eventlevel.Info),
+			string(eventlevel.Success), string(eventlevel.Error)})
 }

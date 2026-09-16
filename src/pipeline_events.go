@@ -27,11 +27,9 @@ func (s *Store) migratePipelineEvents() error {
     `); err != nil {
 		return err
 	}
-	// Migrate the legacy non-standard success level name to the canonical one.
-	if _, err := s.db.Exec(
-		`UPDATE pipeline_events SET level = ? WHERE level = ?`,
-		string(eventlevel.Success), eventlevel.LegacySuccessAlias,
-	); err != nil {
+	// Migrate any legacy/non-canonical level names to the canonical set:
+	// "ok" stays meaningful as a success, every other unknown name becomes info.
+	if err := s.migrateEventLevels("pipeline_events"); err != nil {
 		return err
 	}
 	return nil

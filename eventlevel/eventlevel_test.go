@@ -14,7 +14,7 @@ func TestNormalize(t *testing.T) {
 		{name: "success", level: string(Success), want: Success},
 		{name: "warn", level: string(Warn), want: Warn},
 		{name: "error", level: string(Error), want: Error},
-		{name: "unknown is preserved", level: "custom", want: Level("custom")},
+		{name: "unknown falls back to info", level: "custom", want: Info},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -22,6 +22,19 @@ func TestNormalize(t *testing.T) {
 				t.Fatalf("Normalize(%q) = %q, want %q", tc.level, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestCanonicalNames(t *testing.T) {
+	got := CanonicalNames()
+	want := []string{"info", "success", "warn", "error"}
+	if len(got) != len(want) {
+		t.Fatalf("CanonicalNames() len = %d, want %d (%v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("CanonicalNames()[%d] = %q, want %q", i, got[i], want[i])
+		}
 	}
 }
 
