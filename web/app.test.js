@@ -16,18 +16,30 @@ const appSource = fs.readFileSync(path.join(root, 'web', 'app.js'), 'utf8');
 
 function makePanel() {
   const calls = [];
+  const requests = [];
   const payload = (pathname) => {
     if (pathname === '/api/services') {
-      return { services: [{ serviceId: 'web-cursor' }, { serviceId: 'acp' }] };
+      return {
+        services: [
+          { serviceId: 'web-cursor', name: 'Web Cursor', runtimeDir: '/tmp/web-cursor', healthUrl: 'http://127.0.0.1:4211/health', startCmd: 'start', stopCmd: 'stop', restartCmd: 'restart', gitRepoUrl: 'https://github.com/kaulie/web-cursor', defaultBranch: 'main', updatedAt: '2026-09-17T00:00:00.000Z' },
+          { serviceId: 'acp', name: 'Control Plane', runtimeDir: '/tmp/acp', healthUrl: 'http://127.0.0.1:4220/health', startCmd: 'start', stopCmd: 'stop', restartCmd: 'restart', gitRepoUrl: '', defaultBranch: 'main', updatedAt: '2026-09-16T00:00:00.000Z' },
+        ],
+      };
     }
     if (pathname === '/api/deploys') return { deploys: [], total: 0, page: 1, pageSize: 20 };
     if (pathname === '/api/pipelines') return { pipelines: [], total: 0, page: 1, pageSize: 20 };
     if (pathname === '/health') return { ok: true };
     return {};
   };
-  async function fetchMock(url) {
+  async function fetchMock(url, options = {}) {
     const u = new URL(url, 'http://localhost/');
     calls.push(u.pathname + u.search);
+    requests.push({
+      method: options.method || 'GET',
+      pathname: u.pathname,
+      search: u.search,
+      body: options.body || '',
+    });
     const data = payload(u.pathname);
     return {
       ok: true,
@@ -44,15 +56,17 @@ function makePanel() {
     beforeParse(window) {
       window.fetch = fetchMock;
       window.setInterval = () => 0; // keep the 3s auto-refresh from running in tests
+      window.confirm = () => true;
     },
   });
 
   dom.window.eval(appSource);
 
   const deploysCalls = () => calls.filter((c) => c.startsWith('/api/deploys'));
+  const servicesRequests = () => requests.filter((r) => r.pathname.startsWith('/api/services'));
   const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-  return { dom, flush, deploysCalls };
+  return { dom, flush, deploysCalls, servicesRequests };
 }
 
 test('deploy history: filter change does not refresh; 查询 does', async (t) => {
@@ -213,4 +227,87 @@ test('deploy history: 重置 also waits for 查询', async (t) => {
   assert.doesNotMatch(deploysCalls().at(-1), /state=failed/, '查询 after 重置 must not send the cleared filter');
 });
 
+
+test('service contracts: tab entry lists services and exposes edit/delete actions', async (t) => {
+  const { dom, flush, servicesRequests } = makePanel();
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+
+  doc.querySelector('[data-tab="services"]').click();
+  await flush();
+
+  const gets = servicesRequests().filter((r) => r.method === 'GET');
+  assert.ok(gets.length > 0, 'the service contract tab must load /api/services');
+  assert.equal(doc.querySelector('#svc-table tbody').children.length, 2, 'the table must render both services');
+  assert.match(doc.querySelector('#svc-table tbody').textContent, /web-cursor/);
+  assert.ok(doc.querySelector('[data-svc-edit="web-cursor"]'), 'each row must expose an edit button');
+  assert.ok(doc.querySelector('[data-svc-delete="acp"]'), 'each row must expose a delete button');
+});
+
+test('service contracts: edit fills the form and locks serviceId', async (t) => {
+  const { dom, flush } = makePanel();
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+
+  doc.querySelector('[data-tab="services"]').click();
+  await flush();
+  doc.querySelector('[data-svc-edit="web-cursor"]').click();
+  await flush();
+
+  assert.equal(doc.querySelector('#svc-form-title').textContent, '编辑服务契约：web-cursor');
+  assert.equal(doc.querySelector('#svc-serviceId').value, 'web-cursor');
+  assert.equal(doc.querySelector('#svc-serviceId').disabled, true, 'serviceId must be locked while editing');
+  assert.equal(doc.querySelector('#svc-runtimeDir').value, '/tmp/web-cursor');
+  assert.equal(doc.querySelector('#svc-form-cancel').hidden, false, 'cancel must be visible while editing');
+});
+
+test('service contracts: save sends PUT /api/services/:id with the form body', async (t) => {
+  const { dom, flush, servicesRequests } = makePanel();
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+
+  doc.querySelector('[data-tab="services"]').click();
+  await flush();
+  doc.querySelector('#svc-new').click();
+
+  doc.querySelector('#svc-serviceId').value = 'web-cursor';
+  doc.querySelector('#svc-name').value = 'Web Cursor Agent';
+  doc.querySelector('#svc-runtimeDir').value = '/tmp/runtime';
+  doc.querySelector('#svc-healthUrl').value = 'http://127.0.0.1:4211/health';
+  doc.querySelector('#svc-startCmd').value = 'start';
+  doc.querySelector('#svc-stopCmd').value = 'stop';
+  doc.querySelector('#svc-restartCmd').value = 'restart';
+  doc.querySelector('#svc-gitRepoUrl').value = 'https://github.com/kaulie/web-cursor';
+  doc.querySelector('#svc-gracefulRestartMaxWaitMs').value = '90000';
+  doc.querySelector('#svc-save').click();
+  await flush();
+
+  const put = servicesRequests().find((r) => r.method === 'PUT');
+  assert.ok(put, 'save must issue a PUT request');
+  assert.equal(put.pathname, '/api/services/web-cursor');
+  const body = JSON.parse(put.body);
+  assert.equal(body.name, 'Web Cursor Agent');
+  assert.equal(body.runtimeDir, '/tmp/runtime');
+  assert.equal(body.healthUrl, 'http://127.0.0.1:4211/health');
+  assert.equal(body.startCmd, 'start');
+  assert.equal(body.stopCmd, 'stop');
+  assert.equal(body.restartCmd, 'restart');
+  assert.equal(body.gitRepoUrl, 'https://github.com/kaulie/web-cursor');
+  assert.equal(body.gracefulRestartMaxWaitMs, 90000);
+});
+
+test('service contracts: delete sends DELETE /api/services/:id', async (t) => {
+  const { dom, flush, servicesRequests } = makePanel();
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+
+  doc.querySelector('[data-tab="services"]').click();
+  await flush();
+  doc.querySelector('[data-svc-delete="acp"]').click();
+  await flush();
+
+  const del = servicesRequests().find((r) => r.method === 'DELETE');
+  assert.ok(del, 'delete must issue a DELETE request');
+  assert.equal(del.pathname, '/api/services/acp');
+});
 
