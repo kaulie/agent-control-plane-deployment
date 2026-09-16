@@ -35,6 +35,7 @@
 
   <nav class="tabs" id="tabs">
     <button class="tab tab--active" data-tab="pipelines">部署流水线</button>
+    <button class="tab" data-tab="services">服务契约</button>
     <button class="tab" data-tab="deploys">部署任务</button>
     <button class="tab" data-tab="artifacts">制品</button>
     <button class="tab" data-tab="meta">元信息</button>
@@ -151,6 +152,78 @@
           <div class="detail-grid" id="pipe-detail-deploy"></div>
         </div>
       </div>
+      </div>
+    </section>
+
+    <!-- Services / service contracts -->
+    <section id="tab-services" class="tabpanel">
+      <div class="form-card" id="svc-form-card">
+        <div class="form-card__head">
+          <h2 id="svc-form-title">新建服务契约</h2>
+          <button class="btn btn--ghost" id="svc-form-cancel" type="button" hidden>取消编辑</button>
+        </div>
+        <div class="form-grid">
+          <label>serviceId
+            <input type="text" id="svc-serviceId" placeholder="web-cursor" />
+          </label>
+          <label>name
+            <input type="text" id="svc-name" placeholder="可留空，默认等于 serviceId" />
+          </label>
+          <label>runtimeDir
+            <input type="text" id="svc-runtimeDir" placeholder="/Users/gaolei/runtime/web-cursor" />
+          </label>
+          <label>healthUrl
+            <input type="text" id="svc-healthUrl" placeholder="http://127.0.0.1:4211/health" />
+          </label>
+          <label>startCmd
+            <input type="text" id="svc-startCmd" placeholder="bash scripts/start.sh" />
+          </label>
+          <label>stopCmd
+            <input type="text" id="svc-stopCmd" placeholder="bash scripts/stop.sh" />
+          </label>
+          <label>restartCmd
+            <input type="text" id="svc-restartCmd" placeholder="bash scripts/restart.sh" />
+          </label>
+          <label>gitRepoUrl
+            <input type="text" id="svc-gitRepoUrl" placeholder="https://github.com/owner/repo" />
+          </label>
+          <label>defaultBranch
+            <input type="text" id="svc-defaultBranch" placeholder="main" />
+          </label>
+          <label>restartNotifyUrl
+            <input type="text" id="svc-restartNotifyUrl" placeholder="可选，graceful 通知" />
+          </label>
+          <label>restartPollUrl
+            <input type="text" id="svc-restartPollUrl" placeholder="可选，graceful 轮询" />
+          </label>
+          <label>gracefulRestartMaxWaitMs
+            <input type="number" id="svc-gracefulRestartMaxWaitMs" min="0" step="1" placeholder="0 = 服务端默认" />
+          </label>
+          <div class="form-actions">
+            <button class="btn btn--primary" id="svc-save">保存服务契约</button>
+            <span id="svc-msg" class="muted"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="actions">
+        <div class="form-inline">
+          <button class="btn btn--primary" id="svc-new">新建服务契约</button>
+          <button class="btn" id="svc-refresh">刷新</button>
+          <span id="svc-msg-list" class="muted"></span>
+        </div>
+      </div>
+
+      <div class="tablewrap">
+        <table class="grid" id="svc-table">
+          <thead>
+            <tr>
+              <th>serviceId</th><th>name</th><th>runtimeDir</th><th>healthUrl</th>
+              <th>gitRepoUrl</th><th>defaultBranch</th><th>graceful</th><th>更新时间</th><th>操作</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
       </div>
     </section>
 

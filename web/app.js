@@ -158,16 +158,20 @@ async function refreshMeta() {
   }
 }
 
-// ---- services (dropdown options for the remaining tabs) --------------------
+// ---- services (dropdown options + 服务契约 tab) ---------------------------
 let services = [];
+let servicesError = '';
 async function refreshServices() {
   try {
     const data = await apiGet('/api/services');
     services = data.services || [];
+    servicesError = '';
   } catch (e) {
     services = [];
+    servicesError = e.message;
   }
   populateServiceSelects();
+  renderServiceContracts();
 }
 
 function populateServiceSelects() {
@@ -197,6 +201,153 @@ function populateServiceSelects() {
     artSel.value = prev && services.find((s) => s.serviceId === prev) ? prev : '';
   }
 }
+
+// ---- 服务契约 (service contracts) ------------------------------------------
+// Renders the services list into the 服务契约 tab. The API response already
+// carries the full contract (GET /api/services), so no per-row fetch is needed.
+function serviceGracefulLabel(svc) {
+  return (svc.restartNotifyUrl && svc.restartPollUrl) ? 'enabled' : '—';
+}
+
+function renderServiceContracts() {
+  const tbody = $('#svc-table tbody');
+  if (!tbody) return;
+  if (servicesError) {
+    tbody.innerHTML = `<tr><td colspan="9" class="muted">加载失败：${esc(servicesError)}</td></tr>`;
+    return;
+  }
+  if (!services.length) {
+    tbody.innerHTML = `<tr><td colspan="9" class="muted">暂无服务契约，请在上方表单新建</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = services.map((s) => `<tr>
+      <td class="mono">${esc(s.serviceId)}</td>
+      <td>${esc(s.name || '—')}</td>
+      <td class="mono">${esc(s.runtimeDir || '—')}</td>
+      <td class="mono">${esc(s.healthUrl || '—')}</td>
+      <td class="mono">${esc(s.gitRepoUrl || '—')}</td>
+      <td class="mono">${esc(s.defaultBranch || 'main')}</td>
+      <td>${esc(serviceGracefulLabel(s))}</td>
+      <td class="mono">${fmtTime(s.updatedAt)}</td>
+      <td class="cell-actions">
+        <button class="btn btn--sm" data-svc-edit="${esc(s.serviceId)}">编辑</button>
+        <button class="btn btn--sm btn--danger" data-svc-delete="${esc(s.serviceId)}">删除</button>
+      </td>
+    </tr>`).join('');
+}
+
+const SVC_FORM_FIELDS = [
+  '#svc-serviceId', '#svc-name', '#svc-runtimeDir', '#svc-healthUrl',
+  '#svc-startCmd', '#svc-stopCmd', '#svc-restartCmd', '#svc-gitRepoUrl',
+  '#svc-defaultBranch', '#svc-restartNotifyUrl', '#svc-restartPollUrl',
+  '#svc-gracefulRestartMaxWaitMs',
+];
+
+let editingServiceID = null;
+
+function clearServiceForm() {
+  for (const id of SVC_FORM_FIELDS) {
+    const el = $(id);
+    if (el) el.value = '';
+  }
+}
+
+function resetServiceForm() {
+  editingServiceID = null;
+  clearServiceForm();
+  $('#svc-form-title').textContent = '新建服务契约';
+  const idEl = $('#svc-serviceId');
+  if (idEl) idEl.disabled = false;
+  const cancel = $('#svc-form-cancel');
+  if (cancel) cancel.hidden = true;
+}
+
+function fillServiceForm(svc) {
+  editingServiceID = svc.serviceId;
+  $('#svc-form-title').textContent = '编辑服务契约：' + svc.serviceId;
+  $('#svc-serviceId').value = svc.serviceId || '';
+  $('#svc-serviceId').disabled = true;
+  $('#svc-name').value = svc.name || '';
+  $('#svc-runtimeDir').value = svc.runtimeDir || '';
+  $('#svc-healthUrl').value = svc.healthUrl || '';
+  $('#svc-startCmd').value = svc.startCmd || '';
+  $('#svc-stopCmd').value = svc.stopCmd || '';
+  $('#svc-restartCmd').value = svc.restartCmd || '';
+  $('#svc-gitRepoUrl').value = svc.gitRepoUrl || '';
+  $('#svc-defaultBranch').value = svc.defaultBranch || '';
+  $('#svc-restartNotifyUrl').value = svc.restartNotifyUrl || '';
+  $('#svc-restartPollUrl').value = svc.restartPollUrl || '';
+  $('#svc-gracefulRestartMaxWaitMs').value = svc.gracefulRestartMaxWaitMs || '';
+  const cancel = $('#svc-form-cancel');
+  if (cancel) cancel.hidden = false;
+  const card = $('#svc-form-card');
+  if (card && card.scrollIntoView) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function serviceFormBody() {
+  const serviceId = $('#svc-serviceId').value.trim();
+  const name = $('#svc-name').value.trim();
+  const runtimeDir = $('#svc-runtimeDir').value.trim();
+  const healthUrl = $('#svc-healthUrl').value.trim();
+  const startCmd = $('#svc-startCmd').value.trim();
+  const stopCmd = $('#svc-stopCmd').value.trim();
+  const restartCmd = $('#svc-restartCmd').value.trim();
+  if (!serviceId) return { error: '请填写 serviceId' };
+  if (!runtimeDir || !healthUrl || !startCmd || !stopCmd || !restartCmd) {
+    return { error: 'runtimeDir / healthUrl / startCmd / stopCmd / restartCmd 为必填项' };
+  }
+  return {
+    serviceId,
+    body: {
+      name, runtimeDir, healthUrl, startCmd, stopCmd, restartCmd,
+      gitRepoUrl: $('#svc-gitRepoUrl').value.trim(),
+      defaultBranch: $('#svc-defaultBranch').value.trim(),
+      restartNotifyUrl: $('#svc-restartNotifyUrl').value.trim(),
+      restartPollUrl: $('#svc-restartPollUrl').value.trim(),
+      gracefulRestartMaxWaitMs: Number($('#svc-gracefulRestartMaxWaitMs').value) || 0,
+    },
+  };
+}
+
+async function saveServiceContract() {
+  const built = serviceFormBody();
+  if (built.error) { toast(built.error, 'err'); return; }
+  try {
+    await apiSend('PUT', '/api/services/' + encodeURIComponent(built.serviceId), built.body);
+    toast('已保存服务契约 ' + built.serviceId, 'ok');
+    resetServiceForm();
+    await refreshServices();
+  } catch (e) {
+    toast('保存失败：' + e.message, 'err');
+  }
+}
+
+async function deleteServiceContract(serviceId) {
+  if (!window.confirm('确认删除服务契约 ' + serviceId + ' ？')) return;
+  try {
+    await apiSend('DELETE', '/api/services/' + encodeURIComponent(serviceId));
+    toast('已删除服务契约 ' + serviceId, 'ok');
+    if (editingServiceID === serviceId) resetServiceForm();
+    await refreshServices();
+  } catch (e) {
+    toast('删除失败：' + e.message, 'err');
+  }
+}
+
+$('#svc-save').addEventListener('click', saveServiceContract);
+$('#svc-new').addEventListener('click', resetServiceForm);
+$('#svc-refresh').addEventListener('click', refreshServices);
+$('#svc-form-cancel').addEventListener('click', resetServiceForm);
+$('#svc-table tbody').addEventListener('click', (e) => {
+  const editBtn = e.target.closest('[data-svc-edit]');
+  if (editBtn) {
+    const svc = services.find((s) => s.serviceId === editBtn.dataset.svcEdit);
+    if (svc) fillServiceForm(svc);
+    return;
+  }
+  const delBtn = e.target.closest('[data-svc-delete]');
+  if (delBtn) deleteServiceContract(delBtn.dataset.svcDelete);
+});
 
 // ---- sub-tabs: 「发起」 / 「历史列表」 -------------------------------------
 // Each top tab (部署流水线 / 部署任务) is split into a 发起 sub-panel and a
@@ -717,6 +868,7 @@ function refreshActiveTab() {
   }
   else if (active === 'artifacts') refreshArtifacts();
   else if (active === 'meta') refreshMeta();
+  else if (active === 'services') refreshServices();
 }
 
 function refresh() {
@@ -738,6 +890,7 @@ $('#autorefresh').addEventListener('change', () => {
 });
 
 // init
+resetServiceForm();
 refreshServices();
 refresh();
 startPolling();
