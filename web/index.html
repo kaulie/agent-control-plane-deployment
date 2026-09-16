@@ -111,30 +111,99 @@
 
     <!-- Pipelines -->
     <section id="tab-pipelines" class="tabpanel">
-      <div id="pipe-list-view">
-      <div class="actions">
-        <div class="form-inline">
-          <label>服务
-            <select id="pipe-service"></select>
-          </label>
-          <label>ref（可选，默认 defaultBranch）
-            <input type="text" id="pipe-ref" placeholder="main / commit" />
-          </label>
-          <button class="btn btn--primary" id="pipe-trigger">触发打包+部署</button>
+      <nav class="subtabs" id="pipe-subtabs">
+        <button class="subtab subtab--active" data-subtab="pipe-init">发起</button>
+        <button class="subtab" data-subtab="pipe-history">历史列表</button>
+      </nav>
+
+      <!-- 发起：打包 + 部署 -->
+      <div id="pipe-init" class="subpanel subpanel--active">
+        <div class="card">
+          <h2 class="card__title">触发打包 + 部署</h2>
+          <div class="form-inline">
+            <label>服务
+              <select id="pipe-service"></select>
+            </label>
+            <label>ref（可选，默认 defaultBranch）
+              <input type="text" id="pipe-ref" placeholder="main / commit" />
+            </label>
+            <button class="btn btn--primary" id="pipe-trigger">触发打包+部署</button>
+          </div>
+          <p class="hint">git clone → build.sh → 上传制品 → 入队部署（graceful notify + poll）。</p>
         </div>
       </div>
-      <div class="tablewrap">
-        <table class="grid" id="pipe-table">
-          <thead>
-            <tr>
-              <th>requestId</th><th>service</th><th>ref</th><th>状态</th>
-              <th>deployment</th><th>version</th><th>deployReq</th><th>触发者</th><th>请求时间</th><th>消息</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-      </div>
+
+      <!-- 历史列表：多属性筛选 + 服务端分页 -->
+      <div id="pipe-history" class="subpanel">
+        <div id="pipe-list-view">
+          <div class="filters" id="pipe-filters">
+            <label>服务
+              <select id="pipe-f-service"><option value="">全部</option></select>
+            </label>
+            <label>状态
+              <select id="pipe-f-state">
+                <option value="">全部</option>
+                <option value="queued">queued</option>
+                <option value="packaging">packaging</option>
+                <option value="deploying">deploying</option>
+                <option value="succeeded">succeeded</option>
+                <option value="failed">failed</option>
+              </select>
+            </label>
+            <label>触发者角色
+              <select id="pipe-f-triggeredByRole">
+                <option value="">全部</option>
+                <option value="user">user</option>
+                <option value="agent">agent</option>
+              </select>
+            </label>
+            <label>触发者 id
+              <input type="text" id="pipe-f-triggeredById" placeholder="user_001" />
+            </label>
+            <label>ref
+              <input type="text" id="pipe-f-ref" placeholder="包含匹配" />
+            </label>
+            <label>deployment
+              <input type="text" id="pipe-f-deployment" placeholder="包含匹配" />
+            </label>
+            <label>version
+              <input type="text" id="pipe-f-version" placeholder="包含匹配" />
+            </label>
+            <label>关键字
+              <input type="text" id="pipe-f-q" placeholder="requestId / 消息 / 错误" />
+            </label>
+            <label>起（UTC 日期）
+              <input type="date" id="pipe-f-from" />
+            </label>
+            <label>止（UTC 日期）
+              <input type="date" id="pipe-f-to" />
+            </label>
+            <label>每页
+              <select id="pipe-f-pageSize">
+                <option value="10">10</option>
+                <option value="20" selected>20</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </label>
+            <div class="filters__actions">
+              <button class="btn btn--primary" id="pipe-f-apply">查询</button>
+              <button class="btn" id="pipe-f-reset">重置</button>
+            </div>
+          </div>
+          <div class="tablewrap">
+            <table class="grid" id="pipe-table">
+              <thead>
+                <tr>
+                  <th>requestId</th><th>service</th><th>ref</th><th>状态</th>
+                  <th>deployment</th><th>version</th><th>deployReq</th><th>触发者</th><th>请求时间</th><th>消息</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="pager" id="pipe-pager"></div>
+        </div>
       <div id="pipe-detail" hidden>
         <div class="detail-head">
           <button class="btn btn--ghost" id="pipe-detail-back" type="button">← 返回列表</button>
@@ -150,31 +219,99 @@
           <div class="detail-grid" id="pipe-detail-deploy"></div>
         </div>
       </div>
+      </div>
     </section>
 
     <!-- Deploys -->
     <section id="tab-deploys" class="tabpanel">
-      <div class="actions">
-        <div class="form-inline">
-          <label>服务
-            <select id="dep-service"></select>
-          </label>
-          <label>deployment / hash
-            <input type="text" id="dep-deployment" placeholder="deployment-<hash>" />
-          </label>
-          <button class="btn btn--primary" id="dep-trigger">触发部署</button>
+      <nav class="subtabs" id="dep-subtabs">
+        <button class="subtab subtab--active" data-subtab="dep-init">发起</button>
+        <button class="subtab" data-subtab="dep-history">历史列表</button>
+      </nav>
+
+      <!-- 发起：使用已有制品部署 -->
+      <div id="dep-init" class="subpanel subpanel--active">
+        <div class="card">
+          <h2 class="card__title">触发部署（使用已有制品）</h2>
+          <div class="form-inline">
+            <label>服务
+              <select id="dep-service"></select>
+            </label>
+            <label>deployment / hash
+              <input type="text" id="dep-deployment" placeholder="deployment-<hash>" />
+            </label>
+            <button class="btn btn--primary" id="dep-trigger">触发部署</button>
+          </div>
+          <p class="hint">制品须已存在（后端会 Exists 校验）；直接入队部署，不重新打包。</p>
         </div>
       </div>
-      <div class="tablewrap">
-        <table class="grid" id="dep-table">
-          <thead>
-            <tr>
-              <th>requestId</th><th>service</th><th>deployment</th><th>状态</th>
-              <th>version</th><th>触发者</th><th>请求时间</th><th>开始</th><th>结束</th><th>消息 / 错误</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
+
+      <!-- 历史列表：多属性筛选 + 服务端分页 -->
+      <div id="dep-history" class="subpanel">
+        <div class="filters" id="dep-filters">
+          <label>服务
+            <select id="dep-f-service"><option value="">全部</option></select>
+          </label>
+          <label>状态
+            <select id="dep-f-state">
+              <option value="">全部</option>
+              <option value="queued">queued</option>
+              <option value="running">running</option>
+              <option value="succeeded">succeeded</option>
+              <option value="failed">failed</option>
+              <option value="cancelled">cancelled</option>
+            </select>
+          </label>
+          <label>触发者角色
+            <select id="dep-f-triggeredByRole">
+              <option value="">全部</option>
+              <option value="user">user</option>
+              <option value="agent">agent</option>
+            </select>
+          </label>
+          <label>触发者 id
+            <input type="text" id="dep-f-triggeredById" placeholder="user_001" />
+          </label>
+          <label>deployment
+            <input type="text" id="dep-f-deployment" placeholder="包含匹配" />
+          </label>
+          <label>version
+            <input type="text" id="dep-f-version" placeholder="包含匹配" />
+          </label>
+          <label>关键字
+            <input type="text" id="dep-f-q" placeholder="requestId / 消息 / 错误" />
+          </label>
+          <label>起（UTC 日期）
+            <input type="date" id="dep-f-from" />
+          </label>
+          <label>止（UTC 日期）
+            <input type="date" id="dep-f-to" />
+          </label>
+          <label>每页
+            <select id="dep-f-pageSize">
+              <option value="10">10</option>
+              <option value="20" selected>20</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+            </select>
+          </label>
+          <div class="filters__actions">
+            <button class="btn btn--primary" id="dep-f-apply">查询</button>
+            <button class="btn" id="dep-f-reset">重置</button>
+          </div>
+        </div>
+        <div class="tablewrap">
+          <table class="grid" id="dep-table">
+            <thead>
+              <tr>
+                <th>requestId</th><th>service</th><th>deployment</th><th>状态</th>
+                <th>version</th><th>触发者</th><th>请求时间</th><th>开始</th><th>结束</th><th>消息 / 错误</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="pager" id="dep-pager"></div>
       </div>
     </section>
 

@@ -349,26 +349,11 @@ func (s *Store) GetDeploy(requestID string) (*DeployJob, error) {
 	return job, err
 }
 
+// ListDeploys returns the most recent deploys (no filters). Kept as a thin
+// wrapper over ListDeploysFiltered for callers that only need a limit.
 func (s *Store) ListDeploys(limit int) ([]DeployJob, error) {
-	rows, err := s.db.Query(`
-		SELECT `+deployColumns+`
-		FROM deploys ORDER BY requested_at DESC LIMIT ?`, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []DeployJob
-	for rows.Next() {
-		job, err := scanDeployRows(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, *job)
-	}
-	if out == nil {
-		out = []DeployJob{}
-	}
-	return out, rows.Err()
+	jobs, _, err := s.ListDeploysFiltered(ListFilter{Page: 1, PageSize: limit})
+	return jobs, err
 }
 
 func (s *Store) ListDeploysByState(state DeployState) ([]DeployJob, error) {
