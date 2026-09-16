@@ -14,6 +14,9 @@ func TestNormalize(t *testing.T) {
 		{name: "success", level: string(Success), want: Success},
 		{name: "warn", level: string(Warn), want: Warn},
 		{name: "error", level: string(Error), want: Error},
+		{name: "uppercase info maps to info", level: "INFO", want: Info},
+		{name: "uppercase legacy ok maps to success", level: "OK", want: Success},
+		{name: "padded warn maps to warn", level: "  warn  ", want: Warn},
 		{name: "unknown falls back to info", level: "custom", want: Info},
 	}
 	for _, tc := range cases {
