@@ -158,40 +158,16 @@ async function refreshMeta() {
   }
 }
 
-// ---- services -------------------------------------------------------------
+// ---- services (dropdown options for the remaining tabs) --------------------
 let services = [];
 async function refreshServices() {
-  const tbody = $('#svc-table tbody');
   try {
     const data = await apiGet('/api/services');
     services = data.services || [];
-    populateServiceSelects();
   } catch (e) {
     services = [];
-    tbody.innerHTML = `<tr><td colspan="8" class="muted">加载失败：${esc(e.message)}</td></tr>`;
-    return;
   }
-  if (!services.length) {
-    tbody.innerHTML = `<tr><td colspan="8" class="muted">暂无服务契约，点击「新建服务契约」</td></tr>`;
-    return;
-  }
-  tbody.innerHTML = services.map((s) => {
-    const graceful = (s.restartNotifyUrl && s.restartPollUrl)
-      ? `<span class="badge badge--ok">on</span>`
-      : `<span class="badge badge--muted">off</span>`;
-    return `<tr>
-      <td class="mono">${esc(s.serviceId)}</td>
-      <td>${esc(s.name)}</td>
-      <td class="mono wrap">${esc(s.runtimeDir)}</td>
-      <td class="mono wrap">${esc(s.healthUrl)}</td>
-      <td class="mono wrap">${esc(s.gitRepoUrl || '—')}</td>
-      <td>${graceful}</td>
-      <td class="mono">${fmtTime(s.updatedAt)}</td>
-      <td class="cell-actions">
-        <button class="btn btn--sm" data-svc-edit="${esc(s.serviceId)}">编辑</button>
-      </td>
-    </tr>`;
-  }).join('');
+  populateServiceSelects();
 }
 
 function populateServiceSelects() {
@@ -221,89 +197,6 @@ function populateServiceSelects() {
     artSel.value = prev && services.find((s) => s.serviceId === prev) ? prev : '';
   }
 }
-
-// service editor: in-page form card (no modal, no forced popup)
-const formCard = $('#svc-form-card');
-const form = $('#svc-form');
-function openServiceForm(svc) {
-  $('#svc-form-title').textContent = svc ? '编辑服务契约' : '新建服务契约';
-  $('#svc-delete').hidden = !svc;
-  form.reset();
-  if (svc) {
-    form.serviceId.value = svc.serviceId;
-    form.serviceId.readOnly = true;
-    form.name.value = svc.name || '';
-    form.runtimeDir.value = svc.runtimeDir || '';
-    form.healthUrl.value = svc.healthUrl || '';
-    form.startCmd.value = svc.startCmd || '';
-    form.stopCmd.value = svc.stopCmd || '';
-    form.restartCmd.value = svc.restartCmd || '';
-    form.gitRepoUrl.value = svc.gitRepoUrl || '';
-    form.defaultBranch.value = svc.defaultBranch || '';
-    form.restartNotifyUrl.value = svc.restartNotifyUrl || '';
-    form.restartPollUrl.value = svc.restartPollUrl || '';
-    form.gracefulRestartMaxWaitMs.value = svc.gracefulRestartMaxWaitMs || '';
-  } else {
-    form.serviceId.readOnly = false;
-  }
-  $('#svc-form-msg').textContent = '';
-  formCard.hidden = false;
-  formCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-}
-function closeServiceForm() { formCard.hidden = true; }
-
-$('#svc-new').addEventListener('click', () => openServiceForm(null));
-$('#svc-cancel').addEventListener('click', closeServiceForm);
-
-$('#svc-delete').addEventListener('click', async () => {
-  const id = form.serviceId.value;
-  if (!confirm(`确认删除服务契约「${id}」？`)) return;
-  try {
-    await apiSend('DELETE', '/api/services/' + encodeURIComponent(id));
-    toast('已删除 ' + id, 'ok');
-    closeServiceForm();
-    refresh();
-  } catch (e) { $('#svc-form-msg').textContent = '删除失败：' + e.message; }
-});
-
-form.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const id = form.serviceId.value.trim();
-  const body = {
-    name: form.name.value.trim(),
-    runtimeDir: form.runtimeDir.value.trim(),
-    healthUrl: form.healthUrl.value.trim(),
-    startCmd: form.startCmd.value.trim(),
-    stopCmd: form.stopCmd.value.trim(),
-    restartCmd: form.restartCmd.value.trim(),
-  };
-  // nullable fields only sent when provided
-  if (form.gitRepoUrl.value.trim() !== '') body.gitRepoUrl = form.gitRepoUrl.value.trim();
-  if (form.defaultBranch.value.trim() !== '') body.defaultBranch = form.defaultBranch.value.trim();
-  if (form.restartNotifyUrl.value.trim() !== '') body.restartNotifyUrl = form.restartNotifyUrl.value.trim();
-  if (form.restartPollUrl.value.trim() !== '') body.restartPollUrl = form.restartPollUrl.value.trim();
-  if (form.gracefulRestartMaxWaitMs.value.trim() !== '') {
-    const n = parseInt(form.gracefulRestartMaxWaitMs.value, 10);
-    if (!Number.isNaN(n)) body.gracefulRestartMaxWaitMs = n;
-  }
-  $('#svc-form-msg').textContent = '保存中…';
-  try {
-    await apiSend('PUT', '/api/services/' + encodeURIComponent(id), body);
-    toast('已保存 ' + id, 'ok');
-    closeServiceForm();
-    refresh();
-  } catch (err) {
-    $('#svc-form-msg').textContent = '保存失败：' + err.message;
-  }
-});
-
-// delegate edit buttons
-$('#svc-table tbody').addEventListener('click', (e) => {
-  const btn = e.target.closest('[data-svc-edit]');
-  if (!btn) return;
-  const svc = services.find((s) => s.serviceId === btn.dataset.svcEdit);
-  if (svc) openServiceForm(svc);
-});
 
 // ---- sub-tabs: 「发起」 / 「历史列表」 -------------------------------------
 // Each top tab (部署流水线 / 部署任务) is split into a 发起 sub-panel and a
@@ -811,8 +704,7 @@ $('#art-scan').addEventListener('click', async () => {
 // ---- refresh loop ---------------------------------------------------------
 function refreshActiveTab() {
   const active = $('#tabs .tab--active').dataset.tab;
-  if (active === 'services') refreshServices();
-  else if (active === 'pipelines') {
+  if (active === 'pipelines') {
     // only the 历史列表 sub-panel has a list to poll
     if (activeSubPanel('pipe-subtabs') !== 'pipe-history') return;
     if (pipeDetailID) refreshPipelineDetail();
@@ -846,5 +738,6 @@ $('#autorefresh').addEventListener('change', () => {
 });
 
 // init
+refreshServices();
 refresh();
 startPolling();
