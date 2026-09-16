@@ -189,7 +189,7 @@ function populateServiceSelects() {
     if (services.find((s) => s.serviceId === prev)) sel.value = prev;
   }
   // History filters: keep an empty "全部" option so a filter can be cleared.
-  for (const id of ['#pipe-f-service', '#dep-f-service']) {
+  for (const id of ['#pipe-f-serviceId', '#dep-f-serviceId']) {
     const sel = $(id);
     if (!sel) continue;
     const prev = sel.value;
@@ -297,13 +297,21 @@ $('#svc-table tbody').addEventListener('click', (e) => {
 $$('.subtabs').forEach((nav) => {
   $$('.subtab', nav).forEach((btn) => {
     btn.addEventListener('click', () => {
-      $$('.subtab', nav).forEach((b) => b.classList.toggle('subtab--active', b === btn));
-      const section = nav.parentElement;
-      $$('.subpanel', section).forEach((p) => p.classList.toggle('subpanel--active', p.id === btn.dataset.subtab));
+      selectSubTab(nav.id, btn.dataset.subtab);
       refresh();
     });
   });
 });
+
+// selectSubTab toggles a tab's sub-panels. Used by the sub-tab buttons and by
+// the 发起 flow, which jumps straight to the new job's detail page.
+function selectSubTab(navId, panelId) {
+  const nav = $('#' + navId);
+  if (!nav) return;
+  $$('.subtab', nav).forEach((b) => b.classList.toggle('subtab--active', b.dataset.subtab === panelId));
+  const section = nav.parentElement;
+  $$('.subpanel', section).forEach((p) => p.classList.toggle('subpanel--active', p.id === panelId));
+}
 
 // Id of the currently visible sub-panel of a tab nav (e.g. 'pipe-history').
 function activeSubPanel(navId) {
@@ -392,7 +400,11 @@ function makeHistory(cfg) {
   if (pageSizeEl) pageSizeEl.addEventListener('change', apply);
   for (const name of cfg.fields) {
     const e = el(name);
-    if (e && e.tagName === 'INPUT' && e.type !== 'date') {
+    if (!e) continue;
+    // Discrete choices (selects) apply at once; free text needs 查询 or Enter.
+    if (e.tagName === 'SELECT') {
+      e.addEventListener('change', apply);
+    } else if (e.tagName === 'INPUT' && e.type !== 'date') {
       e.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); apply(); } });
     }
   }
@@ -450,7 +462,7 @@ const historyDeploys = makeHistory({
   tableSel: '#dep-table tbody',
   colspan: 10,
   fields: ['serviceId', 'state', 'triggeredByRole', 'triggeredById', 'deployment', 'version', 'q', 'from', 'to'],
-  renderRow: (j) => `<tr>
+  renderRow: (j) => `<tr class="rowlink" data-dep-open="${esc(j.requestId)}">
       <td class="mono">${esc(j.requestId)}</td>
       <td class="mono">${esc(j.serviceId)}</td>
       <td class="mono">${esc(j.deployment)}</td>
@@ -478,7 +490,9 @@ $('#pipe-trigger').addEventListener('click', async () => {
     const r = await apiSend('POST', '/api/deploy-notify', body);
     toast('已触发流水线 ' + r.requestId + '（' + identityLabel(identity.role, identity.id) + '）', 'ok');
     $('#pipe-ref').value = '';
-    refresh();
+    // jump to the history list and open the new pipeline's detail page
+    selectSubTab('pipe-subtabs', 'pipe-history');
+    openPipelineDetail(r.requestId);
   } catch (e) { toast('触发失败：' + e.message, 'err'); }
 });
 
@@ -623,9 +637,90 @@ $('#dep-trigger').addEventListener('click', async () => {
     const r = await apiSend('POST', '/api/deploys', { serviceId, deployment });
     toast('已提交部署 ' + r.requestId + '（' + identityLabel(identity.role, identity.id) + '）', 'ok');
     $('#dep-deployment').value = '';
-    refresh();
+    // jump to the history list and open the new deploy's detail page
+    selectSubTab('dep-subtabs', 'dep-history');
+    openDeployDetail(r.requestId);
   } catch (e) { toast('提交失败：' + e.message, 'err'); }
 });
+
+// ---- deploy detail --------------------------------------------------------
+// Same shape as the pipeline detail: fields + the deploy's event timeline.
+let depDetailID = null;
+
+$('#dep-table tbody').addEventListener('click', (e) => {
+  const tr = e.target.closest('[data-dep-open]');
+  if (!tr) return;
+  openDeployDetail(tr.dataset.depOpen);
+});
+
+$('#dep-detail-back').addEventListener('click', closeDeployDetail);
+
+function openDeployDetail(requestId) {
+  depDetailID = requestId;
+  $('#dep-list-view').hidden = true;
+  $('#dep-detail').hidden = false;
+  $('#dep-detail-title').textContent = '部署 ' + requestId;
+  refreshDeployDetail();
+  $('#dep-detail').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function closeDeployDetail() {
+  depDetailID = null;
+  $('#dep-detail').hidden = true;
+  $('#dep-list-view').hidden = false;
+}
+
+async function refreshDeployDetail() {
+  if (!depDetailID) return;
+  const id = depDetailID;
+  let job = null, events = [];
+  try {
+    job = await apiGet('/api/deploys/' + encodeURIComponent(id));
+  } catch (e) {
+    $('#dep-detail-fields').innerHTML = `<div class="muted">加载失败：${esc(e.message)}</div>`;
+    $('#dep-detail-events').innerHTML = '';
+    return;
+  }
+  try {
+    const ed = await apiGet('/api/deploys/' + encodeURIComponent(id) + '/events');
+    events = ed.events || [];
+  } catch { events = []; }
+
+  $('#dep-detail-fields').innerHTML = [
+    fieldRow('requestId', job.requestId),
+    fieldRow('serviceId', job.serviceId),
+    fieldRow('deployment', job.deployment || '—'),
+    `<div class="detail-field"><span class="detail-label">状态</span>` +
+      `<span class="detail-value">${stateBadge(job.state)}</span></div>`,
+    fieldRow('version', job.version || '—'),
+    `<div class="detail-field"><span class="detail-label">触发者</span>` +
+      `<span class="detail-value">${identityCell(job)}</span></div>`,
+    fieldRow('请求时间', fmtTime(job.requestedAt)),
+    fieldRow('开始时间', fmtTime(job.startedAt)),
+    fieldRow('结束时间', fmtTime(job.finishedAt)),
+    `<div class="detail-field detail-field--full"><span class="detail-label">消息</span>` +
+      `<span class="detail-value">${esc(job.message || '—')}</span></div>`,
+    job.error
+      ? `<div class="detail-field detail-field--full"><span class="detail-label">错误</span>` +
+        `<span class="detail-value detail-value--err">${esc(job.error)}</span></div>`
+      : '',
+  ].join('');
+
+  const list = $('#dep-detail-events');
+  if (!events.length) {
+    list.innerHTML = `<li class="muted">暂无事件</li>`;
+  } else {
+    list.innerHTML = events.map((ev) => {
+      const cls = 'evlog--' + (ev.level || 'info');
+      return `<li class="evlog ${cls}">` +
+        `<span class="evlog__ts mono">${fmtTime(ev.ts)}</span>` +
+        `<span class="evlog__lvl">${esc(ev.level || 'info')}</span>` +
+        `<span class="evlog__src">部署</span>` +
+        `<span class="evlog__msg">${esc(ev.message)}</span>` +
+        `</li>`;
+    }).join('');
+  }
+}
 
 // ---- artifacts -------------------------------------------------------------
 // Human-readable byte size (e.g. 12.3 MB) for the artifact table.
@@ -705,7 +800,8 @@ function refreshActiveTab() {
   }
   else if (active === 'deploys') {
     if (activeSubPanel('dep-subtabs') !== 'dep-history') return;
-    refreshDeploys();
+    if (depDetailID) refreshDeployDetail();
+    else refreshDeploys();
   }
   else if (active === 'artifacts') refreshArtifacts();
   else if (active === 'meta') refreshMeta();

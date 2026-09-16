@@ -138,7 +138,7 @@
         <div id="pipe-list-view">
           <div class="filters" id="pipe-filters">
             <label>服务
-              <select id="pipe-f-service"><option value="">全部</option></select>
+              <select id="pipe-f-serviceId"><option value="">全部</option></select>
             </label>
             <label>状态
               <select id="pipe-f-state">
@@ -248,9 +248,10 @@
 
       <!-- 历史列表：多属性筛选 + 服务端分页 -->
       <div id="dep-history" class="subpanel">
+        <div id="dep-list-view">
         <div class="filters" id="dep-filters">
           <label>服务
-            <select id="dep-f-service"><option value="">全部</option></select>
+            <select id="dep-f-serviceId"><option value="">全部</option></select>
           </label>
           <label>状态
             <select id="dep-f-state">
@@ -311,7 +312,19 @@
             <tbody></tbody>
           </table>
         </div>
-        <div class="pager" id="dep-pager"></div>
+          <div class="pager" id="dep-pager"></div>
+        </div>
+        <div id="dep-detail" hidden>
+          <div class="detail-head">
+            <button class="btn btn--ghost" id="dep-detail-back" type="button">← 返回列表</button>
+            <h2 id="dep-detail-title">部署详情</h2>
+          </div>
+          <div class="detail-grid" id="dep-detail-fields"></div>
+          <div class="detail-section">
+            <h3>事件日志</h3>
+            <ul class="eventlog" id="dep-detail-events"></ul>
+          </div>
+        </div>
       </div>
     </section>
 

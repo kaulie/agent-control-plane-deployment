@@ -87,6 +87,7 @@ func TestListDeploysFiltered(t *testing.T) {
 	check("identity", ListFilter{TriggeredByRole: "agent", TriggeredByID: "agent_002"}, 2)
 	check("deployment contains", ListFilter{Deployment: "aaa"}, 2)
 	check("keyword", ListFilter{Keyword: "d2"}, 1, "d2")
+	check("keyword by service", ListFilter{Keyword: "web-cursor"}, 3)
 	check("time range Feb..Mar", ListFilter{
 		From: "2026-02-01T00:00:00.000Z",
 		To:   "2026-03-31T23:59:59.999Z",
@@ -131,6 +132,10 @@ func TestListPipelinesFiltered(t *testing.T) {
 	}
 	if _, total, _ := s.ListPipelinesFiltered(ListFilter{ServiceID: "web-cursor"}); total != 2 {
 		t.Fatalf("serviceId filter total=%d, want 2", total)
+	}
+	// keyword matches the service id too
+	if _, total, _ := s.ListPipelinesFiltered(ListFilter{Keyword: "acp"}); total != 1 {
+		t.Fatalf("keyword serviceId total=%d, want 1", total)
 	}
 	if p1, total, _ := s.ListPipelinesFiltered(ListFilter{Page: 1, PageSize: 2}); total != 3 || len(p1) != 2 {
 		t.Fatalf("paging: total=%d rows=%d", total, len(p1))

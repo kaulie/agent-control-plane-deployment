@@ -176,7 +176,7 @@ curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 | `triggeredByRole` / `triggeredById` | 触发者身份（精确匹配） |
 | `deployment` / `version` | 包含匹配 |
 | `ref` | 仅 pipeline：包含匹配 |
-| `q` | 关键字：对 `request_id` / `deployment` / `version` / `message` / `error` / `triggered_by_id` 做包含匹配 |
+| `q` | 关键字：对 `request_id` / `service_id` / `deployment` / `version` / `message` / `error` / `triggered_by_id` 做包含匹配 |
 | `from` / `to` | `requested_at` 闭区间，ISO 字符串（面板按 UTC 整天传入） |
 | `page` / `pageSize` | 分页（默认 `1` / `20`，`pageSize` 上限 200；`limit` 仍是 `pageSize` 的别名） |
 
@@ -255,4 +255,5 @@ curl -sS -X POST http://127.0.0.1:4220/api/deploys \
 默认每 3s 自动刷新当前页签，可在右上角关闭。`install.sh` 已把 `web/` 一并 rsync 到 runtime。
 
 - **发起 / 历史列表 分离**：流水线、部署各自拆成「发起」与「历史列表」两个子页；历史列表支持按 服务 / 状态 / 触发者 / ref / deployment / version / 关键字 / 时间范围 筛选，并在**服务端分页**（每页 10/20/50/100）。筛选只有点「查询」（或在输入框回车 / 改每页）才作为"已应用"快照生效，避免 3s 自动刷新把正在输入的内容当成筛选条件。
+- **发起后自动进入详情页**：在「发起」子页提交后，自动切到「历史列表」并打开刚创建的那条记录的详情（流水线详情含事件时间线 + 关联部署任务；部署详情含该次部署的事件时间线）。历史列表里点任意一行也可打开详情。
 
