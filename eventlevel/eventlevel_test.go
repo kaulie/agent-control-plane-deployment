@@ -10,7 +10,7 @@ func TestNormalize(t *testing.T) {
 	}{
 		{name: "empty defaults to info", level: "", want: Info},
 		{name: "info", level: "info", want: Info},
-		{name: "legacy ok maps to success", level: "ok", want: Success},
+		{name: "legacy ok maps to success", level: LegacySuccessAlias, want: Success},
 		{name: "success", level: "success", want: Success},
 		{name: "warn", level: "warn", want: Warn},
 		{name: "error", level: "error", want: Error},
