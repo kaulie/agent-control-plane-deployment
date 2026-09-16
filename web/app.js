@@ -340,10 +340,13 @@ function activeSubPanel(navId) {
 //    &version=&q=&from=&to=&page=&pageSize=
 // and the response { <listKey>: [...], total, page, pageSize }.
 // Filters live in an "applied" snapshot so the 3s auto-refresh never picks up
-// half-typed values: only 查询 / 重置 / 每页 change the applied set.
+// half-typed values: only 查询 / 重置 change the applied set. When autoApply
+// is disabled, filter controls (selects/text/page size) never refresh on their
+// own — the 查询 button is the only way to apply the selected filters.
 function makeHistory(cfg) {
   const state = { page: 1, pageSize: 20, applied: {} };
   const el = (name) => $('#' + cfg.prefix + '-f-' + name);
+  const autoApply = cfg.autoApply !== false;
 
   function readUI() {
     const out = {};
@@ -411,10 +414,10 @@ function makeHistory(cfg) {
   const resetBtn = $('#' + cfg.prefix + '-f-reset');
   if (resetBtn) resetBtn.addEventListener('click', reset);
   const pageSizeEl = el('pageSize');
-  if (pageSizeEl) pageSizeEl.addEventListener('change', apply);
+  if (pageSizeEl && autoApply) pageSizeEl.addEventListener('change', apply);
   for (const name of cfg.fields) {
     const e = el(name);
-    if (!e) continue;
+    if (!e || !autoApply) continue;
     // Discrete choices (selects) apply at once; free text needs 查询 or Enter.
     if (e.tagName === 'SELECT') {
       e.addEventListener('change', apply);
@@ -475,6 +478,7 @@ const historyDeploys = makeHistory({
   listKey: 'deploys',
   tableSel: '#dep-table tbody',
   colspan: 10,
+  autoApply: false,
   fields: ['serviceId', 'state', 'triggeredByRole', 'triggeredById', 'deployment', 'version', 'q', 'from', 'to'],
   renderRow: (j) => `<tr class="rowlink" data-dep-open="${esc(j.requestId)}">
       <td class="mono">${esc(j.requestId)}</td>
