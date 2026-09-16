@@ -79,7 +79,7 @@ func TestRestartNotifyPoll(t *testing.T) {
 	}
 
 	// Another running deploy (not the restarting one) blocks restart.
-	_, _ = store.CreateDeploy("deploy-other", "web-cursor", "deployment-xyz", "running")
+	_, _ = store.CreateDeploy("deploy-other", "web-cursor", "deployment-xyz", Identity{}, "running")
 	if _, err := store.ClaimNextQueued(); err != nil {
 		t.Fatalf("ClaimNextQueued: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestRestartNotifyPoll(t *testing.T) {
 	}
 
 	// The restarting job itself is excluded.
-	_, _ = store.CreateDeploy("pipeline-self1", "agent-control-plane-deployment", "deployment-abc", "running")
+	_, _ = store.CreateDeploy("pipeline-self1", "agent-control-plane-deployment", "deployment-abc", Identity{}, "running")
 	if _, err := store.ClaimNextQueued(); err != nil {
 		t.Fatalf("ClaimNextQueued self: %v", err)
 	}

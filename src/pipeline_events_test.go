@@ -22,7 +22,7 @@ func TestPipelineEvents(t *testing.T) {
 	defer s.Close()
 
 	const id = "pipeline-evt-test"
-	if _, err := s.CreatePipeline(id, "web-cursor", "main", "queued"); err != nil {
+	if _, err := s.CreatePipeline(id, "web-cursor", "main", Identity{}, "queued"); err != nil {
 		t.Fatalf("CreatePipeline: %v", err)
 	}
 	if err := s.AddPipelineEvent(id, eventlevel.Info, "入队"); err != nil {
@@ -80,7 +80,7 @@ func TestPipelineEventLevelNormalization(t *testing.T) {
 	defer s.Close()
 
 	const id = "pipeline-evt-level-normalization"
-	if _, err := s.CreatePipeline(id, "web-cursor", "main", "queued"); err != nil {
+	if _, err := s.CreatePipeline(id, "web-cursor", "main", Identity{}, "queued"); err != nil {
 		t.Fatalf("CreatePipeline: %v", err)
 	}
 	if err := s.AddPipelineEvent(id, "ok", "旧版 ok 成功事件"); err != nil {

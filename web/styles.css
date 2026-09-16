@@ -40,6 +40,15 @@ a { color: var(--accent-2); }
 .brand .logo { color: var(--accent); font-size: 18px; }
 .brand h1 { font-size: 16px; margin: 0; font-weight: 600; }
 .topbar__meta { display: flex; align-items: center; gap: 16px; }
+.identity { display: flex; align-items: center; gap: 8px; }
+.identity__field { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+.identity__field select, .identity__field input {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius);
+  padding: 3px 6px;
+}
 .muted { color: var(--muted); }
 .autorefresh { display: flex; align-items: center; gap: 6px; color: var(--muted); cursor: pointer; }
 

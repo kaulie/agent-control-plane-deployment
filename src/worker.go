@@ -246,8 +246,11 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		return
 	}
 	hash := strings.TrimPrefix(tag, "deployment-")
-	_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
-		"开始部署：service="+job.ServiceID+" deployment="+tag+" version="+hash)
+	startMsg := "开始部署：service=" + job.ServiceID + " deployment=" + tag + " version=" + hash
+	if by := job.Identity().String(); by != "" {
+		startMsg += " 触发者=" + by
+	}
+	_ = store.AddDeployEvent(job.RequestID, eventlevel.Info, startMsg)
 	// Fetch the package from the configured storage backend into a temp dir;
 	// the storage is the single source of truth for the bytes (local disk or
 	// GitHub Releases, etc.). Prefer the access path stored in the local

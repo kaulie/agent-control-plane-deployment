@@ -16,7 +16,7 @@ func TestDeployEvents(t *testing.T) {
 	defer s.Close()
 
 	const id = "deploy-evt-test"
-	if _, err := s.CreateDeploy(id, "web-cursor", "deployment-abc12345",
+	if _, err := s.CreateDeploy(id, "web-cursor", "deployment-abc12345", Identity{},
 		"queued"); err != nil {
 		t.Fatalf("CreateDeploy: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestDeployEventLevelNormalization(t *testing.T) {
 	defer s.Close()
 
 	const id = "deploy-evt-level-normalization"
-	if _, err := s.CreateDeploy(id, "web-cursor", "deployment-abc12345",
+	if _, err := s.CreateDeploy(id, "web-cursor", "deployment-abc12345", Identity{},
 		"queued"); err != nil {
 		t.Fatalf("CreateDeploy: %v", err)
 	}

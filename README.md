@@ -113,8 +113,10 @@ curl -sS -X PUT http://127.0.0.1:4220/api/services/web-cursor \
 
 curl -sS -X POST http://127.0.0.1:4220/api/deploy-notify \
   -H 'content-type: application/json' \
+  -H 'identity_role: agent' -H 'identity_id: agent_002' \
   -d '{"serviceId":"web-cursor"}'
 # 未传 ref → 默认拉该服务 defaultBranch（缺省 main）的最新 tip
+# identity_role / identity_id 为必填（第一阶段身份校验，见下节）
 
 curl -sS http://127.0.0.1:4220/api/pipelines/<requestId>
 ```
@@ -130,6 +132,7 @@ DEPLOY_SERVICE_ID=web-cursor ./bin/release.sh main
 # 2) HTTP 触发部署
 curl -sS -X POST http://127.0.0.1:4220/api/deploys \
   -H 'content-type: application/json' \
+  -H 'identity_role: user' -H 'identity_id: user_001' \
   -d '{"serviceId":"web-cursor","deployment":"deployment-<hash>"}'
 
 curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
@@ -147,10 +150,10 @@ curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 |---|---|---|
 | GET | `/health` | 本服务探活 |
 | GET/PUT/DELETE | `/api/services[/:id]` | 服务契约（含 `gitRepoUrl`、可选 graceful URL） |
-| POST | `/api/deploy-notify` | 服务方通知：打包 → 再部署 |
+| POST | `/api/deploy-notify` | 服务方通知：打包 → 再部署（**需身份头**） |
 | GET | `/api/pipelines[/:id]` | 打包+部署流水线状态 |
 | GET | `/api/pipelines/:id/events` | 流水线事件日志 |
-| POST | `/api/deploys` | 已有包直接入队部署 |
+| POST | `/api/deploys` | 已有包直接入队部署（**需身份头**） |
 | GET | `/api/deploys[/:id]` | 查询部署任务 |
 | GET | `/api/deploys/:id/events` | 部署执行事件日志 |
 | GET | `/api/artifacts[?serviceId=]` | 制品元数据列表（本地表，存储后端为纯存储） |
@@ -158,9 +161,33 @@ curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 | POST | `/api/artifacts/scan?serviceId=` | 扫描当前存储后端的制品，回填本地 artifacts 表 |
 | POST | `/restart/notify` | ACP 自身 graceful：通知进入 drain |
 | GET | `/restart/poll` | ACP 自身 graceful：轮询是否可重启 |
-| GET | `/api/meta` | 含 graceful / release 配置 |
+| GET | `/api/meta` | 含 graceful / release / 身份校验 配置 |
 
 旧的 `ops/` 文件队列守护已废弃，保留目录仅作历史参考；请用本 HTTP 服务。
+
+## 身份校验（第一阶段）
+
+触发部署的两个写接口必须带**身份头**，用于审计与面板展示（"谁触发的这次部署"）。本阶段只做最简单的校验，**没有密钥/token**：
+
+| Header | 取值 | 说明 |
+|---|---|---|
+| `identity_role` | `user` \| `agent` | 调用方类型（大小写不敏感，做 trim） |
+| `identity_id` | `user_001` / `agent_002` / … | 调用方标识，非空、无空白、≤64 字符 |
+
+- 需要身份头的接口：`POST /api/deploys`、`POST /api/deploy-notify`。其它接口（只读、服务契约、制品扫描、`/restart/*`）**不校验**。
+- 缺失或非法 → **401**，响应 `{"error":"missing identity: set headers identity_role (user|agent) and identity_id"}`。
+- 通过的请求会把身份存进任务记录（`deploys` / `pipelines` 表的 `triggered_by_role` / `triggered_by_id`），API 返回 `triggeredByRole` / `triggeredById` / `triggeredBy`（`role:id`），并在事件里带上 `触发者=…`；面板"部署流水线 / 部署任务"列表与详情页显示"触发者"列。
+- 逃生开关：`IDENTITY_ENFORCE=0`（或 `false`/`no`/`off`）→ 不拦截，缺头请求照常执行、身份记为未知（仅打日志）。默认开启；`GET /api/meta` 的 `identityEnforce` 反映当前值。
+- 面板顶栏有身份选择器（`user`/`agent` + id，默认 `user/user_001`，记在浏览器 localStorage），所有写请求自动带上这两个头。
+
+```bash
+curl -sS -X POST http://127.0.0.1:4220/api/deploys \
+  -H 'content-type: application/json' \
+  -H 'identity_role: user' -H 'identity_id: user_001' \
+  -d '{"serviceId":"web-cursor","deployment":"deployment-<hash>"}'
+```
+
+仓库内的调用方已同步带上身份：面板（`web/`，默认 `user:user_001`）、`bin/deploy.sh`（默认 `agent:deploy-agent`，可用 `IDENTITY_ROLE`/`IDENTITY_ID` 覆盖）、`ops/deploy-agent.sh`（透传）、`bin/release.sh` 打印的示例。⚠️ **仓库外的调用方**（例如 web-cursor 后端的 deploy-queue）需要自行补上这两个头，否则会收到 401。
 
 ## 制品存储（可插拔）+ 本地 artifacts 表
 
