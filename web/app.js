@@ -340,9 +340,10 @@ function activeSubPanel(navId) {
 //    &version=&q=&from=&to=&page=&pageSize=
 // and the response { <listKey>: [...], total, page, pageSize }.
 // Filters live in an "applied" snapshot so the 3s auto-refresh never picks up
-// half-typed values: only 查询 / 重置 change the applied set. When autoApply
-// is disabled, filter controls (selects/text/page size) never refresh on their
-// own — the 查询 button is the only way to apply the selected filters.
+// half-typed values: only 查询 / 重置 change the applied set for auto-applying
+// histories. When autoApply is disabled (部署任务历史列表), neither the filter
+// controls (selects/text/page size) nor 重置 refresh on their own — 查询 is the
+// only way to apply the selected filters and refresh the list.
 function makeHistory(cfg) {
   const state = { page: 1, pageSize: 20, applied: {} };
   const el = (name) => $('#' + cfg.prefix + '-f-' + name);
@@ -399,14 +400,15 @@ function makeHistory(cfg) {
     state.page = 1;
     refresh();
   }
-  // 重置: clear the form + applied filters.
+  // 重置: clear the form + applied filters. Query-only histories (autoApply
+  // disabled) just clear the form here; the list refreshes on the next 查询.
   function reset() {
     for (const name of cfg.fields) { const e = el(name); if (e) e.value = ''; }
     if (el('pageSize')) el('pageSize').value = '20';
     state.applied = {};
     state.pageSize = 20;
     state.page = 1;
-    refresh();
+    if (autoApply) refresh();
   }
 
   const applyBtn = $('#' + cfg.prefix + '-f-apply');

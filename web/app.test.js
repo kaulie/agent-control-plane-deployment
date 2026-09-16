@@ -183,4 +183,34 @@ test('deploy history: remaining select filters also wait for 查询', async (t) 
   assert.match(lastCall, /triggeredByRole=agent/, 'the query must send the selected trigger role');
 });
 
+test('deploy history: 重置 also waits for 查询', async (t) => {
+  const { dom, flush, deploysCalls } = makePanel();
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+
+  doc.querySelector('[data-tab="deploys"]').click();
+  await flush();
+  doc.querySelector('#dep-subtabs [data-subtab="dep-history"]').click();
+  await flush();
+
+  // Apply a filter first so 重置 has something to clear.
+  const state = doc.querySelector('#dep-f-state');
+  state.value = 'failed';
+  doc.querySelector('#dep-f-apply').click();
+  await flush();
+  const before = deploysCalls().length;
+  assert.match(deploysCalls().at(-1), /state=failed/, '查询 must first apply the selected filter');
+
+  doc.querySelector('#dep-f-reset').click();
+  await flush();
+  assert.equal(deploysCalls().length, before, '重置 must not refresh the list');
+  assert.equal(doc.querySelector('#dep-f-state').value, '', '重置 must clear the selected filter');
+  assert.equal(doc.querySelector('#dep-f-pageSize').value, '20', '重置 must restore the default page size');
+
+  doc.querySelector('#dep-f-apply').click();
+  await flush();
+  assert.equal(deploysCalls().length, before + 1, '查询 after 重置 must refresh exactly once');
+  assert.doesNotMatch(deploysCalls().at(-1), /state=failed/, '查询 after 重置 must not send the cleared filter');
+});
+
 
