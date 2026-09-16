@@ -11,6 +11,20 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({
 }[c]));
 const fmtTime = (t) => (t ? String(t).replace('T', ' ').replace(/\.\d+Z$/, 'Z') : '—');
 
+// Canonical deployment-pipeline event levels. These names mirror the Go
+// eventlevel package (info|success|warn|error) and keep the panel rendering
+// aligned with what the API stores.
+const EVENT_LEVELS = Object.freeze(['info', 'success', 'warn', 'error']);
+const DEFAULT_EVENT_LEVEL = 'info';
+
+function eventLevelName(level) {
+  return EVENT_LEVELS.includes(level) ? level : DEFAULT_EVENT_LEVEL;
+}
+
+function eventLevelClass(level) {
+  return 'evlog--' + eventLevelName(level);
+}
+
 // ---- state badges ----------------------------------------------------------
 function stateBadge(state) {
   const map = {
@@ -585,11 +599,11 @@ async function refreshPipelineDetail() {
     evList.innerHTML = `<li class="muted">暂无事件</li>`;
   } else {
     evList.innerHTML = merged.map((ev) => {
-      const cls = 'evlog--' + (ev.level || 'info');
+      const cls = eventLevelClass(ev.level);
       const src = ev.source === 'deploy' ? '部署' : '流水线';
       return `<li class="evlog ${cls}">` +
         `<span class="evlog__ts mono">${fmtTime(ev.ts)}</span>` +
-        `<span class="evlog__lvl">${esc(ev.level || 'info')}</span>` +
+        `<span class="evlog__lvl">${esc(eventLevelName(ev.level))}</span>` +
         `<span class="evlog__src">${src}</span>` +
         `<span class="evlog__msg">${esc(ev.message)}</span>` +
         `</li>`;
@@ -711,10 +725,10 @@ async function refreshDeployDetail() {
     list.innerHTML = `<li class="muted">暂无事件</li>`;
   } else {
     list.innerHTML = events.map((ev) => {
-      const cls = 'evlog--' + (ev.level || 'info');
+      const cls = eventLevelClass(ev.level);
       return `<li class="evlog ${cls}">` +
         `<span class="evlog__ts mono">${fmtTime(ev.ts)}</span>` +
-        `<span class="evlog__lvl">${esc(ev.level || 'info')}</span>` +
+        `<span class="evlog__lvl">${esc(eventLevelName(ev.level))}</span>` +
         `<span class="evlog__src">部署</span>` +
         `<span class="evlog__msg">${esc(ev.message)}</span>` +
         `</li>`;
