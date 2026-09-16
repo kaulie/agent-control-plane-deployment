@@ -14,6 +14,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/kaulie/agent-control-plane-deployment/eventlevel"
 )
 
 func normalizeDeploymentTag(raw string) (string, error) {
@@ -244,7 +246,7 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		return
 	}
 	hash := strings.TrimPrefix(tag, "deployment-")
-	_ = store.AddDeployEvent(job.RequestID, "info",
+	_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
 		"开始部署：service="+job.ServiceID+" deployment="+tag+" version="+hash)
 	// Fetch the package from the configured storage backend into a temp dir;
 	// the storage is the single source of truth for the bytes (local disk or
@@ -263,18 +265,18 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 	}
 	dlCtx, dlCancel := context.WithTimeout(context.Background(), time.Duration(cfg.ReleaseMaxSec)*time.Second)
 	defer dlCancel()
-	_ = store.AddDeployEvent(job.RequestID, "info",
+	_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
 		"下载开始：storage="+storage.Name()+" tag="+tag)
 	dlStart := time.Now()
 	if err := storage.Download(dlCtx, job.ServiceID, service.GitRepoURL, tag, src, accessPath); err != nil {
-		_ = store.AddDeployEvent(job.RequestID, "error", "下载失败："+err.Error())
+		_ = store.AddDeployEvent(job.RequestID, eventlevel.Error, "下载失败："+err.Error())
 		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 			State: StateFailed,
 			Error: fmt.Sprintf("download package: %v", err),
 		})
 		return
 	}
-	_ = store.AddDeployEvent(job.RequestID, "success",
+	_ = store.AddDeployEvent(job.RequestID, eventlevel.Success,
 		"下载结束：storage="+storage.Name()+" tag="+tag+
 			" size="+humanBytes(dirSize(src))+" 耗时="+humanDuration(time.Since(dlStart)))
 
@@ -350,14 +352,14 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		if len(out) > 2000 {
 			out = out[len(out)-2000:]
 		}
-		_ = store.AddDeployEvent(job.RequestID, "error", "rsync 失败："+out)
+		_ = store.AddDeployEvent(job.RequestID, eventlevel.Error, "rsync 失败："+out)
 		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 			State: StateFailed,
 			Error: "rsync failed: " + out,
 		})
 		return
 	}
-	_ = store.AddDeployEvent(job.RequestID, "success",
+	_ = store.AddDeployEvent(job.RequestID, eventlevel.Success,
 		"制品已 rsync 到 runtime："+service.RuntimeDir)
 
 	_ = os.WriteFile(filepath.Join(service.RuntimeDir, "VERSION"), []byte(hash+"\n"), 0o644)
@@ -365,7 +367,7 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 
 	if self {
 		if !upgraderRunning(cfg.Home) {
-			_ = store.AddDeployEvent(job.RequestID, "error",
+			_ = store.AddDeployEvent(job.RequestID, eventlevel.Error,
 				"acp-upgrader 未运行；请启动 scripts/upgrader-start.sh")
 			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 				State:   StateFailed,
@@ -375,7 +377,7 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 			return
 		}
 		if err := enqueueACPUpgrade(cfg, *job, *service, hash, tag); err != nil {
-			_ = store.AddDeployEvent(job.RequestID, "error", "写入 upgrade-requests 失败："+err.Error())
+			_ = store.AddDeployEvent(job.RequestID, eventlevel.Error, "写入 upgrade-requests 失败："+err.Error())
 			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 				State:   StateFailed,
 				Version: hash,
@@ -384,7 +386,7 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 			return
 		}
 		fmt.Printf("[deploy] %s self-upgrade staged; handed off to acp-upgrader (job stays running until reconcile)\n", job.RequestID)
-		_ = store.AddDeployEvent(job.RequestID, "info",
+		_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
 			"已移交 acp-upgrader：停止旧服务 → 启动新服务 → 探活（任务保持 running 直到新进程 reconcile）")
 		handedOff = true
 		return
@@ -403,7 +405,7 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 
 	fmt.Printf("[deploy] %s restart via contract (PORT=%s): %s\n",
 		job.RequestID, portFromHealthURL(service.HealthURL), restartCmd)
-	_ = store.AddDeployEvent(job.RequestID, "info",
+	_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
 		"执行 restartCmd（PORT="+portFromHealthURL(service.HealthURL)+"）："+restartCmd)
 	restart := runShell(
 		restartCmd,
@@ -416,7 +418,7 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		if len(out) > 2000 {
 			out = out[len(out)-2000:]
 		}
-		_ = store.AddDeployEvent(job.RequestID, "error", "restart 失败："+out)
+		_ = store.AddDeployEvent(job.RequestID, eventlevel.Error, "restart 失败："+out)
 		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 			State:   StateFailed,
 			Version: hash,
@@ -426,7 +428,7 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 	}
 
 	if !waitForHealth(service.HealthURL, cfg.HealthCheckTimeout) {
-		_ = store.AddDeployEvent(job.RequestID, "error", "健康检查失败："+service.HealthURL)
+		_ = store.AddDeployEvent(job.RequestID, eventlevel.Error, "健康检查失败："+service.HealthURL)
 		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 			State:   StateFailed,
 			Version: hash,
@@ -434,7 +436,7 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		})
 		return
 	}
-	_ = store.AddDeployEvent(job.RequestID, "success",
+	_ = store.AddDeployEvent(job.RequestID, eventlevel.Success,
 		"健康检查通过："+service.HealthURL)
 
 	_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
@@ -442,7 +444,7 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		Version: hash,
 		Message: "deploy succeeded",
 	})
-	_ = store.AddDeployEvent(job.RequestID, "success", "部署成功：version="+hash)
+	_ = store.AddDeployEvent(job.RequestID, eventlevel.Success, "部署成功：version="+hash)
 	fmt.Printf("[deploy] %s ok version=%s\n", job.RequestID, hash)
 }
 

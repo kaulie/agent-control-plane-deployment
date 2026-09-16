@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kaulie/agent-control-plane-deployment/eventlevel"
 	_ "modernc.org/sqlite"
 )
 
@@ -120,26 +121,26 @@ func handleRequest(home, path string, db *sql.DB) error {
 
 	stopSh := filepath.Join(home, "scripts", "stop.sh")
 	startSh := filepath.Join(home, "scripts", "start.sh")
-	addEvent(db, req.RequestID, "info", "upgrader：停止旧服务（stop.sh）")
+	addEvent(db, req.RequestID, eventlevel.Info, "upgrader：停止旧服务（stop.sh）")
 	if err := runBash(stopSh, home); err != nil {
 		logf("stop: %v (continuing)", err)
-		addEvent(db, req.RequestID, "warn", "stop.sh 返回错误（继续）："+err.Error())
+		addEvent(db, req.RequestID, eventlevel.Warn, "stop.sh 返回错误（继续）："+err.Error())
 	} else {
-		addEvent(db, req.RequestID, "success", "旧服务已停止")
+		addEvent(db, req.RequestID, eventlevel.Success, "旧服务已停止")
 	}
 	time.Sleep(500 * time.Millisecond)
-	addEvent(db, req.RequestID, "info", "upgrader：启动新服务（start.sh）")
+	addEvent(db, req.RequestID, eventlevel.Info, "upgrader：启动新服务（start.sh）")
 	if err := runBash(startSh, home); err != nil {
-		addEvent(db, req.RequestID, "error", "start.sh 失败："+err.Error())
+		addEvent(db, req.RequestID, eventlevel.Error, "start.sh 失败："+err.Error())
 		return fmt.Errorf("start: %w", err)
 	}
-	addEvent(db, req.RequestID, "success", "新服务已启动")
+	addEvent(db, req.RequestID, eventlevel.Success, "新服务已启动")
 
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if healthOK(healthURL) {
 			logf("ok requestId=%s health=%s", req.RequestID, healthURL)
-			addEvent(db, req.RequestID, "success", "健康检查通过："+healthURL)
+			addEvent(db, req.RequestID, eventlevel.Success, "健康检查通过："+healthURL)
 			done := path + ".done"
 			_ = os.WriteFile(done, []byte(fmt.Sprintf("ok %s\n", time.Now().UTC().Format(time.RFC3339))), 0o644)
 			_ = os.Remove(path)
@@ -147,7 +148,7 @@ func handleRequest(home, path string, db *sql.DB) error {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	addEvent(db, req.RequestID, "error", "启动后健康检查超时失败："+healthURL)
+	addEvent(db, req.RequestID, eventlevel.Error, "启动后健康检查超时失败："+healthURL)
 	return fmt.Errorf("health check failed after start: %s", healthURL)
 }
 
@@ -167,17 +168,16 @@ func openEventsDB(dbPath string) (*sql.DB, error) {
 }
 
 // addEvent appends a deploy_events row. Failures are logged but never fatal.
-func addEvent(db *sql.DB, requestID, level, message string) {
+// Level names are normalized to the canonical eventlevel set before writing.
+func addEvent(db *sql.DB, requestID string, level eventlevel.Level, message string) {
 	if db == nil || requestID == "" {
 		return
 	}
-	if level == "" {
-		level = "info"
-	}
+	level = eventlevel.Normalize(string(level))
 	ts := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 	_, err := db.Exec(
 		`INSERT INTO deploy_events (request_id, ts, level, message) VALUES (?, ?, ?, ?)`,
-		requestID, ts, level, message,
+		requestID, ts, string(level), message,
 	)
 	if err != nil {
 		logf("event insert failed: %v", err)
