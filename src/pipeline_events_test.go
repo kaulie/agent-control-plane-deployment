@@ -83,7 +83,7 @@ func TestPipelineEventLevelNormalization(t *testing.T) {
 	if _, err := s.CreatePipeline(id, "web-cursor", "main", Identity{}, "queued"); err != nil {
 		t.Fatalf("CreatePipeline: %v", err)
 	}
-	if err := s.AddPipelineEvent(id, "ok", "旧版 ok 成功事件"); err != nil {
+	if err := s.AddPipelineEvent(id, eventlevel.LegacySuccessAlias, "旧版 ok 成功事件"); err != nil {
 		t.Fatalf("AddPipelineEvent legacy ok: %v", err)
 	}
 
