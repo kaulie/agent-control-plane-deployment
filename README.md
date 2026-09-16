@@ -165,6 +165,19 @@ curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 | GET | `/restart/poll` | ACP 自身 graceful：轮询是否可重启 |
 | GET | `/api/meta` | 含 graceful / release / 身份校验 配置 |
 
+### 事件级别（部署流水线 / 部署任务）
+
+流水线事件（`GET /api/pipelines/:id/events`）与部署事件（`GET /api/deploys/:id/events`）统一使用同一套 canonical 级别名：
+
+| level | 含义 |
+|---|---|
+| `info` | 信息性进展事件 |
+| `success` | 步骤成功完成 |
+| `warn` | 非致命问题（流程继续） |
+| `error` | 当前步骤致命失败 |
+
+写入事件时会把空级别规范为 `info`，并把历史遗留的 `ok` 规范为 `success`；服务启动迁移也会把事件表中已存在的 `ok` 改写为 `success`。面板按同一套名称渲染，缺失/未知级别回退为 `info`。
+
 ### 列表查询（`GET /api/deploys`、`GET /api/pipelines`）
 
 两个列表接口支持同一组筛选 + 分页参数（都不传 = 全部 / 第 1 页），响应统一含 `total` / `page` / `pageSize`。
