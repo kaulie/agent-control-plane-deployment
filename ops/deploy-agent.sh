@@ -131,6 +131,10 @@ EOF
     rc=1
   else
     set +e
+    # The deploy API requires identity headers (phase 1): the agent identifies
+    # itself as identity_role=agent / identity_id=<id> (env overridable).
+    export IDENTITY_ROLE="${IDENTITY_ROLE:-agent}"
+    export IDENTITY_ID="${IDENTITY_ID:-deploy-agent}"
     run_with_timeout "${DEPLOY_MAX_SEC}" "${DEPLOY_SH}" "${deployment}" \
       >"${OPS_DIR}/deploy-agent.last.log" 2>&1
     rc=$?

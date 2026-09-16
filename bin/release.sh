@@ -63,6 +63,7 @@ if gh release view "${TAG}" --repo "${GIT_REPO_URL%*.git}" >/dev/null 2>&1; then
     log "release asset 已存在，跳过构建 ✓"
     log "下一步: curl -sS -X POST http://127.0.0.1:4220/api/deploys \\"
     log "  -H 'content-type: application/json' \\"
+    log "  -H 'identity_role: agent' -H 'identity_id: release-script' \\"
     log "  -d '{\"serviceId\":\"${SERVICE_ID}\",\"deployment\":\"${TAG}\"}'"
     exit 0
   fi
@@ -102,5 +103,6 @@ log "已上传 release ✓ ${REPO_SLUG}@${TAG} (asset package.tar.gz)"
 log "本地构建产物已清理（release 为唯一来源）"
 log "下一步: curl -sS -X POST http://127.0.0.1:4220/api/deploys \\"
 log "  -H 'content-type: application/json' \\"
+log "  -H 'identity_role: agent' -H 'identity_id: release-script' \\"
 log "  -d '{\"serviceId\":\"${SERVICE_ID}\",\"deployment\":\"${TAG}\"}'"
 
