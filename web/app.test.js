@@ -103,3 +103,53 @@ test('deploy history: page size change also waits for 查询', async (t) => {
   assert.equal(deploysCalls().length, before + 1, 'the query button must refresh after page size change');
   assert.match(deploysCalls().at(-1), /pageSize=50/, 'the query must send the selected page size');
 });
+
+test('deploy history: text/date filters also wait for 查询', async (t) => {
+  const { dom, flush, deploysCalls } = makePanel();
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+
+  doc.querySelector('[data-tab="deploys"]').click();
+  await flush();
+  doc.querySelector('#dep-subtabs [data-subtab="dep-history"]').click();
+  await flush();
+
+  const before = deploysCalls().length;
+  assert.ok(before > 0, 'the history list should have loaded at least once');
+
+  const fields = {
+    'dep-f-triggeredById': 'user_002',
+    'dep-f-deployment': 'deployment-abc',
+    'dep-f-version': 'v1.2.3',
+    'dep-f-q': 'restart',
+    'dep-f-from': '2026-09-01',
+    'dep-f-to': '2026-09-16',
+  };
+  for (const [id, value] of Object.entries(fields)) {
+    const input = doc.querySelector('#' + id);
+    input.value = value;
+    input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    input.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  }
+  await flush();
+  assert.equal(deploysCalls().length, before, 'typing or picking text/date filters must not refresh');
+
+  // Enter on a text filter is also not the query trigger for the deploy history.
+  doc.querySelector('#dep-f-q').dispatchEvent(
+    new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+  );
+  await flush();
+  assert.equal(deploysCalls().length, before, 'Enter in a text filter must not refresh');
+
+  doc.querySelector('#dep-f-apply').click();
+  await flush();
+  assert.equal(deploysCalls().length, before + 1, 'the query button must refresh exactly once');
+  const lastCall = deploysCalls().at(-1);
+  assert.match(lastCall, /triggeredById=user_002/);
+  assert.match(lastCall, /deployment=deployment-abc/);
+  assert.match(lastCall, /version=v1\.2\.3/);
+  assert.match(lastCall, /q=restart/);
+  assert.match(lastCall, /from=2026-09-01T00%3A00%3A00\.000Z/);
+  assert.match(lastCall, /to=2026-09-16T23%3A59%3A59\.999Z/);
+});
+
