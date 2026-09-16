@@ -3,6 +3,8 @@ package main
 import (
 	"database/sql"
 	"fmt"
+
+	"github.com/kaulie/agent-control-plane-deployment/eventlevel"
 )
 
 type PipelineState string
@@ -206,6 +208,6 @@ func failPipeline(store *Store, requestID, msg string) {
 		Error:   msg,
 		Message: "pipeline failed",
 	})
-	_ = store.AddPipelineEvent(requestID, "error", msg)
+	_ = store.AddPipelineEvent(requestID, eventlevel.Error, msg)
 	fmt.Printf("[pipeline] %s failed: %s\n", requestID, msg)
 }

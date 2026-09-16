@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/kaulie/agent-control-plane-deployment/eventlevel"
 )
 
 const gracefulPollInterval = 15 * time.Second
@@ -128,10 +130,10 @@ func waitForGracefulRestart(
 	maxWait := service.gracefulMaxWait(cfg)
 	deadline := time.Now().Add(maxWait)
 
-	recordDeployEvent(store, job.RequestID, "info",
+	recordDeployEvent(store, job.RequestID, eventlevel.Info,
 		fmt.Sprintf("graceful：已启用通知+轮询（最长 %s）", maxWait))
 	fmt.Printf("[deploy] %s graceful: POST notify %s\n", job.RequestID, notifyURL)
-	recordDeployEvent(store, job.RequestID, "info", "graceful：发送通知 POST "+notifyURL)
+	recordDeployEvent(store, job.RequestID, eventlevel.Info, "graceful：发送通知 POST "+notifyURL)
 	if err := postRestartNotify(notifyURL, restartNotifyBody{
 		ServiceID:  service.ServiceID,
 		RequestID:  job.RequestID,
@@ -140,10 +142,10 @@ func waitForGracefulRestart(
 		Message:    "deployment service will restart this runtime after graceful wait",
 	}); err != nil {
 		fmt.Printf("[deploy] %s graceful notify failed (%v); continuing to poll\n", job.RequestID, err)
-		recordDeployEvent(store, job.RequestID, "warn",
+		recordDeployEvent(store, job.RequestID, eventlevel.Warn,
 			"graceful：通知失败（继续轮询）："+err.Error())
 	} else {
-		recordDeployEvent(store, job.RequestID, "success", "graceful：通知已送达")
+		recordDeployEvent(store, job.RequestID, eventlevel.Success, "graceful：通知已送达")
 	}
 
 	attempt := 0
@@ -152,16 +154,16 @@ func waitForGracefulRestart(
 		st, err := getRestartPollStatus(pollURL)
 		if err != nil {
 			fmt.Printf("[deploy] %s graceful poll #%d failed: %v\n", job.RequestID, attempt, err)
-			recordDeployEvent(store, job.RequestID, "warn",
+			recordDeployEvent(store, job.RequestID, eventlevel.Warn,
 				fmt.Sprintf("graceful 轮询 #%d 失败：%v", attempt, err))
 		} else if pollAllowsDeploy(st) {
 			fmt.Printf("[deploy] %s graceful: project ready (poll #%d)\n", job.RequestID, attempt)
-			recordDeployEvent(store, job.RequestID, "success",
+			recordDeployEvent(store, job.RequestID, eventlevel.Success,
 				fmt.Sprintf("graceful 轮询 #%d：项目就绪，继续部署", attempt))
 			return false
 		} else {
 			fmt.Printf("[deploy] %s graceful: not ready yet (poll #%d)\n", job.RequestID, attempt)
-			recordDeployEvent(store, job.RequestID, "info",
+			recordDeployEvent(store, job.RequestID, eventlevel.Info,
 				fmt.Sprintf("graceful 轮询 #%d：尚未就绪", attempt))
 		}
 
@@ -169,7 +171,7 @@ func waitForGracefulRestart(
 		if remaining <= 0 {
 			fmt.Printf("[deploy] %s graceful: max wait %s elapsed; forcing restart\n",
 				job.RequestID, maxWait)
-			recordDeployEvent(store, job.RequestID, "warn",
+			recordDeployEvent(store, job.RequestID, eventlevel.Warn,
 				fmt.Sprintf("graceful：等待超时（%s），强制重启", maxWait))
 			return true
 		}
@@ -181,7 +183,7 @@ func waitForGracefulRestart(
 		if time.Now().After(deadline) {
 			fmt.Printf("[deploy] %s graceful: max wait %s elapsed; forcing restart\n",
 				job.RequestID, maxWait)
-			recordDeployEvent(store, job.RequestID, "warn",
+			recordDeployEvent(store, job.RequestID, eventlevel.Warn,
 				fmt.Sprintf("graceful：等待超时（%s），强制重启", maxWait))
 			return true
 		}

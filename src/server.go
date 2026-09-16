@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/kaulie/agent-control-plane-deployment/eventlevel"
 )
 
 type apiServer struct {
@@ -413,7 +414,7 @@ func (s *apiServer) handleDeployNotify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	_ = s.store.AddPipelineEvent(requestID, "info",
+	_ = s.store.AddPipelineEvent(requestID, eventlevel.Info,
 		"流水线已入队：service="+serviceID+" ref="+ref)
 	if s.pipeline != nil {
 		s.pipeline.Kick()

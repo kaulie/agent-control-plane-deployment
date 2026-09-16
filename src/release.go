@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/kaulie/agent-control-plane-deployment/eventlevel"
 )
 
 type PackageResult struct {
@@ -20,9 +22,9 @@ type PackageResult struct {
 }
 
 // PackageEventFunc receives progress lines emitted by packageFromGit (build /
-// upload) so the caller can record them on the pipeline timeline. level is one
-// of info|success|warn|error. A nil sink simply discards the lines.
-type PackageEventFunc func(level, message string)
+// upload) so the caller can record them on the pipeline timeline. Level uses
+// the canonical eventlevel set. A nil sink simply discards the lines.
+type PackageEventFunc func(level eventlevel.Level, message string)
 
 // packageFromGit clones/fetches ref, runs build.sh, and stores the frozen
 // outputs via the configured ArtifactStorage (local disk or GitHub Releases,
@@ -179,18 +181,18 @@ func packageFromGit(serviceID, gitRepoURL, ref string, maxSec int, storage Artif
 	_ = os.WriteFile(filepath.Join(pkgDir, "GIT_REPO_URL"), []byte(gitRepoURL+"\n"), 0o644)
 
 	if events != nil {
-		events("info", "上传开始：storage="+storage.Name()+" tag="+tag)
+		events(eventlevel.Info, "上传开始：storage="+storage.Name()+" tag="+tag)
 	}
 	uploadStart := time.Now()
 	meta, err := storage.Upload(context.Background(), serviceID, gitRepoURL, tag, pkgDir)
 	if err != nil {
 		if events != nil {
-			events("error", "上传失败：storage="+storage.Name()+" tag="+tag+" err="+err.Error())
+			events(eventlevel.Error, "上传失败：storage="+storage.Name()+" tag="+tag+" err="+err.Error())
 		}
 		return out, fmt.Errorf("upload artifact: %w", err)
 	}
 	if events != nil {
-		events("success", "上传结束：storage="+storage.Name()+" tag="+tag+
+		events(eventlevel.Success, "上传结束：storage="+storage.Name()+" tag="+tag+
 			" size="+humanBytes(meta.Size)+" 耗时="+humanDuration(time.Since(uploadStart)))
 	}
 	out.Artifact = meta
