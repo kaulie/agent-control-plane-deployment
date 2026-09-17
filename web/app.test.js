@@ -14,18 +14,39 @@ const html = fs.readFileSync(path.join(root, 'web', 'index.html'), 'utf8')
   .replace('<script src="app.js"></script>', '');
 const appSource = fs.readFileSync(path.join(root, 'web', 'app.js'), 'utf8');
 
-function makePanel() {
+function makePanel(options = {}) {
   const calls = [];
   const requests = [];
+  // 服务目录（GET /api/services）现在 = service_registry 的契约 + 本机部署配置：
+  // web-cursor 已登记且已配置，event-center 已登记但未配置，acp 只有本机配置。
+  const servicesPayload = options.services || {
+    registry: { url: 'http://127.0.0.1:4240', enabled: true, ok: true, services: 2 },
+    services: [
+      {
+        serviceId: 'web-cursor', name: 'Web Cursor', runtimeDir: '/tmp/web-cursor',
+        healthUrl: 'http://127.0.0.1:4211/health', startCmd: 'start', stopCmd: 'stop',
+        restartCmd: 'restart', gitRepoUrl: 'https://github.com/kaulie/web-cursor',
+        defaultBranch: 'main', updatedAt: '2026-09-17T00:00:00.000Z',
+        registered: true, configured: true,
+        registry: { name: 'web-cursor', version: '1.2.3', owner: 'kaulie', gitRepoUrl: 'https://github.com/kaulie/web-cursor' },
+      },
+      {
+        serviceId: 'event-center', name: '', registered: true, configured: false,
+        registry: {
+          name: 'event-center', version: '0.9.0', owner: 'kaulie', description: '统一事件中心',
+          gitRepoUrl: 'https://github.com/kaulie/event-center',
+        },
+      },
+      {
+        serviceId: 'acp', name: 'Control Plane', runtimeDir: '/tmp/acp',
+        healthUrl: 'http://127.0.0.1:4220/health', startCmd: 'start', stopCmd: 'stop',
+        restartCmd: 'restart', gitRepoUrl: '', defaultBranch: 'main',
+        updatedAt: '2026-09-16T00:00:00.000Z', registered: false, configured: true,
+      },
+    ],
+  };
   const payload = (pathname) => {
-    if (pathname === '/api/services') {
-      return {
-        services: [
-          { serviceId: 'web-cursor', name: 'Web Cursor', runtimeDir: '/tmp/web-cursor', healthUrl: 'http://127.0.0.1:4211/health', startCmd: 'start', stopCmd: 'stop', restartCmd: 'restart', gitRepoUrl: 'https://github.com/kaulie/web-cursor', defaultBranch: 'main', updatedAt: '2026-09-17T00:00:00.000Z' },
-          { serviceId: 'acp', name: 'Control Plane', runtimeDir: '/tmp/acp', healthUrl: 'http://127.0.0.1:4220/health', startCmd: 'start', stopCmd: 'stop', restartCmd: 'restart', gitRepoUrl: '', defaultBranch: 'main', updatedAt: '2026-09-16T00:00:00.000Z' },
-        ],
-      };
-    }
+    if (pathname === '/api/services') return servicesPayload;
     if (pathname === '/api/deploys') return { deploys: [], total: 0, page: 1, pageSize: 20 };
     if (pathname === '/api/pipelines') return { pipelines: [], total: 0, page: 1, pageSize: 20 };
     if (pathname === '/health') return { ok: true };
@@ -228,7 +249,7 @@ test('deploy history: 重置 also waits for 查询', async (t) => {
 });
 
 
-test('service contracts: tab entry lists services and exposes edit/delete actions', async (t) => {
+test('service contracts: tab lists the registry catalog with 登记/配置 state', async (t) => {
   const { dom, flush, servicesRequests } = makePanel();
   t.after(() => dom.window.close());
   const doc = dom.window.document;
@@ -238,13 +259,77 @@ test('service contracts: tab entry lists services and exposes edit/delete action
 
   const gets = servicesRequests().filter((r) => r.method === 'GET');
   assert.ok(gets.length > 0, 'the service contract tab must load /api/services');
-  assert.equal(doc.querySelector('#svc-table tbody').children.length, 2, 'the table must render both services');
-  assert.match(doc.querySelector('#svc-table tbody').textContent, /web-cursor/);
-  assert.ok(doc.querySelector('[data-svc-edit="web-cursor"]'), 'each row must expose an edit button');
-  assert.ok(doc.querySelector('[data-svc-delete="acp"]'), 'each row must expose a delete button');
+
+  const tbody = doc.querySelector('#svc-table tbody');
+  assert.equal(tbody.children.length, 3, 'the table must render every catalog entry');
+  assert.match(tbody.textContent, /web-cursor/);
+  assert.match(tbody.textContent, /已登记/, 'registered services must be marked');
+  assert.match(tbody.textContent, /未登记/, 'local-only services must be marked as not registered');
+  assert.match(tbody.textContent, /未配置/, 'a registered service without deployment config must be marked');
+  assert.match(tbody.textContent, /1\.2\.3 \/ kaulie/, 'registry version/owner must be shown');
+
+  // Every row can be configured; only configured rows can be cleared.
+  assert.ok(doc.querySelector('[data-svc-edit="event-center"]'), 'a registry service must be configurable');
+  assert.ok(doc.querySelector('[data-svc-edit="web-cursor"]'), 'a configured service must be editable');
+  assert.ok(doc.querySelector('[data-svc-delete="web-cursor"]'), 'a configured service can be cleared');
+  assert.ok(!doc.querySelector('[data-svc-delete="event-center"]'),
+    'a service without local config has nothing to clear');
 });
 
-test('service contracts: edit fills the form and locks serviceId', async (t) => {
+test('service contracts: the catalog source and status are visible', async (t) => {
+  const { dom, flush } = makePanel();
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+
+  doc.querySelector('[data-tab="services"]').click();
+  await flush();
+
+  assert.equal(doc.querySelector('#svc-registry-url').textContent, 'http://127.0.0.1:4240');
+  assert.match(doc.querySelector('#svc-registry-status').textContent, /在线 · 2 个服务/);
+});
+
+test('service contracts: a registry outage is shown, not hidden as "no services"', async (t) => {
+  const { dom, flush } = makePanel({
+    services: {
+      registry: { url: 'http://127.0.0.1:4240', enabled: true, ok: false, services: 0, error: 'connection refused' },
+      services: [
+        {
+          serviceId: 'acp', name: 'Control Plane', runtimeDir: '/tmp/acp',
+          healthUrl: 'http://127.0.0.1:4220/health', startCmd: 'start', stopCmd: 'stop',
+          restartCmd: 'restart', registered: false, configured: true,
+        },
+      ],
+    },
+  });
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+
+  doc.querySelector('[data-tab="services"]').click();
+  await flush();
+
+  assert.match(doc.querySelector('#svc-registry-status').textContent, /拉取失败/);
+  assert.equal(doc.querySelector('#svc-registry-status').title, 'connection refused');
+  const tbody = doc.querySelector('#svc-table tbody');
+  assert.equal(tbody.children.length, 1, 'local config must survive a registry outage');
+  assert.match(tbody.textContent, /未登记/);
+});
+
+test('service contracts: no way to create a service from the panel', async (t) => {
+  const { dom, flush } = makePanel();
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+
+  doc.querySelector('[data-tab="services"]').click();
+  await flush();
+
+  assert.equal(doc.querySelector('#svc-new'), null, 'the panel must not offer a 新建 entry');
+  assert.ok(!doc.querySelector('#tab-services').textContent.includes('新建服务契约'),
+    'the tab must say the catalog comes from service_registry');
+  assert.ok(doc.querySelector('#svc-serviceId').readOnly,
+    'serviceId must come from the list, never typed');
+});
+
+test('service contracts: configuring a service fills and locks serviceId', async (t) => {
   const { dom, flush } = makePanel();
   t.after(() => dom.window.close());
   const doc = dom.window.document;
@@ -254,11 +339,73 @@ test('service contracts: edit fills the form and locks serviceId', async (t) => 
   doc.querySelector('[data-svc-edit="web-cursor"]').click();
   await flush();
 
-  assert.equal(doc.querySelector('#svc-form-title').textContent, '编辑服务契约：web-cursor');
+  assert.equal(doc.querySelector('#svc-form-title').textContent, '编辑部署配置：web-cursor');
   assert.equal(doc.querySelector('#svc-serviceId').value, 'web-cursor');
   assert.equal(doc.querySelector('#svc-serviceId').disabled, true, 'serviceId must be locked while editing');
   assert.equal(doc.querySelector('#svc-runtimeDir').value, '/tmp/web-cursor');
   assert.equal(doc.querySelector('#svc-form-cancel').hidden, false, 'cancel must be visible while editing');
+});
+
+test('service contracts: an unconfigured registry service prefills the registry repo', async (t) => {
+  const { dom, flush, servicesRequests } = makePanel();
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+
+  doc.querySelector('[data-tab="services"]').click();
+  await flush();
+  doc.querySelector('[data-svc-edit="event-center"]').click();
+  await flush();
+
+  assert.equal(doc.querySelector('#svc-form-title').textContent, '配置部署参数：event-center');
+  assert.equal(doc.querySelector('#svc-serviceId').value, 'event-center');
+  assert.equal(doc.querySelector('#svc-name').value, '统一事件中心', 'name falls back to the registry description');
+  assert.equal(doc.querySelector('#svc-gitRepoUrl').value, 'https://github.com/kaulie/event-center',
+    'gitRepoUrl defaults to the registry value');
+  assert.equal(doc.querySelector('#svc-msg').textContent, '', 'a registered service needs no warning');
+
+  doc.querySelector('#svc-runtimeDir').value = '/tmp/event-center';
+  doc.querySelector('#svc-healthUrl').value = 'http://127.0.0.1:4241/health';
+  doc.querySelector('#svc-startCmd').value = 'start';
+  doc.querySelector('#svc-stopCmd').value = 'stop';
+  doc.querySelector('#svc-restartCmd').value = 'restart';
+  doc.querySelector('#svc-save').click();
+  await flush();
+
+  const put = servicesRequests().find((r) => r.method === 'PUT');
+  assert.ok(put, 'save must issue a PUT request');
+  assert.equal(put.pathname, '/api/services/event-center');
+});
+
+test('service contracts: an unregistered service warns but stays editable', async (t) => {
+  const { dom, flush } = makePanel();
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+
+  doc.querySelector('[data-tab="services"]').click();
+  await flush();
+  doc.querySelector('[data-svc-edit="acp"]').click();
+  await flush();
+
+  assert.match(doc.querySelector('#svc-msg').textContent, /未返回该服务/,
+    'the panel must say why saving a brand-new id would be rejected');
+  assert.equal(doc.querySelector('#svc-serviceId').value, 'acp');
+  assert.equal(doc.querySelector('#svc-form-cancel').hidden, false);
+});
+
+test('service contracts: trigger selects only list configured services', async (t) => {
+  const { dom, flush } = makePanel();
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+
+  doc.querySelector('[data-tab="services"]').click();
+  await flush();
+
+  const values = Array.from(doc.querySelectorAll('#pipe-service option')).map((o) => o.value);
+  assert.deepEqual(values.sort(), ['acp', 'web-cursor'],
+    'an unconfigured registry service cannot be triggered');
+  // ...but it stays filterable in the history lists.
+  const filterValues = Array.from(doc.querySelectorAll('#pipe-f-serviceId option')).map((o) => o.value);
+  assert.ok(filterValues.includes('event-center'), 'history filters keep every service id');
 });
 
 test('service contracts: save sends PUT /api/services/:id with the form body', async (t) => {
@@ -268,9 +415,9 @@ test('service contracts: save sends PUT /api/services/:id with the form body', a
 
   doc.querySelector('[data-tab="services"]').click();
   await flush();
-  doc.querySelector('#svc-new').click();
+  doc.querySelector('[data-svc-edit="web-cursor"]').click();
+  await flush();
 
-  doc.querySelector('#svc-serviceId').value = 'web-cursor';
   doc.querySelector('#svc-name').value = 'Web Cursor Agent';
   doc.querySelector('#svc-runtimeDir').value = '/tmp/runtime';
   doc.querySelector('#svc-healthUrl').value = 'http://127.0.0.1:4211/health';
@@ -296,7 +443,7 @@ test('service contracts: save sends PUT /api/services/:id with the form body', a
   assert.equal(body.gracefulRestartMaxWaitMs, 90000);
 });
 
-test('service contracts: delete sends DELETE /api/services/:id', async (t) => {
+test('service contracts: clear sends DELETE /api/services/:id (local config only)', async (t) => {
   const { dom, flush, servicesRequests } = makePanel();
   t.after(() => dom.window.close());
   const doc = dom.window.document;
@@ -307,7 +454,7 @@ test('service contracts: delete sends DELETE /api/services/:id', async (t) => {
   await flush();
 
   const del = servicesRequests().find((r) => r.method === 'DELETE');
-  assert.ok(del, 'delete must issue a DELETE request');
+  assert.ok(del, 'clearing local config must issue a DELETE request');
   assert.equal(del.pathname, '/api/services/acp');
 });
 
