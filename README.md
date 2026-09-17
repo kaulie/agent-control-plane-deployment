@@ -345,7 +345,7 @@ curl -sS -X POST http://127.0.0.1:4220/api/deploys \
 
 | 面板 | 能力 |
 |---|---|
-| 服务契约 | **只配置、不新建**：列表/来源来自 `service_registry`（顶部显示在线状态与服务数），为已登记服务配置部署参数（`PUT /api/services/:id`），可「清除本地配置」（`DELETE`）。注册中心同步过来的信息（`serviceId` / `gitRepoUrl` / `version` / `owner` / `description`）**只读不可改**：`gitRepoUrl` 在列表里**不展示**、表单里只读且不会随表单提交 |
+| 服务契约 | **只配置、不新建**：列表/来源来自 `service_registry`（顶部显示在线状态与服务数），为已登记服务配置部署参数（`PUT /api/services/:id`），可「清除本地配置」（`DELETE`）。注册中心同步过来的信息（`serviceId` / `gitRepoUrl` / `version` / `owner` / `description`）**只读不可改**。列表列：`serviceId` / `name` / 登记状态 / 版本·owner / `runtimeDir` / **端口** / graceful / 操作 —— **不展示 `gitRepoUrl` 与 `healthUrl`**（这两个在「配置」表单里看/改：`gitRepoUrl` 只读、`healthUrl` 可改） |
 | 部署流水线 | 两个子页：**发起**（触发打包→部署，`POST /api/deploy-notify`） / **历史列表**（多属性筛选 + 分页，实时轮询） |
 | 部署任务 | 两个子页：**发起**（触发已有包部署，`POST /api/deploys`） / **历史列表**（多属性筛选 + 分页，实时轮询） |
 | 元信息 | 展示 `/api/meta` |
