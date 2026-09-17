@@ -36,7 +36,12 @@ fi
 
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/release-acp.XXXXXX")"
 PKGDIR="$(mktemp -d "${TMPDIR:-/tmp}/release-pkg.XXXXXX")"
-cleanup() { rm -rf "${WORKDIR}" "${PKGDIR}"; }
+# build.sh 把 GOCACHE/GOMODCACHE 建在构建树里，Go 的模块缓存是只读的（0555/0444），
+# 直接 rm -rf 会 Permission denied、留下几百 MB（只删掉一部分）。先 chmod u+w 再删。
+cleanup() {
+  chmod -R u+w "${WORKDIR}" "${PKGDIR}" 2>/dev/null || true
+  rm -rf "${WORKDIR}" "${PKGDIR}" 2>/dev/null || true
+}
 trap cleanup EXIT
 
 log "deploymentHome=${DEPLOYMENT_HOME}"

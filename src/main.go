@@ -123,10 +123,23 @@ func main() {
 	if reconciled > 0 {
 		log.Printf("reconciled %d orphan deploy(s) left running", reconciled)
 	}
+	// 上一次运行要是被 kill / 自升级重启掉的，构建树（几百 MB 起）与制品下载目录
+	// 会留在系统临时目录里。这里清一遍：此刻 worker 还没启动，不可能有本进程的
+	// 构建在跑（放这个位置而不是更早，是为了不拖慢 /health 起来的时间）。
+	if n, freed, failed := cleanupStaleTempWork(0); n > 0 || failed > 0 {
+		log.Printf("[cleanup] 清理残留临时工作目录 %d 个，释放 %s（失败 %d 个）",
+			n, humanBytes(freed), failed)
+	}
+	if n, failed := pruneUpgradeRequests(cfg.Home, upgradeRequestRetention); n > 0 || failed > 0 {
+		log.Printf("[cleanup] 清理已完成的升级请求记录 %d 个（失败 %d 个）", n, failed)
+	}
+
 	worker.Start()
 	pipeline.Start()
 
 	stopCh := make(chan struct{})
+	// 运行期兜底清理（启动时那次是主力；这里防止长期不重启的进程一直留着垃圾）。
+	startTempWorkJanitor(stopCh, tempWorkSweepInterval, tempWorkStaleAfter)
 	go func() {
 		ch := make(chan os.Signal, 1)
 		signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)

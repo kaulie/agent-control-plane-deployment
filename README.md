@@ -185,6 +185,24 @@ curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 - 仅在 restart 窗口写入短 TTL 的 `watchdog-pause-until`（≤90s）；rsync 期间不暂停。
 - 本服务启动时清理残留 pause / `.watchdog-paused`，并 reconcile 卡在 `running` 的任务。
 
+### 临时文件（构建包 / 制品下载）的生命周期
+
+打包与部署全程用系统临时目录（`os.TempDir()`）当工作区，名字带前缀，**用完必须删干净**：
+
+| 前缀 | 用途 | 生命周期 |
+|---|---|---|
+| `release-acp-*` | `packageFromGit` 的构建树：`git fetch` + `build.sh`（**含 `build.sh` 建在树里的 `.gocache`/`.gomodcache`**） | 打包函数返回时删除 |
+| `release-pkg-*` | `outputs/` 的打包暂存目录 → 交给制品存储后端上传 | 上传结束（或失败）时删除 |
+| `deploy-pkg-*` | 部署时把制品下载到本地、再 rsync 到 `runtimeDir` | 部署函数返回时删除（自升级被 kill 的情况见下） |
+
+两个坑（都已在代码里处理 + 有回归测试）：
+
+1. **只读的 Go 缓存让删除失败**：`build.sh` 把 `GOCACHE`/`GOMODCACHE`/`GOPATH` 建在构建树里，Go 会把模块缓存设成 `0555`/`0444`。从只读目录里 unlink 子项需要目录可写，于是 `os.RemoveAll`（以及 `rm -rf`）会 **`Permission denied`、只删掉一部分**——实测每次构建在 `/var/folders` 里残留约 **460 MB**（恰好剩 `src/.gomodcache`）。现在统一走 `removeAllForce()`：先 `chmod u+w` 整棵树再删，且**不再吞掉错误**（`bin/release.sh` 的 `trap cleanup` 同样先 `chmod -R u+w`）。
+2. **被 kill 的进程来不及删**：自升级时 `acp-upgrader` 会 `stop` 掉本进程，`deploy-pkg-*` 以及正在构建的 `release-acp-*` 会留在临时目录里（defer 不会执行）。因此：
+   - **启动时**（`worker` 起来之前，此刻不可能有本进程的构建在跑）扫一遍临时目录，把这些前缀**全部**清掉，并把释放的字节数写进日志；
+   - 运行期每 30 分钟兜底扫一次，只清"超过 1 小时没动过"的（避免误删正在跑的构建）；
+   - `upgrade-requests/` 里 acp-upgrader 处理完的记录（`*.json.done` / `*.json.failed` / `*.json.bad`）保留 7 天后清理；**待处理的 `*.json` 永远不动**（upgrader 还要读）。
+
 ## API 一览
 
 | Method | Path | 说明 |
