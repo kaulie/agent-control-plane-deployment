@@ -282,10 +282,13 @@ function renderServiceContracts() {
   tbody.innerHTML = services.map((s) => {
     const reg = s.registry || {};
     const versionOwner = [reg.version, reg.owner].filter(Boolean).join(' / ') || '—';
-    // gitRepoUrl: local override first, otherwise the registry's registered repo.
-    const repo = s.gitRepoUrl || reg.gitRepoUrl || '';
+    // gitRepoUrl 来自 service_registry（本机不可改）；只有注册中心没登记它时
+    // 才显示本机镜像的旧值。
+    const repo = reg.gitRepoUrl || s.gitRepoUrl || '';
     const repoCell = repo
-      ? esc(repo) + (s.gitRepoUrl ? '' : ' <span class="muted">(注册中心)</span>')
+      ? esc(repo) + (reg.gitRepoUrl
+        ? ' <span class="muted">(注册中心)</span>'
+        : ' <span class="muted">(本机旧值)</span>')
       : '—';
     const state = registryBadge(s) +
       (s.configured ? '' : ' <span class="badge badge--wait">未配置</span>');
@@ -352,8 +355,8 @@ function fillServiceForm(svc) {
   $('#svc-startCmd').value = svc.startCmd || '';
   $('#svc-stopCmd').value = svc.stopCmd || '';
   $('#svc-restartCmd').value = svc.restartCmd || '';
-  // 注册中心登记的仓库地址作为默认值，可被本机覆盖。
-  $('#svc-gitRepoUrl').value = svc.gitRepoUrl || reg.gitRepoUrl || '';
+  // 注册中心登记值优先展示（它才是真源）；只有注册中心没登记时才显示本机镜像的旧值。
+  $('#svc-gitRepoUrl').value = reg.gitRepoUrl || svc.gitRepoUrl || '';
   $('#svc-defaultBranch').value = svc.defaultBranch || '';
   $('#svc-restartNotifyUrl').value = svc.restartNotifyUrl || '';
   $('#svc-restartPollUrl').value = svc.restartPollUrl || '';
@@ -382,8 +385,8 @@ function serviceFormBody() {
   return {
     serviceId,
     body: {
+      // gitRepoUrl 不在这里发送：它来自 service_registry，本机不能改（后端也会拒绝改）。
       name, runtimeDir, healthUrl, startCmd, stopCmd, restartCmd,
-      gitRepoUrl: $('#svc-gitRepoUrl').value.trim(),
       defaultBranch: $('#svc-defaultBranch').value.trim(),
       restartNotifyUrl: $('#svc-restartNotifyUrl').value.trim(),
       restartPollUrl: $('#svc-restartPollUrl').value.trim(),

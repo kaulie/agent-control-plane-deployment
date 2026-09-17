@@ -165,25 +165,31 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 	// "已登记的服务"才能在这里配置部署参数；已有本地配置的照旧可改（注册中心
 	// 不可用也不能把运维锁死）。
 	var registered *RegistryService
+	var registryErr error
+	if s.registry.Enabled() {
+		if svc, found, lookupErr := s.registry.Lookup(r.Context(), serviceID); lookupErr != nil {
+			registryErr = lookupErr
+		} else if found {
+			registered = svc
+		}
+	}
 	if existing == nil {
 		if !s.registry.Enabled() {
 			writeError(w, http.StatusServiceUnavailable,
 				"service_registry 未配置（SERVICE_REGISTRY_URL=off），本机不能新建服务契约")
 			return
 		}
-		svc, found, lookupErr := s.registry.Lookup(r.Context(), serviceID)
-		if lookupErr != nil {
+		if registryErr != nil {
 			writeError(w, http.StatusServiceUnavailable,
-				"无法确认服务是否已在 service_registry 登记："+lookupErr.Error())
+				"无法确认服务是否已在 service_registry 登记："+registryErr.Error())
 			return
 		}
-		if !found {
+		if registered == nil {
 			writeError(w, http.StatusBadRequest,
 				`service "`+serviceID+`" 未在 service_registry 中登记；服务列表统一从注册中心拉取，`+
 					`本机只能配置已登记服务的部署参数（请先在注册中心登记该服务）`)
 			return
 		}
-		registered = svc
 	}
 
 	name := strings.TrimSpace(body.Name)
@@ -234,12 +240,32 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 			maxWaitMs = 0
 		}
 	}
-	if body.GitRepoURL != nil {
-		gitRepoURL = strings.TrimSpace(*body.GitRepoURL)
+	// gitRepoUrl 是 service_registry 同步过来的元信息：本机不能改。显式改成别的
+	// 值直接报错（"以为改了其实没改"更糟），其余情况一律以注册中心为真源；注册
+	// 中心没登记这个字段时保留本机镜像的旧值（旧数据仍然可部署）。
+	registryGitRepo := ""
+	if registered != nil {
+		registryGitRepo = strings.TrimSpace(registered.GitRepoURL)
 	}
-	// 首次配置且请求没给 gitRepoUrl：取注册中心登记的仓库地址（元信息真源）。
-	if gitRepoURL == "" && body.GitRepoURL == nil && registered != nil {
-		gitRepoURL = strings.TrimSpace(registered.GitRepoURL)
+	if body.GitRepoURL != nil {
+		want := strings.TrimSpace(*body.GitRepoURL)
+		allowed := registryGitRepo
+		if registered == nil {
+			if existing != nil {
+				allowed = strings.TrimSpace(existing.GitRepoURL)
+			} else {
+				allowed = ""
+			}
+		}
+		if want != allowed {
+			writeError(w, http.StatusBadRequest,
+				"gitRepoUrl 来自 service_registry，本机不能修改（当前登记值："+allowed+
+					"）；请在注册中心更新")
+			return
+		}
+	}
+	if registryGitRepo != "" {
+		gitRepoURL = registryGitRepo
 	}
 	if body.DefaultBranch != nil {
 		defaultBranch = defaultBranchOrMain(*body.DefaultBranch)
@@ -445,8 +471,8 @@ func (s *apiServer) handleDeployNotify(w http.ResponseWriter, r *http.Request) {
 	}
 	if resolveServiceGitRepo(r.Context(), s.registry, svc) == "" {
 		writeError(w, http.StatusBadRequest,
-			"service has no gitRepoUrl: register one in service_registry, or set it in the deployment config "+
-				"PUT /api/services/"+serviceID+` {"gitRepoUrl":"https://..."}`)
+			"service has no gitRepoUrl: register one in service_registry (gitRepoUrl 只能由注册中心登记，"+
+				"本机不能设置): "+serviceID)
 		return
 	}
 	// Default: service defaultBranch (usually main) tip — latest code.
@@ -618,7 +644,7 @@ func (s *apiServer) handleScanArtifacts(w http.ResponseWriter, r *http.Request) 
 	gitURL := resolveServiceGitRepo(r.Context(), s.registry, svc)
 	if gitURL == "" {
 		writeError(w, http.StatusBadRequest,
-			"service has no gitRepoUrl: register one in service_registry, or set it in the deployment config")
+			"service has no gitRepoUrl: register one in service_registry（gitRepoUrl 只能由注册中心登记，本机不能设置）")
 		return
 	}
 	if s.storage == nil {
