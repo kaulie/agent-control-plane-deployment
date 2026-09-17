@@ -269,8 +269,9 @@ test('service contracts: tab lists the registry catalog with 登记/配置 state
   assert.match(tbody.textContent, /1\.2\.3 \/ kaulie/, 'registry version/owner must be shown');
   assert.doesNotMatch(tbody.textContent, /github\.com/, '服务列表里不展示 gitRepoUrl');
   assert.doesNotMatch(tbody.textContent, /\/health\b/, '服务列表里不展示 healthUrl');
-  assert.doesNotMatch(doc.querySelector('#svc-table thead').textContent, /gitRepoUrl|healthUrl/,
-    '表头也不该有 gitRepoUrl / healthUrl 列');
+  assert.doesNotMatch(tbody.textContent, /\/tmp\//, '服务列表里不展示 runtimeDir');
+  assert.doesNotMatch(doc.querySelector('#svc-table thead').textContent, /gitRepoUrl|healthUrl|runtimeDir/,
+    '表头也不该有 gitRepoUrl / healthUrl / runtimeDir 列');
   // 表头列数与每行单元格数保持一致（改列时最容易漏的地方）。
   const heads = doc.querySelectorAll('#svc-table thead th').length;
   for (const tr of doc.querySelectorAll('#svc-table tbody tr')) {
