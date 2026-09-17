@@ -256,12 +256,18 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 	// GitHub Releases, etc.). Prefer the access path stored in the local
 	// artifacts table (avoids a resolution round-trip); fall back to resolving
 	// via the backend.
-	src, err := os.MkdirTemp("", "deploy-pkg-*")
+	src, err := os.MkdirTemp("", tempPrefixDeployPkg+"*")
 	if err != nil {
 		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{State: StateFailed, Error: err.Error()})
 		return
 	}
-	defer os.RemoveAll(src)
+	// 自升级（self-deploy）时本进程会被 acp-upgrader 杀掉，这个 defer 不会执行 ——
+	// 那种情况由下次启动时的残留清理兜底（cleanupStaleTempWork）。
+	defer func() {
+		if err := removeAllForce(src); err != nil {
+			fmt.Printf("[deploy] %s warn: 清理临时目录 %s 失败: %v\n", job.RequestID, src, err)
+		}
+	}()
 	var accessPath string
 	if art, _ := store.GetArtifact(job.ServiceID, tag); art != nil {
 		accessPath = art.AssetURL
@@ -517,7 +523,7 @@ func NewDeployWorker(store *Store, cfg Config, storage ArtifactStorage, drain *G
 		cfg:     cfg,
 		storage: storage,
 		drain:   drain,
-		stopCh: make(chan struct{}),
+		stopCh:  make(chan struct{}),
 	}
 }
 

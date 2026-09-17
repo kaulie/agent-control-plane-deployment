@@ -49,11 +49,16 @@ func packageFromGit(serviceID, gitRepoURL, ref string, maxSec int, storage Artif
 		maxSec = 60
 	}
 
-	workDir, err := os.MkdirTemp("", "release-acp-*")
+	workDir, err := os.MkdirTemp("", tempPrefixReleaseBuild+"*")
 	if err != nil {
 		return out, err
 	}
-	defer os.RemoveAll(workDir)
+	// 构建树里有 Go 的只读模块缓存，必须用 force 版（否则会残留几百 MB）。
+	defer func() {
+		if err := removeAllForce(workDir); err != nil {
+			fmt.Printf("[release] warn: 清理构建树 %s 失败: %v\n", workDir, err)
+		}
+	}()
 
 	run := func(dir string, name string, args ...string) (string, error) {
 		cmd := exec.Command(name, args...)
@@ -167,11 +172,15 @@ func packageFromGit(serviceID, gitRepoURL, ref string, maxSec int, storage Artif
 	}
 	// Stage the package in a temp dir, then hand it to the storage backend.
 	// Nothing is written under packagesDir unless the backend is local.
-	pkgDir, err := os.MkdirTemp("", "release-pkg-*")
+	pkgDir, err := os.MkdirTemp("", tempPrefixReleasePkg+"*")
 	if err != nil {
 		return out, err
 	}
-	defer os.RemoveAll(pkgDir)
+	defer func() {
+		if err := removeAllForce(pkgDir); err != nil {
+			fmt.Printf("[release] warn: 清理打包暂存目录 %s 失败: %v\n", pkgDir, err)
+		}
+	}()
 	rsync := exec.Command("rsync", "-a", outputs+"/", pkgDir+"/")
 	if b, err := rsync.CombinedOutput(); err != nil {
 		return out, fmt.Errorf("rsync outputs: %w\n%s", err, string(b))
