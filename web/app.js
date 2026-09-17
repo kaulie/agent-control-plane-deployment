@@ -297,9 +297,7 @@ function renderServiceContracts() {
     const state = registryBadge(s) +
       (s.configured ? '' : ' <span class="badge badge--wait">未配置</span>');
     const actions = s.configured
-      ? `<button class="btn btn--sm" data-svc-edit="${esc(s.serviceId)}">配置</button>
-        <button class="btn btn--sm btn--danger" data-svc-delete="${esc(s.serviceId)}" ` +
-        `title="清除本机部署配置：可以先把流水线 / 部署记录迁移到别的服务">清除</button>`
+      ? `<button class="btn btn--sm" data-svc-edit="${esc(s.serviceId)}">配置</button>`
       : `<button class="btn btn--sm btn--primary" data-svc-edit="${esc(s.serviceId)}">配置</button>`;
     return `<tr>
       <td class="mono">${esc(s.serviceId)}</td>
