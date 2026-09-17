@@ -267,7 +267,14 @@ test('service contracts: tab lists the registry catalog with 登记/配置 state
   assert.match(tbody.textContent, /未登记/, 'local-only services must be marked as not registered');
   assert.match(tbody.textContent, /未配置/, 'a registered service without deployment config must be marked');
   assert.match(tbody.textContent, /1\.2\.3 \/ kaulie/, 'registry version/owner must be shown');
-  assert.match(tbody.textContent, /\(注册中心\)/, 'a registry-provided gitRepoUrl must be marked as such');
+  assert.doesNotMatch(tbody.textContent, /github\.com/, '服务列表里不展示 gitRepoUrl');
+  assert.doesNotMatch(doc.querySelector('#svc-table thead').textContent, /gitRepoUrl/,
+    '表头也不该有 gitRepoUrl 列');
+  // 表头列数与每行单元格数保持一致（改列时最容易漏的地方）。
+  const heads = doc.querySelectorAll('#svc-table thead th').length;
+  for (const tr of doc.querySelectorAll('#svc-table tbody tr')) {
+    assert.equal(tr.children.length, heads, `行单元格数(${tr.children.length}) != 表头列数(${heads})`);
+  }
 
   // Every row can be configured; only configured rows can be cleared.
   assert.ok(doc.querySelector('[data-svc-edit="event-center"]'), 'a registry service must be configurable');
