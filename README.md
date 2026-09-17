@@ -73,7 +73,19 @@ service-registry :4240  ──pull(GET /v1/services)──▶  本控制面 :422
 
 响应里还带 `registry: {url, enabled, ok, services, error}`，面板顶部据此显示「在线 · N 个服务 / 拉取失败」，**拉取失败不会伪装成"没有服务"**。
 
-本机只存注册中心没有的部署参数：`runtimeDir` / `healthUrl` / `startCmd` / `stopCmd` / `restartCmd` / 可选 graceful 端点 / `defaultBranch`。`name`、`version`、`owner`、`tags`、**`gitRepoUrl`** 以注册中心为准（`gitRepoUrl` 本机留空即用注册中心登记的值；打包、部署已有包、扫描制品都走这个兜底）。
+本机只存注册中心没有的部署参数：`runtimeDir` / `healthUrl` / `startCmd` / `stopCmd` / `restartCmd` / 可选 graceful 端点 / `defaultBranch`。
+
+**字段归属（重要）**：
+
+| 归属 | 字段 | 本机能否改 |
+|---|---|---|
+| **service_registry（同步过来的信息）** | `serviceId`、`gitRepoUrl`、`version`、`owner`、`description`、`tags`、API 端点 | **不能改** |
+| 本控制面（部署参数） | `runtimeDir`、`healthUrl`、`startCmd`、`stopCmd`、`restartCmd`、`restartNotifyUrl`/`restartPollUrl`、`gracefulRestartMaxWaitMs`、`defaultBranch`、`name`（本机显示名） | 可配置 |
+
+`gitRepoUrl` 尤其**不可在本机修改**：它只有一个来源 —— service_registry。
+
+- `PUT` 里显式把它改成别的值（或清空）→ `400 gitRepoUrl 来自 service_registry，本机不能修改（当前登记值：...）`；带上注册中心的登记值（幂等）或干脆不带，都按注册中心的值落库（**镜像同步**：注册中心改了仓库地址，下一次配置/更新就会覆盖本机旧值）。
+- 打包（流水线）、部署已有包、扫描制品都用 `resolveServiceGitRepo()`：**注册中心登记值优先**；只有注册中心不可用 / 没有这个字段、且服务未登记时，才退回本机镜像的旧值（旧数据仍可部署）。
 
 配置 / 编辑：
 
@@ -88,7 +100,7 @@ curl -sS -X PUT http://127.0.0.1:4220/api/services/web-cursor \
     "stopCmd": "bash scripts/stop.sh",
     "restartCmd": "bash scripts/restart.sh"
   }'
-# 首次配置且没给 gitRepoUrl → 自动取注册中心登记的仓库地址
+# gitRepoUrl 不在这里配置：它来自 service_registry，本机不能改（传了别的值 → 400）
 ```
 
 - 已存在本地配置的服务照旧可改（注册中心不可用也不会把运维锁死）；**未登记**的服务一律拒绝新建：`400 未在 service_registry 中登记`；注册中心不可用/未配置时无法确认 → `503`。
@@ -180,7 +192,7 @@ curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 | GET | `/health` | 本服务探活 |
 | GET | `/api/services` | **服务目录**：service_registry 契约 + 本机部署配置的合并视图（含 `registered` / `configured` / `registry` 状态） |
 | GET | `/api/services/:id` | 单个服务的合并视图 |
-| PUT | `/api/services/:id` | **只配置**已登记服务的部署参数（未登记 → 400；注册中心不可用 → 503） |
+| PUT | `/api/services/:id` | **只配置**已登记服务的部署参数（未登记 → 400；注册中心不可用 → 503）。`gitRepoUrl` 等注册中心字段**不可改**（显式改 → 400），落库时按注册中心同步 |
 | DELETE | `/api/services/:id` | 清除本机部署配置（服务仍在注册中心） |
 | POST | `/api/deploy-notify` | 服务方通知：打包 → 再部署（**需身份头**） |
 | GET | `/api/pipelines` | 流水线列表（**多属性筛选 + 分页**，见下） |
@@ -291,7 +303,7 @@ curl -sS -X POST http://127.0.0.1:4220/api/deploys \
 
 | 面板 | 能力 |
 |---|---|
-| 服务契约 | **只配置、不新建**：列表/来源来自 `service_registry`（顶部显示在线状态与服务数），为已登记服务配置部署参数（`PUT /api/services/:id`），可「清除本地配置」（`DELETE`） |
+| 服务契约 | **只配置、不新建**：列表/来源来自 `service_registry`（顶部显示在线状态与服务数），为已登记服务配置部署参数（`PUT /api/services/:id`），可「清除本地配置」（`DELETE`）。注册中心同步过来的信息（`serviceId` / `gitRepoUrl` / `version` / `owner` / `description`）**只读不可改**，`gitRepoUrl` 输入框是只读且不会随表单提交 |
 | 部署流水线 | 两个子页：**发起**（触发打包→部署，`POST /api/deploy-notify`） / **历史列表**（多属性筛选 + 分页，实时轮询） |
 | 部署任务 | 两个子页：**发起**（触发已有包部署，`POST /api/deploys`） / **历史列表**（多属性筛选 + 分页，实时轮询） |
 | 元信息 | 展示 `/api/meta` |
