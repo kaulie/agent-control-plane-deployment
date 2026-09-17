@@ -265,13 +265,13 @@ function registryBadge(svc) {
     : `<span class="badge badge--bad" title="service_registry 未返回该服务（未登记，或注册中心暂时不可用）">未登记</span>`;
 }
 
-// 服务端口：部署契约里显式配置的 port 优先；没配（0）时按 healthUrl 推导并标注来源，
-// 与后端 servicePort() 的取值口径一致。
+// 服务端口：必填项（服务启动时注入 SERVICE_PORT）。这里展示契约里显式配置的值；
+// 老契约（还没补填）才按 healthUrl 推导，并明确标出"未指定"。
 function servicePortLabel(svc) {
   if (svc.port > 0) return `<span class="mono">${esc(String(svc.port))}</span>`;
   const m = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*?:(\d+)(?:[/?#]|$)/i.exec(svc.healthUrl || '');
-  if (m) return `<span class="mono">${esc(m[1])}</span> <span class="muted">(healthUrl)</span>`;
-  return '<span class="muted">—</span>';
+  const derived = m ? `<span class="mono">${esc(m[1])}</span> <span class="muted">(healthUrl)</span>` : '';
+  return `<span class="badge badge--wait">未指定</span> ${derived}`;
 }
 
 function renderServiceContracts() {
@@ -387,8 +387,13 @@ function serviceFormBody() {
   if (!runtimeDir || !healthUrl || !startCmd || !stopCmd || !restartCmd) {
     return { error: 'runtimeDir / healthUrl / startCmd / stopCmd / restartCmd 为必填项' };
   }
-  if (!Number.isInteger(port) || port < 0 || port > 65535) {
-    return { error: '服务端口必须是 1..65535 的整数（留空 = 按 healthUrl 推导）' };
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return { error: '服务端口必填，且必须是 1..65535 的整数（启动时会注入 SERVICE_PORT）' };
+  }
+  // 端口唯一性：本机目录里已经有的服务列表就能查（后端也会再校验一次，防并发）。
+  const holder = services.find((s) => s.serviceId !== serviceId && Number(s.port) === port);
+  if (holder) {
+    return { error: `端口 ${port} 已被服务 ${holder.serviceId} 占用；服务端口必须唯一，请换一个` };
   }
   return {
     serviceId,
