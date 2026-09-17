@@ -90,16 +90,25 @@ service-registry :4240  ──pull(GET /v1/services)──▶  本控制面 :422
 
 ### 服务端口（`port`）
 
-**单独一项**，不要求写进 `healthUrl`：
+**必填项**（1..65535），部署契约里独立一项，不要求写进 `healthUrl`：
 
-| 值 | 含义 |
+| 值 | 行为 |
 |---|---|
-| `1`..`65535` | 部署契约里显式声明的服务端口 |
-| `0` / 留空 / 不传 | 未设置 → **按 `healthUrl` 里的端口推导**（老契约行为不变） |
-| 其它（`>65535`、负数） | `PUT` 直接 `400`（前端也会拦） |
+| `1`..`65535` | 契约里的服务端口；启动/停止/重启时**注入 `SERVICE_PORT`** |
+| `0` / 负数 / `>65535` | `PUT` → `400 port 必须指定且在 1..65535 之间` |
+| 不传 | 沿用库里已有的端口；库里也没有（老契约）→ `400 port 必须指定` |
 
-- 它只决定执行 `startCmd`/`stopCmd`/`restartCmd` 时传给脚本的 **`PORT`**，以及日志/部署事件里显示的端口；**探活仍然走 `healthUrl`**（所以 `port` 与 `healthUrl` 里的端口不一致时，探活按 `healthUrl`，脚本按 `port`）。
-- 面板「服务契约」表单里是 `服务端口 PORT（留空 = 按 healthUrl 推导）` 一项，列表有独立的「端口」列：显式配置直接显示数字，推导出来的会标注 `(healthUrl)`。
+**注入约定**：执行 `startCmd` / `stopCmd` / `restartCmd` 时，环境变量里一定带：
+
+| 变量 | 值 |
+|---|---|
+| `SERVICE_PORT` | 契约里的 `port`（**正式字段名**） |
+| `PORT` | 同一个值（兼容老脚本） |
+| `RUNTIME_DIR` | 该服务的 `runtimeDir` |
+
+- **探活仍然走 `healthUrl`**（`port` 与 `healthUrl` 里的端口不一致时：探活按 `healthUrl`，脚本收到的 `SERVICE_PORT` 按 `port`）。
+- 老契约（`port=0`，还没补填）也能部署：注入的 `SERVICE_PORT` 退回按 `healthUrl` 推导，并在**部署时间线上打一条 warn**（`部署契约未指定服务端口（port）：本次按 healthUrl 推导 SERVICE_PORT=4211，请在「服务契约」里补填`），提示补填。新配置一律要求显式指定。
+- 面板：「服务契约」表单里是 `服务端口 PORT（必填，注入 SERVICE_PORT）`；列表的「端口」列对老契约标 `未指定`（并显示 healthUrl 推导值作参考）。
 
 配置 / 编辑：
 

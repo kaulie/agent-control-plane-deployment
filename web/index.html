@@ -179,8 +179,8 @@
           <label>healthUrl
             <input type="text" id="svc-healthUrl" placeholder="http://127.0.0.1:4211/health" />
           </label>
-          <label>服务端口 PORT（留空 = 按 healthUrl 推导）
-            <input type="number" id="svc-port" min="0" max="65535" step="1" placeholder="0 = 按 healthUrl 推导" />
+          <label>服务端口 PORT（必填，注入 SERVICE_PORT）
+            <input type="number" id="svc-port" min="1" max="65535" step="1" required placeholder="例如 4211" />
           </label>
           <label>startCmd
             <input type="text" id="svc-startCmd" placeholder="bash scripts/start.sh" />

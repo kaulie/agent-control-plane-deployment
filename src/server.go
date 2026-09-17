@@ -231,14 +231,21 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 		port = existing.Port
 		defaultBranch = defaultBranchOrMain(existing.DefaultBranch)
 	}
-	// 服务端口：单独一项，1..65535；0/缺省 = 未设置（仍按 healthUrl 推导）。
+	// 服务端口：**必填**（1..65535）。它会在启动/停止/重启时注入 SERVICE_PORT。
+	// 缺省（不传）时沿用库里已有的端口；库里也没有（老契约 port=0）→ 400。
 	if body.Port != nil {
 		p := *body.Port
-		if p < 0 || p > 65535 {
-			writeError(w, http.StatusBadRequest, "port 必须在 1..65535 之间（0 或省略 = 按 healthUrl 推导）")
+		if p < 1 || p > 65535 {
+			writeError(w, http.StatusBadRequest,
+				"port 必须指定且在 1..65535 之间（服务启动时会注入 SERVICE_PORT）")
 			return
 		}
 		port = p
+	}
+	if normalizePort(port) == 0 {
+		writeError(w, http.StatusBadRequest,
+			"port 必须指定（1..65535）：服务启动时会注入 SERVICE_PORT，不再按 healthUrl 猜端口")
+		return
 	}
 	if body.RestartNotifyURL != nil {
 		notifyURL = strings.TrimSpace(*body.RestartNotifyURL)
