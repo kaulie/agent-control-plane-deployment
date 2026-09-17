@@ -73,19 +73,33 @@ service-registry :4240  ──pull(GET /v1/services)──▶  本控制面 :422
 
 响应里还带 `registry: {url, enabled, ok, services, error}`，面板顶部据此显示「在线 · N 个服务 / 拉取失败」，**拉取失败不会伪装成"没有服务"**。
 
-本机只存注册中心没有的部署参数：`runtimeDir` / `healthUrl` / `startCmd` / `stopCmd` / `restartCmd` / 可选 graceful 端点 / `defaultBranch`。
+本机只存注册中心没有的部署参数：`runtimeDir` / `healthUrl` / `port`（服务端口） / `startCmd` / `stopCmd` / `restartCmd` / 可选 graceful 端点 / `defaultBranch`。
 
 **字段归属（重要）**：
 
 | 归属 | 字段 | 本机能否改 |
 |---|---|---|
 | **service_registry（同步过来的信息）** | `serviceId`、`gitRepoUrl`、`version`、`owner`、`description`、`tags`、API 端点 | **不能改** |
-| 本控制面（部署参数） | `runtimeDir`、`healthUrl`、`startCmd`、`stopCmd`、`restartCmd`、`restartNotifyUrl`/`restartPollUrl`、`gracefulRestartMaxWaitMs`、`defaultBranch`、`name`（本机显示名） | 可配置 |
+| 本控制面（部署参数） | `runtimeDir`、`healthUrl`、**`port`（服务端口）**、`startCmd`、`stopCmd`、`restartCmd`、`restartNotifyUrl`/`restartPollUrl`、`gracefulRestartMaxWaitMs`、`defaultBranch`、`name`（本机显示名） | 可配置 |
 
 `gitRepoUrl` 尤其**不可在本机修改**：它只有一个来源 —— service_registry。
 
 - `PUT` 里显式把它改成别的值（或清空）→ `400 gitRepoUrl 来自 service_registry，本机不能修改（当前登记值：...）`；带上注册中心的登记值（幂等）或干脆不带，都按注册中心的值落库（**镜像同步**：注册中心改了仓库地址，下一次配置/更新就会覆盖本机旧值）。
 - 打包（流水线）、部署已有包、扫描制品都用 `resolveServiceGitRepo()`：**注册中心登记值优先**；只有注册中心不可用 / 没有这个字段、且服务未登记时，才退回本机镜像的旧值（旧数据仍可部署）。
+- 服务列表里**不展示** `gitRepoUrl`（它只读地留在「配置」表单里）。
+
+### 服务端口（`port`）
+
+**单独一项**，不要求写进 `healthUrl`：
+
+| 值 | 含义 |
+|---|---|
+| `1`..`65535` | 部署契约里显式声明的服务端口 |
+| `0` / 留空 / 不传 | 未设置 → **按 `healthUrl` 里的端口推导**（老契约行为不变） |
+| 其它（`>65535`、负数） | `PUT` 直接 `400`（前端也会拦） |
+
+- 它只决定执行 `startCmd`/`stopCmd`/`restartCmd` 时传给脚本的 **`PORT`**，以及日志/部署事件里显示的端口；**探活仍然走 `healthUrl`**（所以 `port` 与 `healthUrl` 里的端口不一致时，探活按 `healthUrl`，脚本按 `port`）。
+- 面板「服务契约」表单里是 `服务端口 PORT（留空 = 按 healthUrl 推导）` 一项，列表有独立的「端口」列：显式配置直接显示数字，推导出来的会标注 `(healthUrl)`。
 
 配置 / 编辑：
 

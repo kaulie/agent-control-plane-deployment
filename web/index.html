@@ -179,6 +179,9 @@
           <label>healthUrl
             <input type="text" id="svc-healthUrl" placeholder="http://127.0.0.1:4211/health" />
           </label>
+          <label>服务端口 PORT（留空 = 按 healthUrl 推导）
+            <input type="number" id="svc-port" min="0" max="65535" step="1" placeholder="0 = 按 healthUrl 推导" />
+          </label>
           <label>startCmd
             <input type="text" id="svc-startCmd" placeholder="bash scripts/start.sh" />
           </label>
@@ -225,7 +228,7 @@
           <thead>
             <tr>
               <th>serviceId</th><th>name</th><th>登记</th><th>版本 / owner</th>
-              <th>runtimeDir</th><th>healthUrl</th><th>graceful</th><th>操作</th>
+              <th>runtimeDir</th><th>healthUrl</th><th>端口</th><th>graceful</th><th>操作</th>
             </tr>
           </thead>
           <tbody></tbody>

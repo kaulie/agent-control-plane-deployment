@@ -25,6 +25,10 @@ type ServiceContract struct {
 	Name       string `json:"name"`
 	RuntimeDir string `json:"runtimeDir"`
 	HealthURL  string `json:"healthUrl"`
+	// Port 是部署契约里显式声明的服务端口（本地运行端口，1..65535）。
+	// 0 = 未设置 → 仍按 HealthURL 里的端口推导（老契约行为不变）。它只用于给
+	// start/stop/restart 脚本传 PORT；探活仍然走 HealthURL。
+	Port       int    `json:"port,omitempty"`
 	StartCmd   string `json:"startCmd"`
 	StopCmd    string `json:"stopCmd"`
 	RestartCmd string `json:"restartCmd"`
@@ -111,6 +115,7 @@ func (s *Store) migrate() error {
         name TEXT NOT NULL,
         runtime_dir TEXT NOT NULL,
         health_url TEXT NOT NULL,
+        port INTEGER NOT NULL DEFAULT 0,
         start_cmd TEXT NOT NULL,
         stop_cmd TEXT NOT NULL,
         restart_cmd TEXT NOT NULL,
@@ -165,6 +170,7 @@ func (s *Store) ensureServiceExtraColumns() error {
 		"graceful_max_wait_ms": `ALTER TABLE services ADD COLUMN graceful_max_wait_ms INTEGER NOT NULL DEFAULT 0`,
 		"git_repo_url":         `ALTER TABLE services ADD COLUMN git_repo_url TEXT NOT NULL DEFAULT ''`,
 		"default_branch":       `ALTER TABLE services ADD COLUMN default_branch TEXT NOT NULL DEFAULT 'main'`,
+		"port":                 `ALTER TABLE services ADD COLUMN port INTEGER NOT NULL DEFAULT 0`,
 	})
 }
 
@@ -231,16 +237,17 @@ func (s *Store) UpsertService(input ServiceContract) (ServiceContract, error) {
 
 	_, err := s.db.Exec(`
 		INSERT INTO services (
-		  service_id, name, runtime_dir, health_url,
+		  service_id, name, runtime_dir, health_url, port,
 		  start_cmd, stop_cmd, restart_cmd, watchdog_enabled,
 		  restart_notify_url, restart_poll_url, graceful_max_wait_ms,
 		  git_repo_url, default_branch,
 		  created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(service_id) DO UPDATE SET
 		  name = excluded.name,
 		  runtime_dir = excluded.runtime_dir,
 		  health_url = excluded.health_url,
+		  port = excluded.port,
 		  start_cmd = excluded.start_cmd,
 		  stop_cmd = excluded.stop_cmd,
 		  restart_cmd = excluded.restart_cmd,
@@ -251,7 +258,7 @@ func (s *Store) UpsertService(input ServiceContract) (ServiceContract, error) {
 		  git_repo_url = excluded.git_repo_url,
 		  default_branch = excluded.default_branch,
 		  updated_at = excluded.updated_at`,
-		row.ServiceID, row.Name, row.RuntimeDir, row.HealthURL,
+		row.ServiceID, row.Name, row.RuntimeDir, row.HealthURL, normalizePort(row.Port),
 		row.StartCmd, row.StopCmd, row.RestartCmd, 0,
 		row.RestartNotifyURL, row.RestartPollURL, row.GracefulMaxWaitMs,
 		row.GitRepoURL, defaultBranchOrMain(row.DefaultBranch),
@@ -260,9 +267,17 @@ func (s *Store) UpsertService(input ServiceContract) (ServiceContract, error) {
 	return row, err
 }
 
+// normalizePort 把非法端口收敛成 0（未设置）：写入库里的只有 0 或 1..65535。
+func normalizePort(p int) int {
+	if p < 0 || p > 65535 {
+		return 0
+	}
+	return p
+}
+
 func (s *Store) GetService(serviceID string) (*ServiceContract, error) {
 	row := s.db.QueryRow(`
-		SELECT service_id, name, runtime_dir, health_url,
+		SELECT service_id, name, runtime_dir, health_url, port,
 		       start_cmd, stop_cmd, restart_cmd, watchdog_enabled,
 		       restart_notify_url, restart_poll_url, graceful_max_wait_ms,
 		       git_repo_url, default_branch,
@@ -277,7 +292,7 @@ func (s *Store) GetService(serviceID string) (*ServiceContract, error) {
 
 func (s *Store) ListServices() ([]ServiceContract, error) {
 	rows, err := s.db.Query(`
-		SELECT service_id, name, runtime_dir, health_url,
+		SELECT service_id, name, runtime_dir, health_url, port,
 		       start_cmd, stop_cmd, restart_cmd, watchdog_enabled,
 		       restart_notify_url, restart_poll_url, graceful_max_wait_ms,
 		       git_repo_url, default_branch,
@@ -439,7 +454,7 @@ func scanService(row scannable) (*ServiceContract, error) {
 	var svc ServiceContract
 	var watchdog int
 	err := row.Scan(
-		&svc.ServiceID, &svc.Name, &svc.RuntimeDir, &svc.HealthURL,
+		&svc.ServiceID, &svc.Name, &svc.RuntimeDir, &svc.HealthURL, &svc.Port,
 		&svc.StartCmd, &svc.StopCmd, &svc.RestartCmd, &watchdog,
 		&svc.RestartNotifyURL, &svc.RestartPollURL, &svc.GracefulMaxWaitMs,
 		&svc.GitRepoURL, &svc.DefaultBranch,

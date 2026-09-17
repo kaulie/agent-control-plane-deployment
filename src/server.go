@@ -136,6 +136,7 @@ type putServiceBody struct {
 	Name              string  `json:"name"`
 	RuntimeDir        string  `json:"runtimeDir"`
 	HealthURL         string  `json:"healthUrl"`
+	Port              *int    `json:"port"`
 	StartCmd          string  `json:"startCmd"`
 	StopCmd           string  `json:"stopCmd"`
 	RestartCmd        string  `json:"restartCmd"`
@@ -195,6 +196,7 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(body.Name)
 	runtimeDir := strings.TrimSpace(body.RuntimeDir)
 	healthURL := strings.TrimSpace(body.HealthURL)
+	port := 0
 	startCmd := strings.TrimSpace(body.StartCmd)
 	stopCmd := strings.TrimSpace(body.StopCmd)
 	restartCmd := strings.TrimSpace(body.RestartCmd)
@@ -226,7 +228,17 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 		pollURL = existing.RestartPollURL
 		maxWaitMs = existing.GracefulMaxWaitMs
 		gitRepoURL = existing.GitRepoURL
+		port = existing.Port
 		defaultBranch = defaultBranchOrMain(existing.DefaultBranch)
+	}
+	// 服务端口：单独一项，1..65535；0/缺省 = 未设置（仍按 healthUrl 推导）。
+	if body.Port != nil {
+		p := *body.Port
+		if p < 0 || p > 65535 {
+			writeError(w, http.StatusBadRequest, "port 必须在 1..65535 之间（0 或省略 = 按 healthUrl 推导）")
+			return
+		}
+		port = p
 	}
 	if body.RestartNotifyURL != nil {
 		notifyURL = strings.TrimSpace(*body.RestartNotifyURL)
@@ -290,6 +302,7 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 		Name:              name,
 		RuntimeDir:        runtimeDir,
 		HealthURL:         healthURL,
+		Port:              port,
 		StartCmd:          startCmd,
 		StopCmd:           stopCmd,
 		RestartCmd:        restartCmd,
