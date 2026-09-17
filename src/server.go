@@ -760,14 +760,25 @@ func (s *apiServer) handleRestartPoll(w http.ResponseWriter, r *http.Request) {
 			otherDeploys++
 		}
 	}
-	// in-flight pipelines (packaging + deploying), excluding the restarting one
+	// in-flight pipelines (packaging + deploying), excluding the restarting one.
+	// A pipeline that is "deploying" but whose deploy job has not started yet
+	// (still queued) is NOT in-flight work: the deploy worker deliberately does
+	// not claim jobs while draining, so counting it as in-flight deadlocks the
+	// restart — the poll never reports ready and the queued deploy never starts
+	// (both wait on each other until the max-wait timeout forces a restart).
+	// Such a deploy is only a row in the store; the process that comes up after
+	// the restart claims and runs it.
 	packaging, _ := s.store.ListPipelinesByState(PipelinePackaging)
 	deploying, _ := s.store.ListPipelinesByState(PipelineDeploying)
 	otherPipelines := 0
 	for _, p := range append(packaging, deploying...) {
-		if p.RequestID != restartID && p.DeployRequestID != restartID {
-			otherPipelines++
+		if p.RequestID == restartID || p.DeployRequestID == restartID {
+			continue
 		}
+		if p.State == PipelineDeploying && !s.deployRunning(p.DeployRequestID) {
+			continue
+		}
+		otherPipelines++
 	}
 
 	canRestart := otherDeploys == 0 && otherPipelines == 0
@@ -780,6 +791,21 @@ func (s *apiServer) handleRestartPoll(w http.ResponseWriter, r *http.Request) {
 		"inflightDeploys": otherDeploys,
 		"inflightPipes":   otherPipelines,
 	})
+}
+
+// deployRunning reports whether the deploy job backing a "deploying" pipeline
+// has actually started (state running). A queued job has not touched the
+// runtime yet, so it is not in-flight work and must not hold back a graceful
+// self-restart; unknown/finished jobs are likewise not in-flight.
+func (s *apiServer) deployRunning(requestID string) bool {
+	if strings.TrimSpace(requestID) == "" {
+		return false
+	}
+	dep, err := s.store.GetDeploy(requestID)
+	if err != nil || dep == nil {
+		return false
+	}
+	return dep.State == StateRunning
 }
 
 func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
