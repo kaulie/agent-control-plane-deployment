@@ -1,8 +1,8 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -12,15 +12,16 @@ import (
 
 // PipelineWorker: package from git, then enqueue deploy (graceful notify/poll happens in DeployWorker).
 type PipelineWorker struct {
-	store   *Store
-	cfg     Config
-	storage ArtifactStorage
-	deploy  *DeployWorker
-	drain   *GracefulDrain
-	mu      sync.Mutex
-	busy    bool
-	stopCh  chan struct{}
-	wg      sync.WaitGroup
+	store    *Store
+	cfg      Config
+	storage  ArtifactStorage
+	deploy   *DeployWorker
+	drain    *GracefulDrain
+	registry *ServiceRegistry
+	mu       sync.Mutex
+	busy     bool
+	stopCh   chan struct{}
+	wg       sync.WaitGroup
 }
 
 func NewPipelineWorker(store *Store, cfg Config, storage ArtifactStorage, deploy *DeployWorker, drain *GracefulDrain) *PipelineWorker {
@@ -102,9 +103,11 @@ func (w *PipelineWorker) execute(job *PipelineJob) {
 		failPipeline(w.store, job.RequestID, "unknown service: "+job.ServiceID)
 		return
 	}
-	gitURL := strings.TrimSpace(svc.GitRepoURL)
+	gitURL := resolveServiceGitRepo(context.Background(), w.registry, svc)
 	if gitURL == "" {
-		failPipeline(w.store, job.RequestID, "service missing gitRepoUrl; register it via PUT /api/services/"+job.ServiceID)
+		failPipeline(w.store, job.RequestID,
+			"service has no gitRepoUrl: register one in service_registry, or set it in the deployment config "+
+				"(PUT /api/services/"+job.ServiceID+")")
 		return
 	}
 
