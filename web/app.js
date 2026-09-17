@@ -390,6 +390,11 @@ function serviceFormBody() {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     return { error: '服务端口必填，且必须是 1..65535 的整数（启动时会注入 SERVICE_PORT）' };
   }
+  // 端口唯一性：本机目录里已经有的服务列表就能查（后端也会再校验一次，防并发）。
+  const holder = services.find((s) => s.serviceId !== serviceId && Number(s.port) === port);
+  if (holder) {
+    return { error: `端口 ${port} 已被服务 ${holder.serviceId} 占用；服务端口必须唯一，请换一个` };
+  }
   return {
     serviceId,
     body: {

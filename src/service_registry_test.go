@@ -114,8 +114,9 @@ func localConfig(id string, gitURL string) ServiceContract {
 	return ServiceContract{
 		ServiceID: id, Name: id, RuntimeDir: "/tmp/" + id,
 		HealthURL: "http://127.0.0.1:1/health",
-		Port:      4211, // 服务端口是必填项
-		StartCmd:  "true", StopCmd: "true", RestartCmd: "true",
+		// Port 故意不设（0 = 未指定，老数据长这样）：端口唯一索引不约束它；
+		// 需要检查端口的用例自己显式给（PUT 时端口必填）。
+		StartCmd: "true", StopCmd: "true", RestartCmd: "true",
 		GitRepoURL: gitURL,
 	}
 }

@@ -529,6 +529,36 @@ test('service contracts: 非法服务端口（0 / 越界）不会被提交', asy
   assert.match(doc.querySelector('#svc-msg').textContent, /端口/, '要给出可见的必填提示');
 });
 
+test('service contracts: 端口唯一性（前端先拦，不发请求）', async (t) => {
+  const { dom, flush, servicesRequests } = makePanel();
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+
+  doc.querySelector('[data-tab="services"]').click();
+  await flush();
+  doc.querySelector('[data-svc-edit="acp"]').click();
+  await flush();
+
+  // 4212 已被 web-cursor 占用 → 前端直接给出可见提示，不发 PUT
+  const before = servicesRequests().filter((r) => r.method === 'PUT').length;
+  doc.querySelector('#svc-port').value = '4212';
+  doc.querySelector('#svc-save').click();
+  await flush();
+  assert.equal(servicesRequests().filter((r) => r.method === 'PUT').length, before,
+    '端口冲突时不能发 PUT');
+  const msg = doc.querySelector('#svc-msg').textContent;
+  assert.match(msg, /4212/, '提示要指出冲突端口');
+  assert.match(msg, /web-cursor/, '提示要指出占用者');
+  assert.match(msg, /唯一/, '提示要说明端口必须唯一');
+
+  // 换一个没人用的端口 → 正常保存
+  doc.querySelector('#svc-port').value = '4310';
+  doc.querySelector('#svc-save').click();
+  await flush();
+  const put = servicesRequests().filter((r) => r.method === 'PUT').at(-1);
+  assert.ok(put && JSON.parse(put.body).port === 4310, '换端口后可以保存');
+});
+
 test('service contracts: clear sends DELETE /api/services/:id (local config only)', async (t) => {
   const { dom, flush, servicesRequests } = makePanel();
   t.after(() => dom.window.close());

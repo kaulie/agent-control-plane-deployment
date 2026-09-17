@@ -107,6 +107,7 @@ service-registry :4240  ──pull(GET /v1/services)──▶  本控制面 :422
 | `RUNTIME_DIR` | 该服务的 `runtimeDir` |
 
 - **探活仍然走 `healthUrl`**（`port` 与 `healthUrl` 里的端口不一致时：探活按 `healthUrl`，脚本收到的 `SERVICE_PORT` 按 `port`）。
+- **端口必须唯一**（保存时校验）：同一个端口不能被两个服务用。`PUT` 撞到别人的端口 → `409 端口 4211 已被服务 "web-cursor" 占用；服务端口必须唯一，请换一个`（编辑自己不算冲突）；面板会先在本地拦一次、直接给出占用者。库层还有一条兜底：`CREATE UNIQUE INDEX ... ON services(port) WHERE port > 0`（0 = 未指定，不参与唯一性；目标库若已有重复端口，索引创建失败只记日志、不影响启动，仍由 API 层逐个校验）。
 - 老契约（`port=0`，还没补填）也能部署：注入的 `SERVICE_PORT` 退回按 `healthUrl` 推导，并在**部署时间线上打一条 warn**（`部署契约未指定服务端口（port）：本次按 healthUrl 推导 SERVICE_PORT=4211，请在「服务契约」里补填`），提示补填。新配置一律要求显式指定。
 - 面板：「服务契约」表单里是 `服务端口 PORT（必填，注入 SERVICE_PORT）`；列表的「端口」列对老契约标 `未指定`（并显示 healthUrl 推导值作参考）。
 

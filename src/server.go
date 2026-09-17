@@ -247,6 +247,15 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 			"port 必须指定（1..65535）：服务启动时会注入 SERVICE_PORT，不再按 healthUrl 猜端口")
 		return
 	}
+	// 服务端口必须唯一：同一个端口不能被两个服务用（否则后起的服务起不来）。
+	if holder, err := s.store.ServiceByPort(port, serviceID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	} else if holder != nil {
+		writeError(w, http.StatusConflict,
+			fmt.Sprintf("端口 %d 已被服务 %q 占用；服务端口必须唯一，请换一个", port, holder.ServiceID))
+		return
+	}
 	if body.RestartNotifyURL != nil {
 		notifyURL = strings.TrimSpace(*body.RestartNotifyURL)
 	}
@@ -320,6 +329,12 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 		GracefulMaxWaitMs: maxWaitMs,
 	})
 	if err != nil {
+		// 并发保存时可能绕过上面的检查、撞到 services.port 的唯一索引：同样给友好的 409。
+		if isServicePortConflict(err) {
+			writeError(w, http.StatusConflict,
+				fmt.Sprintf("端口 %d 已被其它服务占用；服务端口必须唯一，请换一个", port))
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -328,6 +343,15 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusOK
 	}
 	writeJSON(w, status, svc)
+}
+
+// isServicePortConflict 识别 services.port 唯一约束被触发（并发写入的兜底路径）。
+func isServicePortConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unique") && strings.Contains(msg, "services.port")
 }
 
 func (s *apiServer) handleDeleteService(w http.ResponseWriter, r *http.Request) {

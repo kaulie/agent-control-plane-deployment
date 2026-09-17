@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -160,7 +161,45 @@ func (s *Store) migrate() error {
 	if err := s.migrateArtifacts(); err != nil {
 		return err
 	}
-	return s.migrateDeployEvents()
+	if err := s.migrateDeployEvents(); err != nil {
+		return err
+	}
+	s.ensureServicePortUniqueIndex()
+	return nil
+}
+
+// ensureServicePortUniqueIndex 给"已指定的服务端口"加唯一约束（0 = 未指定，不参与）。
+// 这是保存时唯一性校验的**兜底**：API 层会先给出友好的 409，这里防并发写入漏网。
+//
+// 用**尽力而为**的方式创建：老库若已经存在端口冲突的数据，建索引会失败 ——
+// 那也不该让服务起不来，只记一条日志（此时仍由 API 层逐个校验）。
+func (s *Store) ensureServicePortUniqueIndex() {
+	_, err := s.db.Exec(
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_services_port_unique ON services(port) WHERE port > 0`)
+	if err != nil {
+		log.Printf("[store] warn: 未能创建服务端口唯一索引（%v）；保存时仍按 API 层校验端口唯一性", err)
+	}
+}
+
+// ServiceByPort 找出"已经占用该端口"的另一个服务（excludeServiceID 用于编辑自己时排除）。
+// port<=0 视为未指定，直接返回 nil。
+func (s *Store) ServiceByPort(port int, excludeServiceID string) (*ServiceContract, error) {
+	if port <= 0 {
+		return nil, nil
+	}
+	row := s.db.QueryRow(`
+		SELECT service_id, name, runtime_dir, health_url, port,
+		       start_cmd, stop_cmd, restart_cmd, watchdog_enabled,
+		       restart_notify_url, restart_poll_url, graceful_max_wait_ms,
+		       git_repo_url, default_branch,
+		       created_at, updated_at
+		FROM services WHERE port = ? AND service_id <> ? ORDER BY service_id LIMIT 1`,
+		port, excludeServiceID)
+	svc, err := scanService(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return svc, err
 }
 
 func (s *Store) ensureServiceExtraColumns() error {

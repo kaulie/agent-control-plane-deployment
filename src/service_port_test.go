@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -139,7 +140,72 @@ func TestStoreServicePortRoundTrip(t *testing.T) {
 	}
 }
 
-// 给 start/stop/restart 脚本的端口：注入 SERVICE_PORT（正式字段名）+ PORT（兼容），
+// 服务端口必须唯一：端口被别的服务占用 → 409（编辑自己不算冲突）。
+func TestPutServicePortUnique(t *testing.T) {
+	store := newPortTestStore(t)
+	svcA, svcB := localConfig("svc-a", ""), localConfig("svc-b", "")
+	svcA.Port, svcB.Port = 4310, 4311 // 先各占一个不同的端口（端口唯一）
+	for _, s := range []ServiceContract{svcA, svcB} {
+		if _, err := store.UpsertService(s); err != nil {
+			t.Fatalf("UpsertService(%s): %v", s.ServiceID, err)
+		}
+	}
+	api := &apiServer{store: store}
+	body := func(port int) string {
+		return `{"runtimeDir":"/tmp/svc-a","healthUrl":"http://127.0.0.1:1/health",` +
+			`"startCmd":"true","stopCmd":"true","restartCmd":"true",` +
+			`"port":` + strconv.Itoa(port) + `}`
+	}
+
+	// svc-a 先占 4211。
+	if rec := putServiceJSON(t, api, "svc-a", body(4211)); rec.Code != http.StatusOK {
+		t.Fatalf("PUT svc-a port=4211 = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	// svc-b 想用同一个端口 → 409，并点名占用者。
+	rec := putServiceJSON(t, api, "svc-b", body(4211))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("PUT svc-b port=4211 = %d, want 409 (body=%s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "svc-a") || !strings.Contains(rec.Body.String(), "唯一") {
+		t.Fatalf("conflict message should name the holder and say it must be unique: %s", rec.Body.String())
+	}
+	// svc-a 自己再存同一个端口不算冲突。
+	if rec = putServiceJSON(t, api, "svc-a", body(4211)); rec.Code != http.StatusOK {
+		t.Fatalf("PUT svc-a again = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	// 换一个没人用的端口 → 成功。
+	if rec = putServiceJSON(t, api, "svc-b", body(4212)); rec.Code != http.StatusOK {
+		t.Fatalf("PUT svc-b port=4212 = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	// svc-a 腾出 4211 后，svc-b 才能用。
+	if rec = putServiceJSON(t, api, "svc-a", body(4213)); rec.Code != http.StatusOK {
+		t.Fatalf("PUT svc-a port=4213 = %d, want 200", rec.Code)
+	}
+	if rec = putServiceJSON(t, api, "svc-b", body(4211)); rec.Code != http.StatusOK {
+		t.Fatalf("PUT svc-b port=4211 after release = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+
+	// 库层兜底：唯一索引挡住直接写入的重复端口（并发场景）。
+	dup := localConfig("svc-c", "")
+	dup.Port = 4211
+	if _, err := store.UpsertService(dup); err == nil {
+		t.Fatal("store must reject a duplicate service port (unique index)")
+	}
+	holder, err := store.ServiceByPort(4211, "svc-c")
+	if err != nil {
+		t.Fatalf("ServiceByPort: %v", err)
+	}
+	if holder == nil || holder.ServiceID != "svc-b" {
+		t.Fatalf("ServiceByPort(4211) = %+v, want svc-b", holder)
+	}
+	if h, _ := store.ServiceByPort(4211, "svc-b"); h != nil {
+		t.Fatalf("ServiceByPort must exclude the service itself, got %+v", h)
+	}
+	if h, _ := store.ServiceByPort(0, ""); h != nil {
+		t.Fatalf("port 0 (未指定) must not be treated as taken, got %+v", h)
+	}
+}
+
 // 取值 = 契约里显式配置的 port；没配置（老契约）才退回 healthUrl 推导。
 func TestServicePortPrecedence(t *testing.T) {
 	cases := []struct {
