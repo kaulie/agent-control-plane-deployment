@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -55,6 +56,8 @@ func (s *apiServer) routes() http.Handler {
 	mux.HandleFunc("GET /api/services/{serviceId}", s.handleGetService)
 	mux.HandleFunc("PUT /api/services/{serviceId}", s.handlePutService)
 	mux.HandleFunc("DELETE /api/services/{serviceId}", s.handleDeleteService)
+	mux.HandleFunc("GET /api/services/{serviceId}/history", s.handleServiceHistory)
+	mux.HandleFunc("POST /api/services/{serviceId}/history/move", s.handleMoveServiceHistory)
 	mux.HandleFunc("POST /api/deploys", s.handleCreateDeploy)
 	mux.HandleFunc("GET /api/deploys", s.handleListDeploys)
 	mux.HandleFunc("GET /api/deploys/{requestId}", s.handleGetDeploy)
@@ -354,8 +357,27 @@ func isServicePortConflict(err error) bool {
 	return strings.Contains(msg, "unique") && strings.Contains(msg, "services.port")
 }
 
+// handleDeleteService 只删本机的部署配置（服务本身仍在 service_registry，可重新
+// 配置）。有在途任务时拒绝（排队中的任务被认领时会找不到契约）；历史记录不在这里
+// 处理 —— 想一起搬走请用 POST /api/services/{serviceId}/history/move。
 func (s *apiServer) handleDeleteService(w http.ResponseWriter, r *http.Request) {
-	ok, err := s.store.DeleteService(r.PathValue("serviceId"))
+	serviceID := strings.TrimSpace(r.PathValue("serviceId"))
+	if serviceID == "" {
+		writeError(w, http.StatusBadRequest, "serviceId required")
+		return
+	}
+	history, err := s.store.CountServiceHistory(serviceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if history.Inflight() > 0 {
+		writeError(w, http.StatusConflict,
+			(&ErrServiceInflight{ServiceID: serviceID, Counts: history}).Error()+
+				"；如果连历史记录也要一起搬走，请用 POST /api/services/"+serviceID+"/history/move")
+		return
+	}
+	ok, err := s.store.DeleteService(serviceID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -364,8 +386,150 @@ func (s *apiServer) handleDeleteService(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "service not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	// history 一并回给调用方：删配置不会删历史，剩下的记录会变成「孤儿」（列表里
+	// 看不到该 serviceId），面板据此提醒。
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "history": history})
 }
+
+// ServiceHistoryTarget 是可以承接历史的服务（面板下拉用）。只列本机「已配置」的
+// 服务：历史记录挂到一个没配部署参数的服务上就没法再部署了。
+type ServiceHistoryTarget struct {
+	ServiceID  string `json:"serviceId"`
+	Name       string `json:"name,omitempty"`
+	RuntimeDir string `json:"runtimeDir,omitempty"`
+	Registered bool   `json:"registered"`
+}
+
+// handleServiceHistory 返回一个 serviceId 名下的历史记录条数 + 可迁移的目标服务，
+// 供面板在「清除旧契约」前确认：是把历史迁到别的服务，还是直接清除配置。
+// 它只读，不改任何东西。
+func (s *apiServer) handleServiceHistory(w http.ResponseWriter, r *http.Request) {
+	serviceID := strings.TrimSpace(r.PathValue("serviceId"))
+	if serviceID == "" {
+		writeError(w, http.StatusBadRequest, "serviceId required")
+		return
+	}
+	counts, err := s.store.CountServiceHistory(serviceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	entries, _, err := buildServiceCatalog(r.Context(), s.store, s.registry)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	found := false
+	targets := make([]ServiceHistoryTarget, 0, len(entries))
+	for _, e := range entries {
+		if e.ServiceID == serviceID {
+			found = true
+			continue
+		}
+		if !e.Configured {
+			continue
+		}
+		targets = append(targets, ServiceHistoryTarget{
+			ServiceID:  e.ServiceID,
+			Name:       e.Name,
+			RuntimeDir: e.RuntimeDir,
+			Registered: e.Registered,
+		})
+	}
+	// 源契约既不在目录里、也没有历史记录 → 404（纯粹的未知 serviceId）。
+	if !found && !counts.HasHistory() {
+		writeError(w, http.StatusNotFound, "service not found: "+serviceID)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"serviceId": serviceID,
+		"history":   counts,
+		"inflight":  counts.Inflight(),
+		"targets":   targets,
+	})
+}
+
+type moveServiceHistoryBody struct {
+	// To = 目标 serviceId（必须在本机已有部署配置）。
+	To string `json:"to"`
+	// DeleteSourceContract = 迁移完成后顺手删掉来源 serviceId 的本机部署配置。
+	DeleteSourceContract bool `json:"deleteSourceContract"`
+}
+
+// handleMoveServiceHistory 把 {serviceId} 名下的流水线 / 部署 / 制品索引改挂到
+// body.to 名下，可选地删掉来源契约 —— 一个事务里完成，用来收拾「注册中心接入前
+// 本机自建的老契约」：老契约删掉，历史记录不丢，跟着新 serviceId 继续显示。
+func (s *apiServer) handleMoveServiceHistory(w http.ResponseWriter, r *http.Request) {
+	serviceID := strings.TrimSpace(r.PathValue("serviceId"))
+	var body moveServiceHistoryBody
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	to := strings.TrimSpace(body.To)
+
+	switch {
+	case serviceID == "":
+		writeError(w, http.StatusBadRequest, "serviceId required")
+		return
+	case to == "":
+		writeError(w, http.StatusBadRequest, "to (目标 serviceId) 必填")
+		return
+	case to == serviceID:
+		writeError(w, http.StatusBadRequest, "不能把历史记录迁移到同一个服务")
+		return
+	}
+
+	// 目标必须是本机已配置的服务（否则搬过去也没法部署）。
+	target, err := s.store.GetService(to)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if target == nil {
+		writeError(w, http.StatusBadRequest,
+			"目标服务 "+to+" 在本机没有部署配置；先配好它的部署参数，再把历史迁过去")
+		return
+	}
+
+	// 源：本机契约或历史记录至少有一个存在（允许清理「契约已删、历史还在」的孤儿）。
+	existing, err := s.store.GetService(serviceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	counts, err := s.store.CountServiceHistory(serviceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if existing == nil && !counts.HasHistory() {
+		writeError(w, http.StatusNotFound, "service not found: "+serviceID)
+		return
+	}
+
+	move, err := s.store.MoveServiceHistory(serviceID, to, body.DeleteSourceContract)
+	var inflight *ErrServiceInflight
+	if errors.As(err, &inflight) {
+		writeError(w, http.StatusConflict, inflight.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	msg := fmt.Sprintf("已把 %s 的 %d 条流水线 / %d 条部署记录 / %d 条制品索引迁移到 %s",
+		move.From, move.Pipelines, move.Deploys, move.Artifacts, move.To)
+	if move.ArtifactsSkipped > 0 {
+		msg += fmt.Sprintf("（%d 条制品索引目标已存在，保留原样）", move.ArtifactsSkipped)
+	}
+	if move.DeletedContract {
+		msg += "，并删除了 " + move.From + " 的本机部署配置"
+	}
+	fmt.Printf("[services] move history %s -> %s by pipes=%d deploys=%d artifacts=%d skipped=%d deleteContract=%v\n",
+		move.From, move.To, move.Pipelines, move.Deploys, move.Artifacts, move.ArtifactsSkipped, move.DeletedContract)
+
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "move": move, "message": msg})
+}
+
 
 type createDeployBody struct {
 	ServiceID  string `json:"serviceId"`

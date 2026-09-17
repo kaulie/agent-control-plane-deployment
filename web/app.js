@@ -298,7 +298,8 @@ function renderServiceContracts() {
       (s.configured ? '' : ' <span class="badge badge--wait">未配置</span>');
     const actions = s.configured
       ? `<button class="btn btn--sm" data-svc-edit="${esc(s.serviceId)}">配置</button>
-        <button class="btn btn--sm btn--danger" data-svc-delete="${esc(s.serviceId)}">清除</button>`
+        <button class="btn btn--sm btn--danger" data-svc-delete="${esc(s.serviceId)}" ` +
+        `title="清除本机部署配置：可以先把流水线 / 部署记录迁移到别的服务">清除</button>`
       : `<button class="btn btn--sm btn--primary" data-svc-edit="${esc(s.serviceId)}">配置</button>`;
     return `<tr>
       <td class="mono">${esc(s.serviceId)}</td>
@@ -422,16 +423,119 @@ async function saveServiceContract() {
   }
 }
 
-// DELETE clears this machine's deployment config only; the service itself stays
-// in service_registry and can be configured again.
-async function deleteServiceContract(serviceId) {
-  if (!window.confirm('确认清除「' + serviceId + '」在本机的部署配置？（服务仍在 service_registry，可重新配置）')) return;
+// ---- 清除服务配置：先确认历史记录的去处 -------------------------------------
+// 早期（service_registry 接入前）本机自建的老契约和注册中心里的服务往往是同一个
+// 服务的两个 id（如 web-cursor ↔ agent-control-plane）。直接删配置会把几十条流水线 /
+// 部署记录变成「孤儿」—— 列表里再也看不到那个 serviceId。所以「清除」先问历史去处：
+//   - 选一个目标服务 → POST /history/move（迁移历史 + 删旧契约，一个事务）
+//   - 不选 → DELETE /api/services/:id（只删本机配置，历史留在库里）
+let removingServiceID = null;
+let removingHistory = null;
+
+function closeRemoveDialog() {
+  removingServiceID = null;
+  removingHistory = null;
+  $('#svc-remove-modal').hidden = true;
+  $('#svc-remove-body').innerHTML = '';
+  $('#svc-remove-msg').textContent = '';
+}
+
+// suggestHistoryTarget 预选「最像同一个服务」的目标：runtimeDir 相同（老契约和注册
+// 中心里的服务指向同一个运行时目录）最可信，其次 gitRepoUrl 相同。
+function suggestHistoryTarget(source, targets) {
+  const svc = services.find((s) => s.serviceId === source) || {};
+  const sameDir = targets.find((t) => svc.runtimeDir && t.runtimeDir === svc.runtimeDir);
+  if (sameDir) return sameDir.serviceId;
+  const sameRepo = targets.find((t) => svc.gitRepoUrl && t.gitRepoUrl === svc.gitRepoUrl);
+  if (sameRepo) return sameRepo.serviceId;
+  return targets.length === 1 ? targets[0].serviceId : '';
+}
+
+function updateRemoveDialogHint() {
+  const targetSel = $('#svc-remove-target');
+  const target = targetSel ? targetSel.value : '';
+  const confirmBtn = $('#svc-remove-confirm');
+  const hint = $('#svc-remove-hint');
+  const h = removingHistory || {};
+  const hasHistory = (h.pipelines || 0) + (h.deploys || 0) + (h.artifacts || 0) > 0;
+  const inflight = (h.inflightPipelines || 0) + (h.inflightDeploys || 0);
+  if (inflight > 0) {
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = '清除';
+    if (hint) hint.textContent = `还有 ${inflight} 个在途任务，等它们结束后再迁移或清除。`;
+    return;
+  }
+  confirmBtn.disabled = false;
+  confirmBtn.textContent = target ? '迁移并清除' : '仅清除本机配置';
+  if (!hint) return;
+  if (target) {
+    hint.textContent = `历史记录会改挂到 ${target}，然后删掉 ${removingServiceID} 的本机部署配置。`;
+  } else if (hasHistory) {
+    hint.textContent = '不迁移：这些记录会留在库里，但列表里看不到它们（成为孤儿记录）。';
+  } else {
+    hint.textContent = '该服务名下没有历史记录，直接清除本机部署配置。';
+  }
+}
+
+async function openRemoveDialog(serviceId) {
+  removingServiceID = serviceId;
+  removingHistory = null;
+  $('#svc-remove-title').textContent = '清除服务配置：' + serviceId;
+  $('#svc-remove-msg').textContent = '';
+  $('#svc-remove-modal').hidden = false;
+  const body = $('#svc-remove-body');
+  body.innerHTML = '<p class="muted">正在读取历史记录…</p>';
+  let info;
   try {
-    await apiSend('DELETE', '/api/services/' + encodeURIComponent(serviceId));
-    toast('已清除本地配置 ' + serviceId, 'ok');
+    info = await apiGet('/api/services/' + encodeURIComponent(serviceId) + '/history');
+  } catch (e) {
+    body.innerHTML = `<p class="muted">读取历史记录失败：${esc(e.message)}</p>` +
+      '<p class="hint">仍然可以只清除本机的部署配置；历史记录会留在库里（列表里看不到）。</p>';
+    return;
+  }
+  const h = info.history || {};
+  removingHistory = h;
+  const targets = (info.targets || []).filter((t) => t.serviceId !== serviceId);
+  // 有历史才预选迁移目标；一条记录都没有就别多问。
+  const hasHistory = (h.pipelines || 0) + (h.deploys || 0) + (h.artifacts || 0) > 0;
+  const suggested = hasHistory ? suggestHistoryTarget(serviceId, targets) : '';
+  const options = targets.map((t) => {
+    const label = t.name && t.name !== t.serviceId ? `${t.serviceId} — ${t.name}` : t.serviceId;
+    return `<option value="${esc(t.serviceId)}"${t.serviceId === suggested ? ' selected' : ''}>${esc(label)}</option>`;
+  }).join('');
+  body.innerHTML =
+    `<p>该服务名下有 <b>${h.pipelines || 0}</b> 条流水线 · <b>${h.deploys || 0}</b> 条部署记录 · ` +
+    `<b>${h.artifacts || 0}</b> 条制品索引。</p>` +
+    '<label>历史记录的去处' +
+    '<select id="svc-remove-target">' +
+    '<option value="">（不迁移，只清除本机配置）</option>' +
+    options +
+    '</select></label>' +
+    '<p class="hint" id="svc-remove-hint"></p>';
+  updateRemoveDialogHint();
+}
+
+async function confirmRemoveService() {
+  const serviceId = removingServiceID;
+  if (!serviceId) return;
+  const targetSel = $('#svc-remove-target');
+  const target = targetSel ? targetSel.value : '';
+  const msg = $('#svc-remove-msg');
+  try {
+    if (target) {
+      const res = await apiSend('POST',
+        '/api/services/' + encodeURIComponent(serviceId) + '/history/move',
+        { to: target, deleteSourceContract: true });
+      toast((res && res.message) || `已把 ${serviceId} 的历史迁移到 ${target} 并删除旧契约`, 'ok');
+    } else {
+      await apiSend('DELETE', '/api/services/' + encodeURIComponent(serviceId));
+      toast('已清除 ' + serviceId + ' 的本机部署配置（历史记录保留在库里）', 'ok');
+    }
     if (editingServiceID === serviceId) resetServiceForm();
+    closeRemoveDialog();
     await refreshServices();
   } catch (e) {
+    msg.textContent = '清除失败：' + e.message;
     toast('清除失败：' + e.message, 'err');
   }
 }
@@ -447,7 +551,13 @@ $('#svc-table tbody').addEventListener('click', (e) => {
     return;
   }
   const delBtn = e.target.closest('[data-svc-delete]');
-  if (delBtn) deleteServiceContract(delBtn.dataset.svcDelete);
+  if (delBtn) openRemoveDialog(delBtn.dataset.svcDelete);
+});
+
+$('#svc-remove-confirm').addEventListener('click', confirmRemoveService);
+$('#svc-remove-close').addEventListener('click', closeRemoveDialog);
+$('#svc-remove-body').addEventListener('change', (e) => {
+  if (e.target && e.target.id === 'svc-remove-target') updateRemoveDialogHint();
 });
 
 // ---- sub-tabs: 「发起」 / 「历史列表」 -------------------------------------
