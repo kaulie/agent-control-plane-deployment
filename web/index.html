@@ -161,6 +161,11 @@
         服务由 <b>service_registry</b> 统一登记，<b>本机不能新建</b>：这里只为「已登记」的服务配置部署参数
         （运行时目录 / 健康检查 / 启停命令 / 优雅重启）。未配置的服务不会出现在部署流水线、部署任务的选择框里。
       </p>
+      <p class="hint" id="svc-legacy-hint">
+        标着 <span class="badge badge--bad">未登记</span> 的是早期（注册中心接入前）本机自建的老契约。
+        点「清除」会先问历史记录的去处：可以直接把它们<b>迁移</b>到注册中心里对应的服务上，再删掉旧契约 ——
+        流水线 / 部署记录跟着新 serviceId 继续显示，不会变成孤儿记录。
+      </p>
       <div class="form-card" id="svc-form-card">
         <div class="form-card__head">
           <h2 id="svc-form-title">配置服务</h2>
@@ -372,6 +377,21 @@
       <pre id="meta-pre" class="jsonpre">加载中…</pre>
     </section>
   </main>
+
+  <!-- 清除服务配置：先确认历史记录的去处（迁移到别的服务 / 留在原地） -->
+  <div class="modal" id="svc-remove-modal" hidden>
+    <div class="modal__card">
+      <div class="form-card__head">
+        <h2 id="svc-remove-title">清除服务配置</h2>
+        <button class="btn btn--ghost" id="svc-remove-close" type="button">取消</button>
+      </div>
+      <div class="modal__body" id="svc-remove-body"></div>
+      <div class="form-actions">
+        <button class="btn btn--primary" id="svc-remove-confirm" type="button">清除</button>
+        <span class="muted" id="svc-remove-msg"></span>
+      </div>
+    </div>
+  </div>
 
   <div id="toast" class="toast" hidden></div>
 

@@ -128,7 +128,8 @@ curl -sS -X PUT http://127.0.0.1:4220/api/services/web-cursor \
 ```
 
 - 已存在本地配置的服务照旧可改（注册中心不可用也不会把运维锁死）；**未登记**的服务一律拒绝新建：`400 未在 service_registry 中登记`；注册中心不可用/未配置时无法确认 → `503`。
-- `DELETE /api/services/{id}` = **清除本机部署配置**（服务仍在注册中心，可重新配置）。
+- `DELETE /api/services/{id}` = **清除本机部署配置**（服务仍在注册中心，可重新配置）。响应里带上 `history`（该 serviceId 名下还剩多少流水线 / 部署 / 制品索引）：删配置**不会**删历史，那些记录会变成「孤儿」（列表里看不到这个 serviceId）。有**在途任务**（`queued`/`running` 的部署、`queued`/`packaging`/`deploying` 的流水线）时直接 `409` —— 排队中的任务被 worker 认领时会找不到契约。
+- **老契约的历史可以迁移**（不再只能删配置）：注册中心接入前本机自建的契约（如 `web-cursor`）和注册中心里的同一个服务（如 `agent-control-plane`）是两个 id，直接删配置会让几十条记录变成孤儿。`POST /api/services/{id}/history/move {to, deleteSourceContract}` 在**一个事务**里把 `pipelines` / `deploys` / `artifacts` 的 `service_id` 改挂到目标服务（`to` 必须是本机**已配置**的服务，否则 → 400），可选地删掉来源契约；`GET /api/services/{id}/history` 返回条数 + 可迁移目标，供面板确认。有**在途任务**时 → `409` 且**一条都不改**（迁走会把正在跑的任务挂到别的服务名下，删契约会让排队任务失败）；制品索引撞到目标已有的 tag 时跳过那一行（两行指的是同一个制品，不做破坏性删除，计入 `artifactsSkipped`）。
 - 首次启动仍会 seed `web-cursor` / `agent-control-plane-deployment` 的本地部署配置（注册中心里登记它们之前会显示「未登记」）。
 - 关闭注册中心拉取：`SERVICE_REGISTRY_URL=off`（此时面板只显示本机已配置的服务，且不能新建）。
 
@@ -237,7 +238,9 @@ curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 | GET | `/api/services` | **服务目录**：service_registry 契约 + 本机部署配置的合并视图（含 `registered` / `configured` / `registry` 状态） |
 | GET | `/api/services/:id` | 单个服务的合并视图 |
 | PUT | `/api/services/:id` | **只配置**已登记服务的部署参数（未登记 → 400；注册中心不可用 → 503）。`gitRepoUrl` 等注册中心字段**不可改**（显式改 → 400），落库时按注册中心同步 |
-| DELETE | `/api/services/:id` | 清除本机部署配置（服务仍在注册中心） |
+| DELETE | `/api/services/:id` | 清除本机部署配置（服务仍在注册中心，可重新配置）；响应带剩余历史条数；**有在途任务 → 409** |
+| GET | `/api/services/:id/history` | 该 serviceId 名下的历史条数（流水线 / 部署 / 制品索引 + 在途任务数）与可迁移的**目标服务**（清除前确认用，只列本机已配置的服务） |
+| POST | `/api/services/:id/history/move` | 把 `{id}` 的历史（流水线 / 部署 / 制品索引）**迁移**到 `{to}`，`deleteSourceContract` = 迁移后删掉来源契约；在途任务 → 409，目标未配置 → 400，全程一个事务 |
 | POST | `/api/deploy-notify` | 服务方通知：打包 → 再部署（**需身份头**） |
 | GET | `/api/pipelines` | 流水线列表（**多属性筛选 + 分页**，见下） |
 | GET | `/api/pipelines/:id` | 单条流水线状态 |
@@ -347,7 +350,7 @@ curl -sS -X POST http://127.0.0.1:4220/api/deploys \
 
 | 面板 | 能力 |
 |---|---|
-| 服务契约 | **只配置、不新建**：列表/来源来自 `service_registry`（顶部显示在线状态与服务数），为已登记服务配置部署参数（`PUT /api/services/:id`），可「清除本地配置」（`DELETE`）。注册中心同步过来的信息（`serviceId` / `gitRepoUrl` / `version` / `owner` / `description`）**只读不可改**。列表列：`serviceId` / `name` / 登记状态 / 版本·owner / **端口** / graceful / 操作 —— **不展示 `gitRepoUrl`、`healthUrl` 与 `runtimeDir`**（这三个都在「配置」表单里看/改：`gitRepoUrl` 只读、`healthUrl` 与 `runtimeDir` 可改） |
+| 服务契约 | **只配置、不新建**：列表/来源来自 `service_registry`（顶部显示在线状态与服务数），为已登记服务配置部署参数（`PUT /api/services/:id`），可「清除本地配置」（`DELETE`）。注册中心同步过来的信息（`serviceId` / `gitRepoUrl` / `version` / `owner` / `description`）**只读不可改**。「清除」会先弹确认框说明历史记录的去处：可把该 serviceId 的流水线 / 部署 / 制品索引**迁移**到另一个已配置的服务（按 `runtimeDir` 相同的服务预选，如 `web-cursor` → `agent-control-plane`）再删掉旧契约，避免几十条记录变成列表里看不到的孤儿；有在途任务时确认按钮直接禁用。列表列：`serviceId` / `name` / 登记状态 / 版本·owner / **端口** / graceful / 操作 —— **不展示 `gitRepoUrl`、`healthUrl` 与 `runtimeDir`**（这三个都在「配置」表单里看/改：`gitRepoUrl` 只读、`healthUrl` 与 `runtimeDir` 可改） |
 | 部署流水线 | 两个子页：**发起**（触发打包→部署，`POST /api/deploy-notify`） / **历史列表**（多属性筛选 + 分页，实时轮询） |
 | 部署任务 | 两个子页：**发起**（触发已有包部署，`POST /api/deploys`） / **历史列表**（多属性筛选 + 分页，实时轮询） |
 | 元信息 | 展示 `/api/meta` |

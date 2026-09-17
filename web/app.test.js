@@ -45,11 +45,24 @@ function makePanel(options = {}) {
       },
     ],
   };
+  const historyPayloads = options.history || {};
   const payload = (pathname) => {
     if (pathname === '/api/services') return servicesPayload;
     if (pathname === '/api/deploys') return { deploys: [], total: 0, page: 1, pageSize: 20 };
     if (pathname === '/api/pipelines') return { pipelines: [], total: 0, page: 1, pageSize: 20 };
     if (pathname === '/health') return { ok: true };
+    // 清除服务配置前的确认数据：GET /api/services/:id/history
+    const m = /^\/api\/services\/([^/]+)\/history$/.exec(pathname);
+    if (m) {
+      const id = decodeURIComponent(m[1]);
+      if (historyPayloads[id]) return historyPayloads[id];
+      return {
+        serviceId: id,
+        history: { pipelines: 0, deploys: 0, artifacts: 0, inflightPipelines: 0, inflightDeploys: 0 },
+        inflight: 0,
+        targets: [{ serviceId: 'agent-control-plane', name: 'Agent Control Plane', runtimeDir: '/tmp/agent-control-plane', registered: true }],
+      };
+    }
     return {};
   };
   async function fetchMock(url, options = {}) {
@@ -570,9 +583,143 @@ test('service contracts: clear sends DELETE /api/services/:id (local config only
   await flush();
   doc.querySelector('[data-svc-delete="acp"]').click();
   await flush();
+  // 清除前先弹确认框（没有历史记录 → 不预选迁移目标）。
+  assert.equal(doc.querySelector('#svc-remove-modal').hidden, false, '清除必须先弹确认框');
+  assert.equal(doc.querySelector('#svc-remove-target').value, '', '没有历史记录就不预选迁移目标');
+  doc.querySelector('#svc-remove-confirm').click();
+  await flush();
 
   const del = servicesRequests().find((r) => r.method === 'DELETE');
   assert.ok(del, 'clearing local config must issue a DELETE request');
   assert.equal(del.pathname, '/api/services/acp');
+});
+
+// 「清除」不再是删了就算：老契约（web-cursor）名下几十条流水线 / 部署记录可以一起
+// 迁移到注册中心里对应的服务（agent-control-plane）上，再删掉旧契约。
+test('service contracts: 清除可把历史迁移到预选的目标服务', async (t) => {
+  const history = {
+    serviceId: 'web-cursor',
+    history: { pipelines: 29, deploys: 29, artifacts: 16, inflightPipelines: 0, inflightDeploys: 0 },
+    inflight: 0,
+    targets: [
+      { serviceId: 'agent-control-plane', name: 'agent 交互界面', runtimeDir: '/Users/gaolei/runtime/web-cursor', registered: true },
+      { serviceId: 'event-center', name: '统一事件中心', runtimeDir: '/Users/gaolei/runtime/event-center', registered: true },
+    ],
+  };
+  const { dom, flush, servicesRequests } = makePanel({
+    services: {
+      registry: { url: 'http://127.0.0.1:4240', enabled: true, ok: true, services: 2 },
+      services: [
+        {
+          serviceId: 'web-cursor', name: 'Web Cursor', runtimeDir: '/Users/gaolei/runtime/web-cursor',
+          healthUrl: 'http://127.0.0.1:4211/health', port: 4211, startCmd: 'start', stopCmd: 'stop',
+          restartCmd: 'restart', gitRepoUrl: 'https://github.com/kaulie/agent-control-plane',
+          defaultBranch: 'main', registered: false, configured: true,
+        },
+        {
+          serviceId: 'agent-control-plane', name: 'agent 交互界面',
+          runtimeDir: '/Users/gaolei/runtime/web-cursor', healthUrl: 'http://127.0.0.1:4211/health',
+          port: 4211, startCmd: 'start', stopCmd: 'stop', restartCmd: 'restart',
+          gitRepoUrl: 'https://github.com/kaulie/agent-control-plane', defaultBranch: 'main',
+          registered: true, configured: true,
+          registry: { name: 'agent-control-plane', version: '1.0.0', owner: 'kaulie' },
+        },
+        {
+          serviceId: 'event-center', name: '统一事件中心', runtimeDir: '/Users/gaolei/runtime/event-center',
+          healthUrl: 'http://127.0.0.1:4241/health', port: 4241, startCmd: 'start', stopCmd: 'stop',
+          restartCmd: 'restart', gitRepoUrl: 'https://github.com/kaulie/event-center',
+          defaultBranch: 'main', registered: true, configured: true,
+        },
+      ],
+    },
+    history: { 'web-cursor': history },
+  });
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+
+  doc.querySelector('[data-tab="services"]').click();
+  await flush();
+  doc.querySelector('[data-svc-delete="web-cursor"]').click();
+  await flush();
+
+  assert.equal(doc.querySelector('#svc-remove-modal').hidden, false, '点清除要先弹确认框');
+  const body = doc.querySelector('#svc-remove-body').textContent;
+  assert.match(body, /29/, '确认框要显示流水线 / 部署条数');
+  const select = doc.querySelector('#svc-remove-target');
+  assert.equal(select.value, 'agent-control-plane', 'runtimeDir 相同的服务应被预选');
+  assert.equal(doc.querySelector('#svc-remove-confirm').textContent, '迁移并清除');
+  assert.match(doc.querySelector('#svc-remove-hint').textContent, /agent-control-plane/);
+
+  doc.querySelector('#svc-remove-confirm').click();
+  await flush();
+  const post = servicesRequests().find((r) => r.method === 'POST');
+  assert.ok(post, '迁移历史要发 POST');
+  assert.equal(post.pathname, '/api/services/web-cursor/history/move');
+  assert.deepEqual(JSON.parse(post.body), { to: 'agent-control-plane', deleteSourceContract: true });
+  assert.ok(!servicesRequests().some((r) => r.method === 'DELETE'), '迁移时不该再发 DELETE');
+  assert.equal(doc.querySelector('#svc-remove-modal').hidden, true, '完成后要关掉确认框');
+});
+
+test('service contracts: 不迁移时只删配置，并明确提示历史会变成孤儿', async (t) => {
+  const { dom, flush, servicesRequests } = makePanel({
+    history: {
+      acp: {
+        serviceId: 'acp',
+        history: { pipelines: 3, deploys: 2, artifacts: 1, inflightPipelines: 0, inflightDeploys: 0 },
+        inflight: 0,
+        targets: [{ serviceId: 'agent-control-plane', name: 'ACP', runtimeDir: '/tmp/acp', registered: true }],
+      },
+    },
+  });
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+
+  doc.querySelector('[data-tab="services"]').click();
+  await flush();
+  doc.querySelector('[data-svc-delete="acp"]').click();
+  await flush();
+
+  const select = doc.querySelector('#svc-remove-target');
+  select.value = '';
+  select.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  await flush();
+  assert.equal(doc.querySelector('#svc-remove-confirm').textContent, '仅清除本机配置');
+  assert.match(doc.querySelector('#svc-remove-hint').textContent, /孤儿/,
+    '不迁移时要提示历史会变成列表里看不到的孤儿记录');
+
+  doc.querySelector('#svc-remove-confirm').click();
+  await flush();
+  const del = servicesRequests().find((r) => r.method === 'DELETE');
+  assert.ok(del && del.pathname === '/api/services/acp', '不迁移就只发 DELETE');
+  assert.ok(!servicesRequests().some((r) => r.method === 'POST'), '不迁移时不该发 POST');
+});
+
+// 有在途任务（排队 / 运行中）时不允许清除：迁走会把正在跑的任务挂到别的服务名下，
+// 删掉契约则会让排队中的任务直接失败。
+test('service contracts: 有在途任务时不让清除', async (t) => {
+  const { dom, flush } = makePanel({
+    history: {
+      acp: {
+        serviceId: 'acp',
+        history: { pipelines: 4, deploys: 3, artifacts: 0, inflightPipelines: 1, inflightDeploys: 1 },
+        inflight: 2,
+        targets: [{ serviceId: 'agent-control-plane', name: 'ACP', runtimeDir: '/tmp/acp', registered: true }],
+      },
+    },
+  });
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+
+  doc.querySelector('[data-tab="services"]').click();
+  await flush();
+  doc.querySelector('[data-svc-delete="acp"]').click();
+  await flush();
+
+  assert.equal(doc.querySelector('#svc-remove-confirm').disabled, true, '在途任务未结束时不能确认');
+  assert.match(doc.querySelector('#svc-remove-hint').textContent, /在途任务/);
+
+  doc.querySelector('#svc-remove-close').click();
+  await flush();
+  assert.equal(doc.querySelector('#svc-remove-modal').hidden, true, '取消要关掉确认框');
 });
 
