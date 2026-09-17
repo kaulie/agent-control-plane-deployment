@@ -118,3 +118,73 @@ func TestRestartNotifyPoll(t *testing.T) {
 		t.Fatalf("expected draining=false after clear, got %v", poll)
 	}
 }
+
+// A pipeline can be claimed a moment before a self-deploy starts draining:
+// it finishes packaging and enqueues its deploy, but the deploy worker refuses
+// to claim jobs while draining, so that deploy stays queued. Counting such a
+// pipeline as in-flight work deadlocks the restart (the poll never becomes
+// ready, and the queued deploy only starts once the process restarts). The
+// restart window must ignore it — while still honouring pipelines that are
+// really working (packaging, or deploying with the deploy already running).
+func TestRestartPollIgnoresPipelinesWaitingForTheirDeploy(t *testing.T) {
+	store, _, srv := newDrainTestServer(t)
+	defer store.Close()
+	defer srv.Close()
+
+	_, _ = drainPost(t, srv.URL+"/restart/notify", map[string]any{
+		"serviceId": "agent-control-plane-deployment",
+		"requestId": "pipeline-self1",
+		"message":   "x",
+	})
+
+	// Pipeline claimed just before the drain: packaged, deploy enqueued (queued).
+	_, _ = store.CreatePipeline("pipeline-3318ac5e", "agent-benchmark-tool", "main", Identity{}, "queued")
+	if err := store.UpdatePipeline("pipeline-3318ac5e", PipelineJob{
+		State:           PipelineDeploying,
+		Deployment:      "deployment-cabb1e98",
+		DeployRequestID: "pipeline-3318ac5e",
+		Message:         "deploy queued; waiting for graceful restart window then apply",
+	}); err != nil {
+		t.Fatalf("UpdatePipeline: %v", err)
+	}
+	_, _ = store.CreateDeploy("pipeline-3318ac5e", "agent-benchmark-tool", "deployment-cabb1e98",
+		Identity{}, "queued after package (graceful notify+poll before restart)")
+
+	poll := drainGet(t, srv.URL+"/restart/poll")
+	if poll["canRestart"] != true {
+		t.Fatalf("a queued deploy must not block the restart window, got %v", poll)
+	}
+	if n, _ := poll["inflightPipes"].(float64); n != 0 {
+		t.Fatalf("a queued deploy must not count as an in-flight pipeline, got %v", poll["inflightPipes"])
+	}
+
+	// A pipeline that is still packaging IS in-flight work.
+	_, _ = store.CreatePipeline("pipeline-pack", "organization", "main", Identity{}, "queued")
+	_ = store.UpdatePipeline("pipeline-pack", PipelineJob{State: PipelinePackaging})
+	poll = drainGet(t, srv.URL+"/restart/poll")
+	if poll["canRestart"] != false {
+		t.Fatalf("a packaging pipeline must block the restart, got %v", poll)
+	}
+	_ = store.UpdatePipeline("pipeline-pack", PipelineJob{State: PipelineSucceeded})
+
+	// Once the queued deploy actually starts, it is in-flight work again.
+	if _, err := store.ClaimNextQueued(); err != nil {
+		t.Fatalf("ClaimNextQueued: %v", err)
+	}
+	poll = drainGet(t, srv.URL+"/restart/poll")
+	if poll["canRestart"] != false {
+		t.Fatalf("a running deploy must block the restart, got %v", poll)
+	}
+	if n, _ := poll["inflightDeploys"].(float64); n != 1 {
+		t.Fatalf("expected 1 inflight deploy, got %v", poll["inflightDeploys"])
+	}
+
+	// Deploy finished → the restart window opens again (pipeline bookkeeping is
+	// the pipeline worker's job, so mark it done here too).
+	_, _ = store.FinishDeploy("pipeline-3318ac5e", FinishPatch{State: StateSucceeded, Version: "cabb1e98"})
+	_ = store.UpdatePipeline("pipeline-3318ac5e", PipelineJob{State: PipelineSucceeded})
+	poll = drainGet(t, srv.URL+"/restart/poll")
+	if poll["canRestart"] != true {
+		t.Fatalf("expected canRestart=true once everything settled, got %v", poll)
+	}
+}
