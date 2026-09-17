@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -151,6 +152,15 @@ func portFromHealthURL(healthURL string) string {
 	return "80"
 }
 
+// servicePort 返回给 start/stop/restart 脚本用的服务端口：部署契约里显式声明的
+// port 优先，没设置（0）时才按 healthUrl 推导（老契约行为不变）。
+func servicePort(service ServiceContract) string {
+	if p := normalizePort(service.Port); p > 0 {
+		return strconv.Itoa(p)
+	}
+	return portFromHealthURL(service.HealthURL)
+}
+
 func serviceCmdEnv(service ServiceContract, extra map[string]string) []string {
 	base := os.Environ()
 	envMap := make(map[string]string, len(base)+8)
@@ -163,7 +173,7 @@ func serviceCmdEnv(service ServiceContract, extra map[string]string) []string {
 		envMap[k] = v
 	}
 	envMap["RUNTIME_DIR"] = service.RuntimeDir
-	envMap["PORT"] = portFromHealthURL(service.HealthURL)
+	envMap["PORT"] = servicePort(service)
 	delete(envMap, "HOST")
 	delete(envMap, "DEPLOYMENT_HOME")
 
@@ -413,9 +423,9 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 	defer clearExternalWatchdogPause(service.RuntimeDir)
 
 	fmt.Printf("[deploy] %s restart via contract (PORT=%s): %s\n",
-		job.RequestID, portFromHealthURL(service.HealthURL), restartCmd)
+		job.RequestID, servicePort(*service), restartCmd)
 	_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
-		"执行 restartCmd（PORT="+portFromHealthURL(service.HealthURL)+"）："+restartCmd)
+		"执行 restartCmd（PORT="+servicePort(*service)+"）："+restartCmd)
 	restart := runShell(
 		restartCmd,
 		service.RuntimeDir,

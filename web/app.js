@@ -265,18 +265,27 @@ function registryBadge(svc) {
     : `<span class="badge badge--bad" title="service_registry 未返回该服务（未登记，或注册中心暂时不可用）">未登记</span>`;
 }
 
+// 服务端口：部署契约里显式配置的 port 优先；没配（0）时按 healthUrl 推导并标注来源，
+// 与后端 servicePort() 的取值口径一致。
+function servicePortLabel(svc) {
+  if (svc.port > 0) return `<span class="mono">${esc(String(svc.port))}</span>`;
+  const m = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*?:(\d+)(?:[/?#]|$)/i.exec(svc.healthUrl || '');
+  if (m) return `<span class="mono">${esc(m[1])}</span> <span class="muted">(healthUrl)</span>`;
+  return '<span class="muted">—</span>';
+}
+
 function renderServiceContracts() {
   const tbody = $('#svc-table tbody');
   if (!tbody) return;
   if (servicesError) {
-    tbody.innerHTML = `<tr><td colspan="8" class="muted">加载失败：${esc(servicesError)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="muted">加载失败：${esc(servicesError)}</td></tr>`;
     return;
   }
   if (!services.length) {
     const empty = registryStatus && registryStatus.enabled && registryStatus.ok
       ? 'service_registry 里还没有已登记的服务（在注册中心登记后这里就会出现）'
       : '暂无服务';
-    tbody.innerHTML = `<tr><td colspan="8" class="muted">${empty}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="muted">${empty}</td></tr>`;
     return;
   }
   tbody.innerHTML = services.map((s) => {
@@ -296,6 +305,7 @@ function renderServiceContracts() {
       <td class="mono">${esc(versionOwner)}</td>
       <td class="mono">${esc(s.runtimeDir || '—')}</td>
       <td class="mono">${esc(s.healthUrl || '—')}</td>
+      <td>${servicePortLabel(s)}</td>
       <td>${esc(serviceGracefulLabel(s))}</td>
       <td class="cell-actions">${actions}</td>
     </tr>`;
@@ -303,7 +313,7 @@ function renderServiceContracts() {
 }
 
 const SVC_FORM_FIELDS = [
-  '#svc-serviceId', '#svc-name', '#svc-runtimeDir', '#svc-healthUrl',
+  '#svc-serviceId', '#svc-name', '#svc-runtimeDir', '#svc-healthUrl', '#svc-port',
   '#svc-startCmd', '#svc-stopCmd', '#svc-restartCmd', '#svc-gitRepoUrl',
   '#svc-defaultBranch', '#svc-restartNotifyUrl', '#svc-restartPollUrl',
   '#svc-gracefulRestartMaxWaitMs',
@@ -344,6 +354,7 @@ function fillServiceForm(svc) {
   $('#svc-name').value = svc.name || reg.description || '';
   $('#svc-runtimeDir').value = svc.runtimeDir || '';
   $('#svc-healthUrl').value = svc.healthUrl || '';
+  $('#svc-port').value = svc.port || '';
   $('#svc-startCmd').value = svc.startCmd || '';
   $('#svc-stopCmd').value = svc.stopCmd || '';
   $('#svc-restartCmd').value = svc.restartCmd || '';
@@ -367,6 +378,8 @@ function serviceFormBody() {
   const name = $('#svc-name').value.trim();
   const runtimeDir = $('#svc-runtimeDir').value.trim();
   const healthUrl = $('#svc-healthUrl').value.trim();
+  const portRaw = $('#svc-port').value.trim();
+  const port = portRaw === '' ? 0 : Number(portRaw);
   const startCmd = $('#svc-startCmd').value.trim();
   const stopCmd = $('#svc-stopCmd').value.trim();
   const restartCmd = $('#svc-restartCmd').value.trim();
@@ -374,11 +387,14 @@ function serviceFormBody() {
   if (!runtimeDir || !healthUrl || !startCmd || !stopCmd || !restartCmd) {
     return { error: 'runtimeDir / healthUrl / startCmd / stopCmd / restartCmd 为必填项' };
   }
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    return { error: '服务端口必须是 1..65535 的整数（留空 = 按 healthUrl 推导）' };
+  }
   return {
     serviceId,
     body: {
       // gitRepoUrl 不在这里发送：它来自 service_registry，本机不能改（后端也会拒绝改）。
-      name, runtimeDir, healthUrl, startCmd, stopCmd, restartCmd,
+      name, runtimeDir, healthUrl, port, startCmd, stopCmd, restartCmd,
       defaultBranch: $('#svc-defaultBranch').value.trim(),
       restartNotifyUrl: $('#svc-restartNotifyUrl').value.trim(),
       restartPollUrl: $('#svc-restartPollUrl').value.trim(),
