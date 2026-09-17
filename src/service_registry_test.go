@@ -114,6 +114,7 @@ func localConfig(id string, gitURL string) ServiceContract {
 	return ServiceContract{
 		ServiceID: id, Name: id, RuntimeDir: "/tmp/" + id,
 		HealthURL: "http://127.0.0.1:1/health",
+		Port:      4211, // 服务端口是必填项
 		StartCmd:  "true", StopCmd: "true", RestartCmd: "true",
 		GitRepoURL: gitURL,
 	}
@@ -211,7 +212,7 @@ func TestPutServiceOnlyConfiguresRegisteredServices(t *testing.T) {
 	})
 	api := &apiServer{store: store, registry: registryClientFor(srv.URL)}
 	body := `{"runtimeDir":"/tmp/web-cursor","healthUrl":"http://127.0.0.1:4211/health",` +
-		`"startCmd":"true","stopCmd":"true","restartCmd":"true"}`
+		`"port":4211,"startCmd":"true","stopCmd":"true","restartCmd":"true"}`
 
 	// 1) 未在注册中心登记 → 拒绝新建。
 	rec := putServiceJSON(t, api, "brand-new", body)
@@ -268,12 +269,12 @@ func TestPutServiceGitRepoURLIsRegistryOwned(t *testing.T) {
 	})
 	api := &apiServer{store: store, registry: registryClientFor(srv.URL)}
 	body := `{"runtimeDir":"/tmp/web-cursor","healthUrl":"http://127.0.0.1:4211/health",` +
-		`"startCmd":"true","stopCmd":"true","restartCmd":"true"}`
+		`"port":4211,"startCmd":"true","stopCmd":"true","restartCmd":"true"}`
 
 	// 1) 显式改成别的值 → 400（"以为改了其实没改"更糟）。
 	rec := putServiceJSON(t, api, "web-cursor",
 		`{"runtimeDir":"/tmp/web-cursor","healthUrl":"http://127.0.0.1:1/health",`+
-			`"startCmd":"true","stopCmd":"true","restartCmd":"true",`+
+			`"port":4211,"startCmd":"true","stopCmd":"true","restartCmd":"true",`+
 			`"gitRepoUrl":"https://github.com/kaulie/hacked"}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("PUT with a changed gitRepoUrl = %d, body=%s", rec.Code, rec.Body.String())
@@ -329,7 +330,7 @@ func TestPutServiceGitRepoURLStaysForUnregisteredService(t *testing.T) {
 	registryEmpty := fakeServiceRegistry(t, nil)
 	api := &apiServer{store: store, registry: registryClientFor(registryEmpty.URL)}
 	body := `{"runtimeDir":"/tmp/legacy-only","healthUrl":"http://127.0.0.1:1/health",` +
-		`"startCmd":"true","stopCmd":"true","restartCmd":"true"}`
+		`"port":4211,"startCmd":"true","stopCmd":"true","restartCmd":"true"}`
 
 	rec := putServiceJSON(t, api, "legacy-only", body)
 	if rec.Code != http.StatusOK {

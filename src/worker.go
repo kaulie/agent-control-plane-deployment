@@ -152,8 +152,9 @@ func portFromHealthURL(healthURL string) string {
 	return "80"
 }
 
-// servicePort 返回给 start/stop/restart 脚本用的服务端口：部署契约里显式声明的
-// port 优先，没设置（0）时才按 healthUrl 推导（老契约行为不变）。
+// servicePort 返回给 start/stop/restart 脚本用的服务端口（同时注入 PORT 与
+// SERVICE_PORT）。部署契约里显式声明的 port 是**必填项**；解析不到（老契约、
+// 还没补填）时才退回 healthUrl 推导，保证这类服务仍然能部署。
 func servicePort(service ServiceContract) string {
 	if p := normalizePort(service.Port); p > 0 {
 		return strconv.Itoa(p)
@@ -172,8 +173,10 @@ func serviceCmdEnv(service ServiceContract, extra map[string]string) []string {
 	for k, v := range extra {
 		envMap[k] = v
 	}
+	port := servicePort(service)
 	envMap["RUNTIME_DIR"] = service.RuntimeDir
-	envMap["PORT"] = servicePort(service)
+	envMap["SERVICE_PORT"] = port // 约定的正式字段名
+	envMap["PORT"] = port         // 兼容：老脚本读 PORT
 	delete(envMap, "HOST")
 	delete(envMap, "DEPLOYMENT_HOME")
 
@@ -415,6 +418,12 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 	if restartCmd == "" {
 		restartCmd = fmt.Sprintf("bash %q", filepath.Join(service.RuntimeDir, "scripts", "restart.sh"))
 	}
+	// 服务端口是必填项；老契约（没说）先按 healthUrl 推导，但在时间线上明确标出来。
+	if normalizePort(service.Port) == 0 {
+		_ = store.AddDeployEvent(job.RequestID, eventlevel.Warn,
+			"部署契约未指定服务端口（port）：本次按 healthUrl 推导 SERVICE_PORT="+servicePort(*service)+
+				"，请在「服务契约」里补填")
+	}
 	pauseSec := cfg.DeployMaxSec
 	if pauseSec > 90 {
 		pauseSec = 90
@@ -422,10 +431,10 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 	setExternalWatchdogPause(service.RuntimeDir, pauseSec)
 	defer clearExternalWatchdogPause(service.RuntimeDir)
 
-	fmt.Printf("[deploy] %s restart via contract (PORT=%s): %s\n",
+	fmt.Printf("[deploy] %s restart via contract (SERVICE_PORT=%s): %s\n",
 		job.RequestID, servicePort(*service), restartCmd)
 	_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
-		"执行 restartCmd（PORT="+servicePort(*service)+"）："+restartCmd)
+		"执行 restartCmd（SERVICE_PORT="+servicePort(*service)+"，同时注入 PORT）："+restartCmd)
 	restart := runShell(
 		restartCmd,
 		service.RuntimeDir,

@@ -375,6 +375,7 @@ test('service contracts: an unconfigured registry service shows the registry rep
 
   doc.querySelector('#svc-runtimeDir').value = '/tmp/event-center';
   doc.querySelector('#svc-healthUrl').value = 'http://127.0.0.1:4241/health';
+  doc.querySelector('#svc-port').value = '4241'; // 服务端口必填
   doc.querySelector('#svc-startCmd').value = 'start';
   doc.querySelector('#svc-stopCmd').value = 'stop';
   doc.querySelector('#svc-restartCmd').value = 'restart';
@@ -454,7 +455,7 @@ test('service contracts: save sends PUT /api/services/:id with the form body', a
   assert.ok(!('gitRepoUrl' in body), 'gitRepoUrl is registry-owned: never sent from the panel');
 });
 
-test('service contracts: 服务端口 column shows explicit port, else the healthUrl one', async (t) => {
+test('service contracts: 服务端口 column shows explicit port, else 未指定', async (t) => {
   const { dom, flush } = makePanel();
   t.after(() => dom.window.close());
   const doc = dom.window.document;
@@ -465,13 +466,13 @@ test('service contracts: 服务端口 column shows explicit port, else the healt
   const rows = Array.from(doc.querySelectorAll('#svc-table tbody tr'));
   const rowText = (id) => rows.find((tr) => tr.textContent.includes(id)).textContent;
   assert.match(rowText('web-cursor'), /4212/, '显式配置的 port 直接显示');
-  assert.ok(!/4212[^]*\(healthUrl\)/.test(rowText('web-cursor')), '显式 port 不标 healthUrl');
-  assert.match(rowText('acp'), /4220/, '没配 port 时按 healthUrl 推导');
-  assert.match(rowText('acp'), /\(healthUrl\)/, '推导值要标注来源');
+  assert.ok(!rowText('web-cursor').includes('未指定'), '显式 port 不标未指定');
+  assert.match(rowText('acp'), /未指定/, '老契约（没配 port）标出未指定');
+  assert.match(rowText('acp'), /4220/, '未指定时仍展示 healthUrl 推导值作为参考');
   assert.match(doc.querySelector('#svc-table thead').textContent, /端口/, '表头要有「端口」列');
 });
 
-test('service contracts: 服务端口 is read from and sent by the form', async (t) => {
+test('service contracts: 服务端口 必填，读出来并作为数字提交', async (t) => {
   const { dom, flush, servicesRequests } = makePanel();
   t.after(() => dom.window.close());
   const doc = dom.window.document;
@@ -483,30 +484,29 @@ test('service contracts: 服务端口 is read from and sent by the form', async 
   doc.querySelector('[data-svc-edit="web-cursor"]').click();
   await flush();
   assert.equal(doc.querySelector('#svc-port').value, '4212');
+  assert.ok(doc.querySelector('#svc-port').required, '端口在表单里是必填项');
 
-  // 未配置的服务：端口为空（= 按 healthUrl 推导），填一个再保存
+  // 老契约：端口为空 → 直接保存会被前端拦下（不发 PUT）
   doc.querySelector('[data-svc-edit="acp"]').click();
   await flush();
   assert.equal(doc.querySelector('#svc-port').value, '', '没配 port 时表单为空');
+  const before = servicesRequests().filter((r) => r.method === 'PUT').length;
+  doc.querySelector('#svc-save').click();
+  await flush();
+  assert.equal(servicesRequests().filter((r) => r.method === 'PUT').length, before,
+    '端口为空时不能提交');
+  assert.match(doc.querySelector('#svc-msg').textContent, /端口/, '要给出可见的必填提示');
+
+  // 填上端口再保存 → 数字提交
   doc.querySelector('#svc-port').value = '4301';
   doc.querySelector('#svc-save').click();
   await flush();
-
   const put = servicesRequests().filter((r) => r.method === 'PUT').at(-1);
-  assert.ok(put, 'save must issue a PUT request');
+  assert.ok(put, '填了端口应该能保存');
   assert.equal(JSON.parse(put.body).port, 4301, '端口要作为数字提交');
-
-  // 清空端口 → 提交 0（= 按 healthUrl 推导）；保存后表单已重置，要重新点「配置」
-  doc.querySelector('[data-svc-edit="acp"]').click();
-  await flush();
-  doc.querySelector('#svc-port').value = '';
-  doc.querySelector('#svc-save').click();
-  await flush();
-  const cleared = servicesRequests().filter((r) => r.method === 'PUT').at(-1);
-  assert.equal(JSON.parse(cleared.body).port, 0, '清空端口提交 0');
 });
 
-test('service contracts: 越界的服务端口 不会被提交', async (t) => {
+test('service contracts: 非法服务端口（0 / 越界）不会被提交', async (t) => {
   const { dom, flush, servicesRequests } = makePanel();
   t.after(() => dom.window.close());
   const doc = dom.window.document;
@@ -515,13 +515,18 @@ test('service contracts: 越界的服务端口 不会被提交', async (t) => {
   await flush();
   doc.querySelector('[data-svc-edit="web-cursor"]').click();
   await flush();
-  doc.querySelector('#svc-port').value = '70000';
-  doc.querySelector('#svc-save').click();
-  await flush();
 
-  const puts = servicesRequests().filter((r) => r.method === 'PUT');
-  assert.ok(puts.every((p) => JSON.parse(p.body).port !== 70000),
-    '越界端口（>65535）不能被提交（前端拦截或收敛成 0）');
+  for (const bad of ['0', '70000']) {
+    const before = servicesRequests().filter((r) => r.method === 'PUT').length;
+    doc.querySelector('#svc-port').value = bad;
+    doc.querySelector('#svc-save').click();
+    await flush();
+    const puts = servicesRequests().filter((r) => r.method === 'PUT');
+    assert.equal(puts.length, before, `port=${bad} 不能被提交`);
+    assert.ok(puts.every((p) => String(JSON.parse(p.body).port) !== bad),
+      `port=${bad} 不能出现在请求里`);
+  }
+  assert.match(doc.querySelector('#svc-msg').textContent, /端口/, '要给出可见的必填提示');
 });
 
 test('service contracts: clear sends DELETE /api/services/:id (local config only)', async (t) => {
