@@ -54,28 +54,60 @@ curl -sS -X POST http://127.0.0.1:4220/api/deploys \
   -d '{"serviceId":"agent-control-plane-deployment","deployment":"deployment-<hash>"}'
 ```
 
-## 服务契约（SQLite，模式 B）
+## 服务目录（唯一真源：service_registry）
 
-注册 / 更新：
+**本服务不再自建服务契约**。服务列表统一从 **service-registry**（`:4240`）拉取：
+
+```
+service-registry :4240  ──pull(GET /v1/services)──▶  本控制面 :4220
+（契约 / API / 实例，唯一真源）                        （只存"部署参数"）
+```
+
+`GET /api/services` 返回**合并视图**：注册中心的契约（`registry`，含 namespace / version / owner / description / tags / gitRepoUrl / API 端点）+ 本机的部署配置：
+
+| 状态 | 含义 | 面板 |
+|---|---|---|
+| `registered:true, configured:true` | 注册中心有 + 本机配了部署参数 | 「编辑配置」 |
+| `registered:true, configured:false` | 注册中心有，本机还没配 | 「配置」（否则不会出现在触发下拉里） |
+| `registered:false, configured:true` | 本机有配置，但注册中心没返回（未登记，或注册中心拉取失败） | 「未登记」徽标 + 仍可编辑 |
+
+响应里还带 `registry: {url, enabled, ok, services, error}`，面板顶部据此显示「在线 · N 个服务 / 拉取失败」，**拉取失败不会伪装成"没有服务"**。
+
+本机只存注册中心没有的部署参数：`runtimeDir` / `healthUrl` / `startCmd` / `stopCmd` / `restartCmd` / 可选 graceful 端点 / `defaultBranch`。`name`、`version`、`owner`、`tags`、**`gitRepoUrl`** 以注册中心为准（`gitRepoUrl` 本机留空即用注册中心登记的值；打包、部署已有包、扫描制品都走这个兜底）。
+
+配置 / 编辑：
 
 ```bash
+# 只能配置"已在注册中心登记"的服务（未登记 → 400）
 curl -sS -X PUT http://127.0.0.1:4220/api/services/web-cursor \
   -H 'content-type: application/json' \
   -d '{
-    "name": "Web Cursor Agent Gateway",
     "runtimeDir": "/Users/gaolei/runtime/web-cursor",
     "healthUrl": "http://127.0.0.1:4211/health",
     "startCmd": "bash scripts/start.sh",
     "stopCmd": "bash scripts/stop.sh",
     "restartCmd": "bash scripts/restart.sh"
   }'
+# 首次配置且没给 gitRepoUrl → 自动取注册中心登记的仓库地址
 ```
 
-首次启动若库中无 `web-cursor`，会自动 seed 一条默认契约（不含 graceful 端点 → 直接重启）。
+- 已存在本地配置的服务照旧可改（注册中心不可用也不会把运维锁死）；**未登记**的服务一律拒绝新建：`400 未在 service_registry 中登记`；注册中心不可用/未配置时无法确认 → `503`。
+- `DELETE /api/services/{id}` = **清除本机部署配置**（服务仍在注册中心，可重新配置）。
+- 首次启动仍会 seed `web-cursor` / `agent-control-plane-deployment` 的本地部署配置（注册中心里登记它们之前会显示「未登记」）。
+- 关闭注册中心拉取：`SERVICE_REGISTRY_URL=off`（此时面板只显示本机已配置的服务，且不能新建）。
+
+### 配置项
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `SERVICE_REGISTRY_URL` | `http://127.0.0.1:4240` | 服务目录来源；`off` / `disabled` / `none` = 关闭拉取 |
+| `SERVICE_REGISTRY_TOKEN` | 空 | 注册中心读令牌（`REGISTRY_READ_AUTH=token` 时用） |
+| `SERVICE_REGISTRY_TIMEOUT_SEC` | `5` | 单次拉取超时（秒） |
+
 
 ### Graceful restart（可选）
 
-在**本服务注册库**里为项目填写双方端点；**缺一或全空**视为不支持 graceful，部署时直接 rsync + restart。
+在本机的**部署配置**里为项目填写双方端点；**缺一或全空**视为不支持 graceful，部署时直接 rsync + restart。
 
 | 字段 | 说明 |
 |---|---|
@@ -106,11 +138,8 @@ Notify 请求体示例：`{ serviceId, requestId, deployment, version, message }
 业务服务调用 ACP 的部署通知接口后，由 ACP **统一打包**，再进入部署（部署前会调业务方 `restartNotifyUrl`，再轮询 `restartPollUrl`，就绪后 rsync+restart）：
 
 ```bash
-# 服务契约需含 gitRepoUrl（以及建议配置 graceful URL）
-curl -sS -X PUT http://127.0.0.1:4220/api/services/web-cursor \
-  -H 'content-type: application/json' \
-  -d '{"gitRepoUrl":"https://github.com/kaulie/agent-control-plane"}'
-
+# 服务需在 service_registry 里登记（gitRepoUrl 以注册中心为准），
+# 并在本机配置过部署参数 + （建议）graceful URL。
 curl -sS -X POST http://127.0.0.1:4220/api/deploy-notify \
   -H 'content-type: application/json' \
   -H 'identity_role: agent' -H 'identity_id: agent_002' \
@@ -149,7 +178,10 @@ curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 | Method | Path | 说明 |
 |---|---|---|
 | GET | `/health` | 本服务探活 |
-| GET/PUT/DELETE | `/api/services[/:id]` | 服务契约（含 `gitRepoUrl`、可选 graceful URL） |
+| GET | `/api/services` | **服务目录**：service_registry 契约 + 本机部署配置的合并视图（含 `registered` / `configured` / `registry` 状态） |
+| GET | `/api/services/:id` | 单个服务的合并视图 |
+| PUT | `/api/services/:id` | **只配置**已登记服务的部署参数（未登记 → 400；注册中心不可用 → 503） |
+| DELETE | `/api/services/:id` | 清除本机部署配置（服务仍在注册中心） |
 | POST | `/api/deploy-notify` | 服务方通知：打包 → 再部署（**需身份头**） |
 | GET | `/api/pipelines` | 流水线列表（**多属性筛选 + 分页**，见下） |
 | GET | `/api/pipelines/:id` | 单条流水线状态 |
@@ -259,7 +291,7 @@ curl -sS -X POST http://127.0.0.1:4220/api/deploys \
 
 | 面板 | 能力 |
 |---|---|
-| 服务契约 | 列表 / 新建 / 编辑 / 删除（`PUT`/`DELETE /api/services`） |
+| 服务契约 | **只配置、不新建**：列表/来源来自 `service_registry`（顶部显示在线状态与服务数），为已登记服务配置部署参数（`PUT /api/services/:id`），可「清除本地配置」（`DELETE`） |
 | 部署流水线 | 两个子页：**发起**（触发打包→部署，`POST /api/deploy-notify`） / **历史列表**（多属性筛选 + 分页，实时轮询） |
 | 部署任务 | 两个子页：**发起**（触发已有包部署，`POST /api/deploys`） / **历史列表**（多属性筛选 + 分页，实时轮询） |
 | 元信息 | 展示 `/api/meta` |
@@ -269,6 +301,5 @@ curl -sS -X POST http://127.0.0.1:4220/api/deploys \
 
 - **发起 / 历史列表 分离**：流水线、部署各自拆成「发起」与「历史列表」两个子页；历史列表支持按 服务 / 状态 / 触发者 / ref / deployment / version / 关键字 / 时间范围 筛选，并在**服务端分页**（每页 10/20/50/100）。筛选作为"已应用"快照生效，避免 3s 自动刷新把正在输入的内容当成筛选条件：部署流水线历史列表在点「查询」（或输入框回车 / 改每页）时应用，**部署任务历史列表只在点「查询」时应用**。
 - **发起后自动进入详情页**：在「发起」子页提交后，自动切到「历史列表」并打开刚创建的那条记录的详情（流水线详情含事件时间线 + 关联部署任务；部署详情含该次部署的事件时间线）。历史列表里点任意一行也可打开详情。
-- **面板行为测试**：`npm test`（首次先 `npm install`）用 jsdom 加载真实 `web/index.html` + `web/app.js` 并拦截 `fetch`，验证「部署任务历史列表」修改筛选项不会触发刷新、只有点「查询」才刷新。
-
+- **面板行为测试**：`npm test`（首次先 `npm install`）用 jsdom 加载真实 `web/index.html` + `web/app.js` 并拦截 `fetch`，验证：①「部署任务历史列表」修改筛选项不会触发刷新、只有点「查询」才刷新；②「服务契约只配置不新建」——列表来自 `service_registry`（顶部显示在线状态 + 服务数）、未配置的服务不进触发下拉、面板里没有「新建」入口。
 

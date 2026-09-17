@@ -49,6 +49,15 @@ type Config struct {
 	// check into log-only (deploys are then recorded as unidentified) — a
 	// rollback hatch while every caller is migrated.
 	IdentityEnforce bool
+	// service-registry (:4240) base URL. The service catalog shown/configured
+	// by the panel is pulled from here (服务列表统一从注册中心拉取), and
+	// gitRepoUrl falls back to it. Empty = disabled (SERVICE_REGISTRY_URL=off);
+	// the control plane then only shows its locally configured services.
+	ServiceRegistryURL string
+	// Optional bearer token for the registry (REGISTRY_READ_AUTH=token).
+	ServiceRegistryToken string
+	// Per-request timeout for registry pulls.
+	ServiceRegistryTimeout time.Duration
 }
 
 func expandHome(p string) string {
@@ -150,25 +159,45 @@ func loadConfig() Config {
 		identityEnforce = false
 	}
 
+	// service-registry (:4240) — the source of the service catalog. "off" /
+	// "disabled" turns the pull off explicitly (then only locally configured
+	// services are shown; nothing is auto-created either).
+	registryURL := strings.TrimSpace(os.Getenv("SERVICE_REGISTRY_URL"))
+	switch strings.ToLower(registryURL) {
+	case "off", "disabled", "none":
+		registryURL = ""
+	case "":
+		registryURL = defaultServiceRegistryURL
+	}
+	registryTimeout := 5 * time.Second
+	if p := os.Getenv("SERVICE_REGISTRY_TIMEOUT_SEC"); p != "" {
+		if n, err := strconv.Atoi(p); err == nil && n > 0 {
+			registryTimeout = time.Duration(n) * time.Second
+		}
+	}
+
 	return Config{
-		Host:            host,
-		Port:            port,
-		Home:            home,
-		PackagesDir:     packagesDir,
-		DataDir:         dataDir,
-		WebDir:          webDir,
-		DBPath:          filepath.Join(dataDir, "deploy.sqlite"),
-		DeployMaxSec:    deployMax,
-		ReleaseMaxSec:   releaseMax,
-		GracefulMaxWait: gracefulMaxWait,
-		HealthCheckTimeout: healthCheckTimeout,
-		ArtifactStorageType: artifactStorageType,
-		GitHubToken:     githubToken,
-		AliyunBaseURL:   aliyunBase,
-		AliyunProductID: aliyunProduct,
-		AliyunRepo:      aliyunRepo,
-		AliyunUsername:  os.Getenv("ALIYUN_PACKAGES_USER"),
-		AliyunPassword:  os.Getenv("ALIYUN_PACKAGES_PASSWORD"),
-		IdentityEnforce: identityEnforce,
+		Host:                   host,
+		Port:                   port,
+		Home:                   home,
+		PackagesDir:            packagesDir,
+		DataDir:                dataDir,
+		WebDir:                 webDir,
+		DBPath:                 filepath.Join(dataDir, "deploy.sqlite"),
+		DeployMaxSec:           deployMax,
+		ReleaseMaxSec:          releaseMax,
+		GracefulMaxWait:        gracefulMaxWait,
+		HealthCheckTimeout:     healthCheckTimeout,
+		ArtifactStorageType:    artifactStorageType,
+		GitHubToken:            githubToken,
+		AliyunBaseURL:          aliyunBase,
+		AliyunProductID:        aliyunProduct,
+		AliyunRepo:             aliyunRepo,
+		AliyunUsername:         os.Getenv("ALIYUN_PACKAGES_USER"),
+		AliyunPassword:         os.Getenv("ALIYUN_PACKAGES_PASSWORD"),
+		IdentityEnforce:        identityEnforce,
+		ServiceRegistryURL:     registryURL,
+		ServiceRegistryToken:   strings.TrimSpace(os.Getenv("SERVICE_REGISTRY_TOKEN")),
+		ServiceRegistryTimeout: registryTimeout,
 	}
 }

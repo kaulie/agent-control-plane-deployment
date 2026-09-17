@@ -76,10 +76,18 @@ func main() {
 	seedDefaultService(store)
 	seedACPService(store, cfg)
 
+	registry := NewServiceRegistry(cfg)
+	if registry.Enabled() {
+		log.Printf("[registry] service catalog pulled from %s", registry.BaseURL())
+	} else {
+		log.Printf("[registry] SERVICE_REGISTRY_URL=off: only locally configured services are shown")
+	}
+
 	drain := &GracefulDrain{}
 	worker := NewDeployWorker(store, cfg, storage, drain)
 	pipeline := NewPipelineWorker(store, cfg, storage, worker, drain)
-	api := &apiServer{store: store, cfg: cfg, storage: storage, worker: worker, pipeline: pipeline, drain: drain}
+	pipeline.registry = registry
+	api := &apiServer{store: store, cfg: cfg, storage: storage, worker: worker, pipeline: pipeline, drain: drain, registry: registry}
 
 	pidFile := filepath.Join(cfg.Home, "deployment.pid")
 	_ = os.WriteFile(pidFile, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644)

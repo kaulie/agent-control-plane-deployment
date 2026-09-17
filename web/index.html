@@ -157,14 +157,18 @@
 
     <!-- Services / service contracts -->
     <section id="tab-services" class="tabpanel">
+      <p class="hint" id="svc-source-hint">
+        服务由 <b>service_registry</b> 统一登记，<b>本机不能新建</b>：这里只为「已登记」的服务配置部署参数
+        （运行时目录 / 健康检查 / 启停命令 / 优雅重启）。未配置的服务不会出现在部署流水线、部署任务的选择框里。
+      </p>
       <div class="form-card" id="svc-form-card">
         <div class="form-card__head">
-          <h2 id="svc-form-title">新建服务契约</h2>
+          <h2 id="svc-form-title">配置服务</h2>
           <button class="btn btn--ghost" id="svc-form-cancel" type="button" hidden>取消编辑</button>
         </div>
         <div class="form-grid">
-          <label>serviceId
-            <input type="text" id="svc-serviceId" placeholder="web-cursor" />
+          <label>serviceId（来自 service_registry）
+            <input type="text" id="svc-serviceId" placeholder="从列表里点「配置」" readonly />
           </label>
           <label>name
             <input type="text" id="svc-name" placeholder="可留空，默认等于 serviceId" />
@@ -184,7 +188,7 @@
           <label>restartCmd
             <input type="text" id="svc-restartCmd" placeholder="bash scripts/restart.sh" />
           </label>
-          <label>gitRepoUrl
+          <label>gitRepoUrl（留空则用注册中心登记的）
             <input type="text" id="svc-gitRepoUrl" placeholder="https://github.com/owner/repo" />
           </label>
           <label>defaultBranch
@@ -200,7 +204,7 @@
             <input type="number" id="svc-gracefulRestartMaxWaitMs" min="0" step="1" placeholder="0 = 服务端默认" />
           </label>
           <div class="form-actions">
-            <button class="btn btn--primary" id="svc-save">保存服务契约</button>
+            <button class="btn btn--primary" id="svc-save">保存部署配置</button>
             <span id="svc-msg" class="muted"></span>
           </div>
         </div>
@@ -208,7 +212,9 @@
 
       <div class="actions">
         <div class="form-inline">
-          <button class="btn btn--primary" id="svc-new">新建服务契约</button>
+          <span class="muted">服务列表来源</span>
+          <code id="svc-registry-url">service_registry</code>
+          <span id="svc-registry-status" class="badge badge--muted">…</span>
           <button class="btn" id="svc-refresh">刷新</button>
           <span id="svc-msg-list" class="muted"></span>
         </div>
@@ -218,8 +224,8 @@
         <table class="grid" id="svc-table">
           <thead>
             <tr>
-              <th>serviceId</th><th>name</th><th>runtimeDir</th><th>healthUrl</th>
-              <th>gitRepoUrl</th><th>defaultBranch</th><th>graceful</th><th>更新时间</th><th>操作</th>
+              <th>serviceId</th><th>name</th><th>登记</th><th>版本 / owner</th>
+              <th>runtimeDir</th><th>healthUrl</th><th>gitRepoUrl</th><th>graceful</th><th>操作</th>
             </tr>
           </thead>
           <tbody></tbody>

@@ -159,28 +159,41 @@ async function refreshMeta() {
 }
 
 // ---- services (dropdown options + 服务契约 tab) ---------------------------
+// The catalog comes from service_registry (GET /api/services merges the
+// registry's contracts with this control plane's deployment config); the panel
+// only ever *configures* a service the registry knows — never creates one.
 let services = [];
 let servicesError = '';
+let registryStatus = null;
+
 async function refreshServices() {
   try {
     const data = await apiGet('/api/services');
     services = data.services || [];
+    registryStatus = data.registry || null;
     servicesError = '';
   } catch (e) {
     services = [];
+    registryStatus = null;
     servicesError = e.message;
   }
   populateServiceSelects();
   renderServiceContracts();
+  renderRegistryStatus();
 }
 
 function populateServiceSelects() {
+  // Trigger selects (发起部署 / 发起流水线) list only services with deployment
+  // config: without runtimeDir/commands a trigger can only fail. History
+  // filters keep every service id so old jobs stay filterable.
+  const configured = services.filter((s) => s.configured);
   for (const id of ['#pipe-service', '#dep-service']) {
     const sel = $(id);
+    if (!sel) continue;
     const prev = sel.value;
-    sel.innerHTML = services.map((s) =>
+    sel.innerHTML = configured.map((s) =>
       `<option value="${esc(s.serviceId)}">${esc(s.serviceId)}</option>`).join('');
-    if (services.find((s) => s.serviceId === prev)) sel.value = prev;
+    if (configured.find((s) => s.serviceId === prev)) sel.value = prev;
   }
   // History filters: keep an empty "全部" option so a filter can be cleared.
   for (const id of ['#pipe-f-serviceId', '#dep-f-serviceId']) {
@@ -203,10 +216,53 @@ function populateServiceSelects() {
 }
 
 // ---- 服务契约 (service contracts) ------------------------------------------
-// Renders the services list into the 服务契约 tab. The API response already
-// carries the full contract (GET /api/services), so no per-row fetch is needed.
+// Renders the merged catalog into the 服务契约 tab. Each row shows where the
+// service stands: 已登记 (service_registry) / 未登记 (local config only) and
+// configured / 未配置 (needs deployment config before it can be deployed).
 function serviceGracefulLabel(svc) {
   return (svc.restartNotifyUrl && svc.restartPollUrl) ? 'enabled' : '—';
+}
+
+// Where the catalog came from + whether the pull worked, so a registry outage
+// never looks like "no services".
+function renderRegistryStatus() {
+  const badge = $('#svc-registry-status');
+  const url = $('#svc-registry-url');
+  if (!badge) return;
+  if (servicesError) {
+    badge.textContent = '加载失败';
+    badge.className = 'badge badge--bad';
+    badge.title = servicesError;
+    return;
+  }
+  if (!registryStatus) {
+    badge.textContent = '未知';
+    badge.className = 'badge badge--muted';
+    return;
+  }
+  if (!registryStatus.enabled) {
+    if (url) url.textContent = '未启用';
+    badge.textContent = '仅本地配置';
+    badge.className = 'badge badge--muted';
+    badge.title = 'SERVICE_REGISTRY_URL=off：只显示本机已配置的服务';
+    return;
+  }
+  if (url) url.textContent = registryStatus.url;
+  if (registryStatus.ok) {
+    badge.textContent = `在线 · ${registryStatus.services} 个服务`;
+    badge.className = 'badge badge--ok';
+    badge.title = '服务列表来自 service_registry';
+  } else {
+    badge.textContent = '拉取失败';
+    badge.className = 'badge badge--bad';
+    badge.title = registryStatus.error || 'service_registry 拉取失败';
+  }
+}
+
+function registryBadge(svc) {
+  return svc.registered
+    ? `<span class="badge badge--ok">已登记</span>`
+    : `<span class="badge badge--bad" title="service_registry 未返回该服务（未登记，或注册中心暂时不可用）">未登记</span>`;
 }
 
 function renderServiceContracts() {
@@ -217,23 +273,38 @@ function renderServiceContracts() {
     return;
   }
   if (!services.length) {
-    tbody.innerHTML = `<tr><td colspan="9" class="muted">暂无服务契约，请在上方表单新建</td></tr>`;
+    const empty = registryStatus && registryStatus.enabled && registryStatus.ok
+      ? 'service_registry 里还没有已登记的服务（在注册中心登记后这里就会出现）'
+      : '暂无服务';
+    tbody.innerHTML = `<tr><td colspan="9" class="muted">${empty}</td></tr>`;
     return;
   }
-  tbody.innerHTML = services.map((s) => `<tr>
+  tbody.innerHTML = services.map((s) => {
+    const reg = s.registry || {};
+    const versionOwner = [reg.version, reg.owner].filter(Boolean).join(' / ') || '—';
+    // gitRepoUrl: local override first, otherwise the registry's registered repo.
+    const repo = s.gitRepoUrl || reg.gitRepoUrl || '';
+    const repoCell = repo
+      ? esc(repo) + (s.gitRepoUrl ? '' : ' <span class="muted">(注册中心)</span>')
+      : '—';
+    const state = registryBadge(s) +
+      (s.configured ? '' : ' <span class="badge badge--wait">未配置</span>');
+    const actions = s.configured
+      ? `<button class="btn btn--sm" data-svc-edit="${esc(s.serviceId)}">配置</button>
+        <button class="btn btn--sm btn--danger" data-svc-delete="${esc(s.serviceId)}">清除</button>`
+      : `<button class="btn btn--sm btn--primary" data-svc-edit="${esc(s.serviceId)}">配置</button>`;
+    return `<tr>
       <td class="mono">${esc(s.serviceId)}</td>
-      <td>${esc(s.name || '—')}</td>
+      <td>${esc(s.name || reg.description || '—')}</td>
+      <td>${state}</td>
+      <td class="mono">${esc(versionOwner)}</td>
       <td class="mono">${esc(s.runtimeDir || '—')}</td>
       <td class="mono">${esc(s.healthUrl || '—')}</td>
-      <td class="mono">${esc(s.gitRepoUrl || '—')}</td>
-      <td class="mono">${esc(s.defaultBranch || 'main')}</td>
+      <td class="mono">${repoCell}</td>
       <td>${esc(serviceGracefulLabel(s))}</td>
-      <td class="mono">${fmtTime(s.updatedAt)}</td>
-      <td class="cell-actions">
-        <button class="btn btn--sm" data-svc-edit="${esc(s.serviceId)}">编辑</button>
-        <button class="btn btn--sm btn--danger" data-svc-delete="${esc(s.serviceId)}">删除</button>
-      </td>
-    </tr>`).join('');
+      <td class="cell-actions">${actions}</td>
+    </tr>`;
+  }).join('');
 }
 
 const SVC_FORM_FIELDS = [
@@ -255,29 +326,41 @@ function clearServiceForm() {
 function resetServiceForm() {
   editingServiceID = null;
   clearServiceForm();
-  $('#svc-form-title').textContent = '新建服务契约';
+  $('#svc-form-title').textContent = '配置服务';
   const idEl = $('#svc-serviceId');
-  if (idEl) idEl.disabled = false;
+  if (idEl) idEl.disabled = true; // serviceId always comes from the list
   const cancel = $('#svc-form-cancel');
   if (cancel) cancel.hidden = true;
+  setServiceFormMsg('');
+}
+
+// Visible hint inside the form card (e.g. "未在注册中心登记，保存会被拒绝").
+function setServiceFormMsg(msg) {
+  const el = $('#svc-msg');
+  if (el) el.textContent = msg;
 }
 
 function fillServiceForm(svc) {
   editingServiceID = svc.serviceId;
-  $('#svc-form-title').textContent = '编辑服务契约：' + svc.serviceId;
+  const reg = svc.registry || {};
+  $('#svc-form-title').textContent = (svc.configured ? '编辑部署配置：' : '配置部署参数：') + svc.serviceId;
   $('#svc-serviceId').value = svc.serviceId || '';
   $('#svc-serviceId').disabled = true;
-  $('#svc-name').value = svc.name || '';
+  $('#svc-name').value = svc.name || reg.description || '';
   $('#svc-runtimeDir').value = svc.runtimeDir || '';
   $('#svc-healthUrl').value = svc.healthUrl || '';
   $('#svc-startCmd').value = svc.startCmd || '';
   $('#svc-stopCmd').value = svc.stopCmd || '';
   $('#svc-restartCmd').value = svc.restartCmd || '';
-  $('#svc-gitRepoUrl').value = svc.gitRepoUrl || '';
+  // 注册中心登记的仓库地址作为默认值，可被本机覆盖。
+  $('#svc-gitRepoUrl').value = svc.gitRepoUrl || reg.gitRepoUrl || '';
   $('#svc-defaultBranch').value = svc.defaultBranch || '';
   $('#svc-restartNotifyUrl').value = svc.restartNotifyUrl || '';
   $('#svc-restartPollUrl').value = svc.restartPollUrl || '';
   $('#svc-gracefulRestartMaxWaitMs').value = svc.gracefulRestartMaxWaitMs || '';
+  setServiceFormMsg(svc.registered
+    ? ''
+    : '⚠ service_registry 未返回该服务（未登记 / 注册中心不可用）：已配置的仍可编辑，新建会被拒绝。');
   const cancel = $('#svc-form-cancel');
   if (cancel) cancel.hidden = false;
   const card = $('#svc-form-card');
@@ -292,7 +375,7 @@ function serviceFormBody() {
   const startCmd = $('#svc-startCmd').value.trim();
   const stopCmd = $('#svc-stopCmd').value.trim();
   const restartCmd = $('#svc-restartCmd').value.trim();
-  if (!serviceId) return { error: '请填写 serviceId' };
+  if (!serviceId) return { error: '请先从列表里点「配置」选择服务' };
   if (!runtimeDir || !healthUrl || !startCmd || !stopCmd || !restartCmd) {
     return { error: 'runtimeDir / healthUrl / startCmd / stopCmd / restartCmd 为必填项' };
   }
@@ -311,31 +394,33 @@ function serviceFormBody() {
 
 async function saveServiceContract() {
   const built = serviceFormBody();
-  if (built.error) { toast(built.error, 'err'); return; }
+  if (built.error) { toast(built.error, 'err'); setServiceFormMsg(built.error); return; }
   try {
     await apiSend('PUT', '/api/services/' + encodeURIComponent(built.serviceId), built.body);
-    toast('已保存服务契约 ' + built.serviceId, 'ok');
+    toast('已保存 ' + built.serviceId + ' 的部署配置', 'ok');
     resetServiceForm();
     await refreshServices();
   } catch (e) {
     toast('保存失败：' + e.message, 'err');
+    setServiceFormMsg('保存失败：' + e.message);
   }
 }
 
+// DELETE clears this machine's deployment config only; the service itself stays
+// in service_registry and can be configured again.
 async function deleteServiceContract(serviceId) {
-  if (!window.confirm('确认删除服务契约 ' + serviceId + ' ？')) return;
+  if (!window.confirm('确认清除「' + serviceId + '」在本机的部署配置？（服务仍在 service_registry，可重新配置）')) return;
   try {
     await apiSend('DELETE', '/api/services/' + encodeURIComponent(serviceId));
-    toast('已删除服务契约 ' + serviceId, 'ok');
+    toast('已清除本地配置 ' + serviceId, 'ok');
     if (editingServiceID === serviceId) resetServiceForm();
     await refreshServices();
   } catch (e) {
-    toast('删除失败：' + e.message, 'err');
+    toast('清除失败：' + e.message, 'err');
   }
 }
 
 $('#svc-save').addEventListener('click', saveServiceContract);
-$('#svc-new').addEventListener('click', resetServiceForm);
 $('#svc-refresh').addEventListener('click', refreshServices);
 $('#svc-form-cancel').addEventListener('click', resetServiceForm);
 $('#svc-table tbody').addEventListener('click', (e) => {
@@ -547,7 +632,7 @@ function refreshDeploys() { return historyDeploys.refresh(); }
 $('#pipe-trigger').addEventListener('click', async () => {
   const serviceId = $('#pipe-service').value;
   const ref = $('#pipe-ref').value.trim();
-  if (!serviceId) { toast('请先选择服务', 'err'); return; }
+  if (!serviceId) { toast('请先在「服务契约」里为已登记的服务配置部署参数', 'err'); return; }
   try {
     const body = { serviceId };
     if (ref) body.ref = ref;
@@ -695,7 +780,7 @@ async function refreshPipelineDetail() {
 $('#dep-trigger').addEventListener('click', async () => {
   const serviceId = $('#dep-service').value;
   const deployment = $('#dep-deployment').value.trim();
-  if (!serviceId) { toast('请先选择服务', 'err'); return; }
+  if (!serviceId) { toast('请先在「服务契约」里为已登记的服务配置部署参数', 'err'); return; }
   if (!deployment) { toast('请输入 deployment / hash', 'err'); return; }
   try {
     const r = await apiSend('POST', '/api/deploys', { serviceId, deployment });

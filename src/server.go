@@ -19,6 +19,10 @@ type apiServer struct {
 	worker   *DeployWorker
 	pipeline *PipelineWorker
 	drain    *GracefulDrain
+	// registry is the read-only service-registry pull client (nil = not
+	// configured). The service catalog is its data; local rows are only
+	// deployment config.
+	registry *ServiceRegistry
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -96,26 +100,36 @@ func (s *apiServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleListServices returns the service catalog: the service-registry's
+// contracts (the single source of truth for which services exist) merged with
+// this control plane's deployment config. `registry` in the response tells the
+// panel whether the pull succeeded, so a registry outage is visible instead of
+// looking like "no services".
 func (s *apiServer) handleListServices(w http.ResponseWriter, r *http.Request) {
-	svcs, err := s.store.ListServices()
+	services, status, err := buildServiceCatalog(r.Context(), s.store, s.registry)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"services": svcs})
+	writeJSON(w, http.StatusOK, map[string]any{"services": services, "registry": status})
 }
 
+// handleGetService returns one merged catalog entry (404 when the service is
+// neither registered nor locally configured).
 func (s *apiServer) handleGetService(w http.ResponseWriter, r *http.Request) {
-	svc, err := s.store.GetService(r.PathValue("serviceId"))
+	id := strings.TrimSpace(r.PathValue("serviceId"))
+	services, _, err := buildServiceCatalog(r.Context(), s.store, s.registry)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if svc == nil {
-		writeError(w, http.StatusNotFound, "service not found")
-		return
+	for _, entry := range services {
+		if entry.ServiceID == id {
+			writeJSON(w, http.StatusOK, entry)
+			return
+		}
 	}
-	writeJSON(w, http.StatusOK, svc)
+	writeError(w, http.StatusNotFound, "service not found: "+id)
 }
 
 type putServiceBody struct {
@@ -145,6 +159,31 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+
+	// 服务契约不能在本机新建：服务是否存在由 service_registry 说了算。只有
+	// "已登记的服务"才能在这里配置部署参数；已有本地配置的照旧可改（注册中心
+	// 不可用也不能把运维锁死）。
+	var registered *RegistryService
+	if existing == nil {
+		if !s.registry.Enabled() {
+			writeError(w, http.StatusServiceUnavailable,
+				"service_registry 未配置（SERVICE_REGISTRY_URL=off），本机不能新建服务契约")
+			return
+		}
+		svc, found, lookupErr := s.registry.Lookup(r.Context(), serviceID)
+		if lookupErr != nil {
+			writeError(w, http.StatusServiceUnavailable,
+				"无法确认服务是否已在 service_registry 登记："+lookupErr.Error())
+			return
+		}
+		if !found {
+			writeError(w, http.StatusBadRequest,
+				`service "`+serviceID+`" 未在 service_registry 中登记；服务列表统一从注册中心拉取，`+
+					`本机只能配置已登记服务的部署参数（请先在注册中心登记该服务）`)
+			return
+		}
+		registered = svc
 	}
 
 	name := strings.TrimSpace(body.Name)
@@ -197,6 +236,10 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.GitRepoURL != nil {
 		gitRepoURL = strings.TrimSpace(*body.GitRepoURL)
+	}
+	// 首次配置且请求没给 gitRepoUrl：取注册中心登记的仓库地址（元信息真源）。
+	if gitRepoURL == "" && body.GitRepoURL == nil && registered != nil {
+		gitRepoURL = strings.TrimSpace(registered.GitRepoURL)
 	}
 	if body.DefaultBranch != nil {
 		defaultBranch = defaultBranchOrMain(*body.DefaultBranch)
@@ -292,7 +335,7 @@ func (s *apiServer) handleCreateDeploy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "service not found: "+serviceID)
 		return
 	}
-	deployment, err := assertRelease(s.storage, serviceID, svc.GitRepoURL, raw)
+	deployment, err := assertRelease(s.storage, serviceID, resolveServiceGitRepo(r.Context(), s.registry, svc), raw)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -400,9 +443,10 @@ func (s *apiServer) handleDeployNotify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "service not found: "+serviceID)
 		return
 	}
-	if strings.TrimSpace(svc.GitRepoURL) == "" {
+	if resolveServiceGitRepo(r.Context(), s.registry, svc) == "" {
 		writeError(w, http.StatusBadRequest,
-			"service missing gitRepoUrl; PUT /api/services/"+serviceID+` {"gitRepoUrl":"https://..."}`)
+			"service has no gitRepoUrl: register one in service_registry, or set it in the deployment config "+
+				"PUT /api/services/"+serviceID+` {"gitRepoUrl":"https://..."}`)
 		return
 	}
 	// Default: service defaultBranch (usually main) tip — latest code.
@@ -571,9 +615,10 @@ func (s *apiServer) handleScanArtifacts(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "service not found")
 		return
 	}
-	gitURL := strings.TrimSpace(svc.GitRepoURL)
+	gitURL := resolveServiceGitRepo(r.Context(), s.registry, svc)
 	if gitURL == "" {
-		writeError(w, http.StatusBadRequest, "service has no gitRepoUrl")
+		writeError(w, http.StatusBadRequest,
+			"service has no gitRepoUrl: register one in service_registry, or set it in the deployment config")
 		return
 	}
 	if s.storage == nil {
@@ -682,6 +727,9 @@ func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
 		"artifactStorage":         s.storageName(),
 		"githubReleaseEnabled":    s.cfg.GitHubToken != "",
 		"deployNotify":            "POST /api/deploy-notify {serviceId, ref?}",
+		"serviceRegistryUrl":      s.registry.BaseURL(),
+		"serviceRegistryEnabled":  s.registry.Enabled(),
+		"serviceCatalog":          "GET /api/services（服务列表来自 service_registry，本机只存部署配置）",
 	})
 }
 
