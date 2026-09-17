@@ -106,8 +106,8 @@ func (w *PipelineWorker) execute(job *PipelineJob) {
 	gitURL := resolveServiceGitRepo(context.Background(), w.registry, svc)
 	if gitURL == "" {
 		failPipeline(w.store, job.RequestID,
-			"service has no gitRepoUrl: register one in service_registry, or set it in the deployment config "+
-				"(PUT /api/services/"+job.ServiceID+")")
+			"service has no gitRepoUrl: register one in service_registry（gitRepoUrl 只能由注册中心登记，"+
+				"本机不能设置）")
 		return
 	}
 

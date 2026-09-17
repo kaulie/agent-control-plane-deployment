@@ -259,31 +259,130 @@ func TestPutServiceOnlyConfiguresRegisteredServices(t *testing.T) {
 	}
 }
 
+// gitRepoUrl 是 service_registry 同步过来的元信息：本机不能改（显式改动报错），
+// 且已登记的值会被同步覆盖成本机的镜像。
+func TestPutServiceGitRepoURLIsRegistryOwned(t *testing.T) {
+	store := newCatalogTestStore(t)
+	srv := fakeServiceRegistry(t, []RegistryService{
+		{Name: "web-cursor", GitRepoURL: "https://github.com/kaulie/registry-repo"},
+	})
+	api := &apiServer{store: store, registry: registryClientFor(srv.URL)}
+	body := `{"runtimeDir":"/tmp/web-cursor","healthUrl":"http://127.0.0.1:4211/health",` +
+		`"startCmd":"true","stopCmd":"true","restartCmd":"true"}`
+
+	// 1) 显式改成别的值 → 400（"以为改了其实没改"更糟）。
+	rec := putServiceJSON(t, api, "web-cursor",
+		`{"runtimeDir":"/tmp/web-cursor","healthUrl":"http://127.0.0.1:1/health",`+
+			`"startCmd":"true","stopCmd":"true","restartCmd":"true",`+
+			`"gitRepoUrl":"https://github.com/kaulie/hacked"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("PUT with a changed gitRepoUrl = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "本机不能修改") {
+		t.Fatalf("error should explain gitRepoUrl is registry-owned: %s", rec.Body.String())
+	}
+
+	// 2) 带上注册中心登记值（幂等）→ 成功。
+	rec = putServiceJSON(t, api, "web-cursor", body[:len(body)-1]+
+		`,"gitRepoUrl":"https://github.com/kaulie/registry-repo"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("PUT with the registry value = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	// 3) 不带 gitRepoUrl → 用注册中心登记值。
+	rec = putServiceJSON(t, api, "web-cursor", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT without gitRepoUrl = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var stored ServiceContract
+	if err := json.Unmarshal(rec.Body.Bytes(), &stored); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if stored.GitRepoURL != "https://github.com/kaulie/registry-repo" {
+		t.Fatalf("stored gitRepoUrl = %q, want the registry value", stored.GitRepoURL)
+	}
+
+	// 4) 注册中心登记值变化 → 本机镜像被同步覆盖（旧值不能留着）。
+	srv2 := fakeServiceRegistry(t, []RegistryService{
+		{Name: "web-cursor", GitRepoURL: "https://github.com/kaulie/moved-repo"},
+	})
+	api.registry = registryClientFor(srv2.URL)
+	rec = putServiceJSON(t, api, "web-cursor", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT after registry change = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &stored); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if stored.GitRepoURL != "https://github.com/kaulie/moved-repo" {
+		t.Fatalf("stored gitRepoUrl = %q, want the new registry value", stored.GitRepoURL)
+	}
+}
+
+// 未登记（只有本机配置 / 注册中心没登记 gitRepoUrl）时，本机镜像的旧值既不能改
+// 也不会被清空：它是这条服务唯一可用的仓库地址。
+func TestPutServiceGitRepoURLStaysForUnregisteredService(t *testing.T) {
+	store := newCatalogTestStore(t)
+	if _, err := store.UpsertService(localConfig("legacy-only", "https://github.com/kaulie/legacy")); err != nil {
+		t.Fatalf("UpsertService: %v", err)
+	}
+	// 注册中心返回空目录（该服务未登记）→ 已有本地配置仍可编辑。
+	registryEmpty := fakeServiceRegistry(t, nil)
+	api := &apiServer{store: store, registry: registryClientFor(registryEmpty.URL)}
+	body := `{"runtimeDir":"/tmp/legacy-only","healthUrl":"http://127.0.0.1:1/health",` +
+		`"startCmd":"true","stopCmd":"true","restartCmd":"true"}`
+
+	rec := putServiceJSON(t, api, "legacy-only", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT existing local-only = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var stored ServiceContract
+	if err := json.Unmarshal(rec.Body.Bytes(), &stored); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if stored.GitRepoURL != "https://github.com/kaulie/legacy" {
+		t.Fatalf("gitRepoUrl = %q, want the kept local mirror", stored.GitRepoURL)
+	}
+
+	// 试图改成别的值 / 清空 → 都拒绝。
+	if rec = putServiceJSON(t, api, "legacy-only", body[:len(body)-1]+
+		`,"gitRepoUrl":"https://github.com/kaulie/other"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("PUT changing local gitRepoUrl = %d, want 400", rec.Code)
+	}
+	if rec = putServiceJSON(t, api, "legacy-only", body[:len(body)-1]+
+		`,"gitRepoUrl":""}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("PUT clearing local gitRepoUrl = %d, want 400", rec.Code)
+	}
+}
+
 func TestResolveServiceGitRepo(t *testing.T) {
 	srv := fakeServiceRegistry(t, []RegistryService{
 		{Name: "svc", GitRepoURL: "https://github.com/kaulie/registry-repo"},
 	})
 	reg := registryClientFor(srv.URL)
 
-	// 本地显式配置优先。
+	// 注册中心登记的仓库是真源：本机镜像的旧值不能覆盖它。
 	if got := resolveServiceGitRepo(context.Background(), reg,
-		&ServiceContract{ServiceID: "svc", GitRepoURL: "https://github.com/kaulie/local"}); got != "https://github.com/kaulie/local" {
-		t.Fatalf("local override = %q", got)
+		&ServiceContract{ServiceID: "svc", GitRepoURL: "https://github.com/kaulie/local"}); got != "https://github.com/kaulie/registry-repo" {
+		t.Fatalf("registry must win = %q", got)
 	}
-	// 本地留空 → 用注册中心登记的仓库。
-	if got := resolveServiceGitRepo(context.Background(), reg, &ServiceContract{ServiceID: "svc"}); got != "https://github.com/kaulie/registry-repo" {
-		t.Fatalf("registry fallback = %q", got)
+	// 注册中心没登记该服务 → 退回本机镜像的旧值（旧数据仍可部署）。
+	if got := resolveServiceGitRepo(context.Background(), reg, &ServiceContract{ServiceID: "other", GitRepoURL: "https://github.com/kaulie/local"}); got != "https://github.com/kaulie/local" {
+		t.Fatalf("local fallback = %q", got)
 	}
 	// 两边都没有 → 空。
 	if got := resolveServiceGitRepo(context.Background(), reg, &ServiceContract{ServiceID: "other"}); got != "" {
 		t.Fatalf("no repo = %q, want empty", got)
 	}
-	// 注册中心不可用且本地留空 → 空（调用方给明确报错）。
+	// 注册中心不可用 → 退回本机镜像（不阻塞已有配置的部署）。
 	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	deadURL := dead.URL
 	dead.Close()
+	if got := resolveServiceGitRepo(context.Background(), registryClientFor(deadURL),
+		&ServiceContract{ServiceID: "svc", GitRepoURL: "https://github.com/kaulie/local"}); got != "https://github.com/kaulie/local" {
+		t.Fatalf("registry down = %q, want the local mirror", got)
+	}
 	if got := resolveServiceGitRepo(context.Background(), registryClientFor(deadURL), &ServiceContract{ServiceID: "svc"}); got != "" {
-		t.Fatalf("registry down = %q, want empty", got)
+		t.Fatalf("registry down + no local = %q, want empty", got)
 	}
 }
 

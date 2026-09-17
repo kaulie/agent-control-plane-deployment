@@ -273,20 +273,18 @@ func buildServiceCatalog(ctx context.Context, store *Store, reg *ServiceRegistry
 	return entries, status, nil
 }
 
-// resolveServiceGitRepo returns the repo to package a service from: the local
-// deployment config wins (explicit override), otherwise the registry's
-// registered gitRepoUrl (服务元信息以注册中心为准). "" = neither has it.
+// resolveServiceGitRepo returns the repo to package a service from.
+// gitRepoUrl 是 service_registry 同步过来的元信息 —— 注册中心是唯一真源，
+// 本机不能改（PUT 显式改动会被拒）。只有注册中心不可用/未登记这个字段时，
+// 才退回本机镜像的旧值；两边都没有 → ""（调用方给出明确报错）。
 func resolveServiceGitRepo(ctx context.Context, reg *ServiceRegistry, local *ServiceContract) string {
 	if local == nil {
 		return ""
 	}
-	if u := strings.TrimSpace(local.GitRepoURL); u != "" {
-		return u
-	}
 	if reg.Enabled() {
-		if u, err := reg.GitRepoURL(ctx, local.ServiceID); err == nil {
-			return u
+		if u, err := reg.GitRepoURL(ctx, local.ServiceID); err == nil && strings.TrimSpace(u) != "" {
+			return strings.TrimSpace(u)
 		}
 	}
-	return ""
+	return strings.TrimSpace(local.GitRepoURL)
 }

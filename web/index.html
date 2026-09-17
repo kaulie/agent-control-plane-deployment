@@ -170,7 +170,7 @@
           <label>serviceId（来自 service_registry）
             <input type="text" id="svc-serviceId" placeholder="从列表里点「配置」" readonly />
           </label>
-          <label>name
+          <label>name（本机显示名）
             <input type="text" id="svc-name" placeholder="可留空，默认等于 serviceId" />
           </label>
           <label>runtimeDir
@@ -188,8 +188,8 @@
           <label>restartCmd
             <input type="text" id="svc-restartCmd" placeholder="bash scripts/restart.sh" />
           </label>
-          <label>gitRepoUrl（留空则用注册中心登记的）
-            <input type="text" id="svc-gitRepoUrl" placeholder="https://github.com/owner/repo" />
+          <label>gitRepoUrl（来自 service_registry，不可改）
+            <input type="text" id="svc-gitRepoUrl" placeholder="注册中心登记后自动同步" readonly />
           </label>
           <label>defaultBranch
             <input type="text" id="svc-defaultBranch" placeholder="main" />
@@ -225,7 +225,7 @@
           <thead>
             <tr>
               <th>serviceId</th><th>name</th><th>登记</th><th>版本 / owner</th>
-              <th>runtimeDir</th><th>healthUrl</th><th>gitRepoUrl</th><th>graceful</th><th>操作</th>
+              <th>runtimeDir</th><th>healthUrl</th><th>graceful</th><th>操作</th>
             </tr>
           </thead>
           <tbody></tbody>

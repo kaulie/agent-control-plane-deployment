@@ -267,6 +267,14 @@ test('service contracts: tab lists the registry catalog with 登记/配置 state
   assert.match(tbody.textContent, /未登记/, 'local-only services must be marked as not registered');
   assert.match(tbody.textContent, /未配置/, 'a registered service without deployment config must be marked');
   assert.match(tbody.textContent, /1\.2\.3 \/ kaulie/, 'registry version/owner must be shown');
+  assert.doesNotMatch(tbody.textContent, /github\.com/, '服务列表里不展示 gitRepoUrl');
+  assert.doesNotMatch(doc.querySelector('#svc-table thead').textContent, /gitRepoUrl/,
+    '表头也不该有 gitRepoUrl 列');
+  // 表头列数与每行单元格数保持一致（改列时最容易漏的地方）。
+  const heads = doc.querySelectorAll('#svc-table thead th').length;
+  for (const tr of doc.querySelectorAll('#svc-table tbody tr')) {
+    assert.equal(tr.children.length, heads, `行单元格数(${tr.children.length}) != 表头列数(${heads})`);
+  }
 
   // Every row can be configured; only configured rows can be cleared.
   assert.ok(doc.querySelector('[data-svc-edit="event-center"]'), 'a registry service must be configurable');
@@ -346,7 +354,7 @@ test('service contracts: configuring a service fills and locks serviceId', async
   assert.equal(doc.querySelector('#svc-form-cancel').hidden, false, 'cancel must be visible while editing');
 });
 
-test('service contracts: an unconfigured registry service prefills the registry repo', async (t) => {
+test('service contracts: an unconfigured registry service shows the registry repo read-only', async (t) => {
   const { dom, flush, servicesRequests } = makePanel();
   t.after(() => dom.window.close());
   const doc = dom.window.document;
@@ -360,7 +368,9 @@ test('service contracts: an unconfigured registry service prefills the registry 
   assert.equal(doc.querySelector('#svc-serviceId').value, 'event-center');
   assert.equal(doc.querySelector('#svc-name').value, '统一事件中心', 'name falls back to the registry description');
   assert.equal(doc.querySelector('#svc-gitRepoUrl').value, 'https://github.com/kaulie/event-center',
-    'gitRepoUrl defaults to the registry value');
+    'gitRepoUrl is shown from the registry');
+  assert.ok(doc.querySelector('#svc-gitRepoUrl').readOnly,
+    'gitRepoUrl comes from service_registry and cannot be edited locally');
   assert.equal(doc.querySelector('#svc-msg').textContent, '', 'a registered service needs no warning');
 
   doc.querySelector('#svc-runtimeDir').value = '/tmp/event-center';
@@ -374,6 +384,8 @@ test('service contracts: an unconfigured registry service prefills the registry 
   const put = servicesRequests().find((r) => r.method === 'PUT');
   assert.ok(put, 'save must issue a PUT request');
   assert.equal(put.pathname, '/api/services/event-center');
+  assert.ok(!('gitRepoUrl' in JSON.parse(put.body)),
+    'the panel must not send gitRepoUrl: it is registry-owned');
 });
 
 test('service contracts: an unregistered service warns but stays editable', async (t) => {
@@ -424,7 +436,6 @@ test('service contracts: save sends PUT /api/services/:id with the form body', a
   doc.querySelector('#svc-startCmd').value = 'start';
   doc.querySelector('#svc-stopCmd').value = 'stop';
   doc.querySelector('#svc-restartCmd').value = 'restart';
-  doc.querySelector('#svc-gitRepoUrl').value = 'https://github.com/kaulie/web-cursor';
   doc.querySelector('#svc-gracefulRestartMaxWaitMs').value = '90000';
   doc.querySelector('#svc-save').click();
   await flush();
@@ -439,8 +450,8 @@ test('service contracts: save sends PUT /api/services/:id with the form body', a
   assert.equal(body.startCmd, 'start');
   assert.equal(body.stopCmd, 'stop');
   assert.equal(body.restartCmd, 'restart');
-  assert.equal(body.gitRepoUrl, 'https://github.com/kaulie/web-cursor');
   assert.equal(body.gracefulRestartMaxWaitMs, 90000);
+  assert.ok(!('gitRepoUrl' in body), 'gitRepoUrl is registry-owned: never sent from the panel');
 });
 
 test('service contracts: clear sends DELETE /api/services/:id (local config only)', async (t) => {
