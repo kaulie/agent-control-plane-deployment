@@ -158,66 +158,15 @@
     <!-- Services / service contracts -->
     <section id="tab-services" class="tabpanel">
       <p class="hint" id="svc-source-hint">
-        服务由 <b>service_registry</b> 统一登记，<b>本机不能新建</b>：这里只为「已登记」的服务配置部署参数
-        （运行时目录 / 健康检查 / 启停命令 / 优雅重启）。未配置的服务不会出现在部署流水线、部署任务的选择框里。
+        服务由 <b>service_registry</b> 统一登记，<b>本机不能新建</b>：这里只展示服务列表和部署配置状态。
+        点「配置」会在独立的服务配置页里编辑部署参数（运行时目录 / 健康检查 / 启停命令 / 优雅重启）。
+        未配置的服务不会出现在部署流水线、部署任务的选择框里。
       </p>
       <p class="hint" id="svc-legacy-hint">
         标着 <span class="badge badge--bad">未登记</span> 的是早期（注册中心接入前）本机自建的老契约。
         点「清除」会先问历史记录的去处：可以直接把它们<b>迁移</b>到注册中心里对应的服务上，再删掉旧契约 ——
         流水线 / 部署记录跟着新 serviceId 继续显示，不会变成孤儿记录。
       </p>
-      <div class="form-card" id="svc-form-card">
-        <div class="form-card__head">
-          <h2 id="svc-form-title">配置服务</h2>
-          <button class="btn btn--ghost" id="svc-form-cancel" type="button" hidden>取消编辑</button>
-        </div>
-        <div class="form-grid">
-          <label>serviceId（来自 service_registry）
-            <input type="text" id="svc-serviceId" placeholder="从列表里点「配置」" readonly />
-          </label>
-          <label>name（本机显示名）
-            <input type="text" id="svc-name" placeholder="可留空，默认等于 serviceId" />
-          </label>
-          <label>runtimeDir
-            <input type="text" id="svc-runtimeDir" placeholder="/Users/gaolei/runtime/web-cursor" />
-          </label>
-          <label>healthUrl
-            <input type="text" id="svc-healthUrl" placeholder="http://127.0.0.1:4211/health" />
-          </label>
-          <label>服务端口 PORT（必填，注入 SERVICE_PORT）
-            <input type="number" id="svc-port" min="1" max="65535" step="1" required placeholder="例如 4211" />
-          </label>
-          <label>startCmd
-            <input type="text" id="svc-startCmd" placeholder="bash scripts/start.sh" />
-          </label>
-          <label>stopCmd
-            <input type="text" id="svc-stopCmd" placeholder="bash scripts/stop.sh" />
-          </label>
-          <label>restartCmd
-            <input type="text" id="svc-restartCmd" placeholder="bash scripts/restart.sh" />
-          </label>
-          <label>gitRepoUrl（来自 service_registry，不可改）
-            <input type="text" id="svc-gitRepoUrl" placeholder="注册中心登记后自动同步" readonly />
-          </label>
-          <label>defaultBranch
-            <input type="text" id="svc-defaultBranch" placeholder="main" />
-          </label>
-          <label>restartNotifyUrl
-            <input type="text" id="svc-restartNotifyUrl" placeholder="可选，graceful 通知" />
-          </label>
-          <label>restartPollUrl
-            <input type="text" id="svc-restartPollUrl" placeholder="可选，graceful 轮询" />
-          </label>
-          <label>gracefulRestartMaxWaitMs
-            <input type="number" id="svc-gracefulRestartMaxWaitMs" min="0" step="1" placeholder="0 = 服务端默认" />
-          </label>
-          <div class="form-actions">
-            <button class="btn btn--primary" id="svc-save">保存部署配置</button>
-            <span id="svc-msg" class="muted"></span>
-          </div>
-        </div>
-      </div>
-
       <div class="actions">
         <div class="form-inline">
           <span class="muted">服务列表来源</span>

@@ -291,9 +291,16 @@ test('service contracts: tab lists the registry catalog with 登记/配置 state
     assert.equal(tr.children.length, heads, `行单元格数(${tr.children.length}) != 表头列数(${heads})`);
   }
 
-  // Every row can be configured; the clear button must not appear in the list.
-  assert.ok(doc.querySelector('[data-svc-edit="event-center"]'), 'a registry service must be configurable');
-  assert.ok(doc.querySelector('[data-svc-edit="web-cursor"]'), 'a configured service must be editable');
+  // Every row can be configured from a link to the standalone edit page; the
+  // inline form and the clear button must not appear in the list.
+  const webCursorEdit = doc.querySelector('[data-svc-edit="web-cursor"]');
+  assert.ok(webCursorEdit, 'a configured service must be editable');
+  assert.equal(webCursorEdit.tagName, 'A', '配置 must be a link, not a button');
+  assert.equal(webCursorEdit.getAttribute('href'), 'service-edit.html?serviceId=web-cursor');
+  const eventCenterEdit = doc.querySelector('[data-svc-edit="event-center"]');
+  assert.ok(eventCenterEdit, 'a registry service must be configurable');
+  assert.equal(eventCenterEdit.getAttribute('href'), 'service-edit.html?serviceId=event-center');
+  assert.equal(doc.querySelector('#svc-form-card'), null, 'the services tab must not contain the inline edit form');
   assert.ok(!doc.querySelector('[data-svc-delete]'), 'the service list must not render a clear button');
 });
 
@@ -346,76 +353,26 @@ test('service contracts: no way to create a service from the panel', async (t) =
   assert.equal(doc.querySelector('#svc-new'), null, 'the panel must not offer a 新建 entry');
   assert.ok(!doc.querySelector('#tab-services').textContent.includes('新建服务契约'),
     'the tab must say the catalog comes from service_registry');
-  assert.ok(doc.querySelector('#svc-serviceId').readOnly,
-    'serviceId must come from the list, never typed');
+  assert.equal(doc.querySelector('#svc-serviceId'), null,
+    'the services list must not contain an inline serviceId input');
 });
 
-test('service contracts: configuring a service fills and locks serviceId', async (t) => {
+test('service contracts: 配置 links open the standalone edit page', async (t) => {
   const { dom, flush } = makePanel();
   t.after(() => dom.window.close());
   const doc = dom.window.document;
 
   doc.querySelector('[data-tab="services"]').click();
   await flush();
-  doc.querySelector('[data-svc-edit="web-cursor"]').click();
-  await flush();
 
-  assert.equal(doc.querySelector('#svc-form-title').textContent, '编辑部署配置：web-cursor');
-  assert.equal(doc.querySelector('#svc-serviceId').value, 'web-cursor');
-  assert.equal(doc.querySelector('#svc-serviceId').disabled, true, 'serviceId must be locked while editing');
-  assert.equal(doc.querySelector('#svc-runtimeDir').value, '/tmp/web-cursor');
-  assert.equal(doc.querySelector('#svc-form-cancel').hidden, false, 'cancel must be visible while editing');
-});
-
-test('service contracts: an unconfigured registry service shows the registry repo read-only', async (t) => {
-  const { dom, flush, servicesRequests } = makePanel();
-  t.after(() => dom.window.close());
-  const doc = dom.window.document;
-
-  doc.querySelector('[data-tab="services"]').click();
-  await flush();
-  doc.querySelector('[data-svc-edit="event-center"]').click();
-  await flush();
-
-  assert.equal(doc.querySelector('#svc-form-title').textContent, '配置部署参数：event-center');
-  assert.equal(doc.querySelector('#svc-serviceId').value, 'event-center');
-  assert.equal(doc.querySelector('#svc-name').value, '统一事件中心', 'name falls back to the registry description');
-  assert.equal(doc.querySelector('#svc-gitRepoUrl').value, 'https://github.com/kaulie/event-center',
-    'gitRepoUrl is shown from the registry');
-  assert.ok(doc.querySelector('#svc-gitRepoUrl').readOnly,
-    'gitRepoUrl comes from service_registry and cannot be edited locally');
-  assert.equal(doc.querySelector('#svc-msg').textContent, '', 'a registered service needs no warning');
-
-  doc.querySelector('#svc-runtimeDir').value = '/tmp/event-center';
-  doc.querySelector('#svc-healthUrl').value = 'http://127.0.0.1:4241/health';
-  doc.querySelector('#svc-port').value = '4241'; // 服务端口必填
-  doc.querySelector('#svc-startCmd').value = 'start';
-  doc.querySelector('#svc-stopCmd').value = 'stop';
-  doc.querySelector('#svc-restartCmd').value = 'restart';
-  doc.querySelector('#svc-save').click();
-  await flush();
-
-  const put = servicesRequests().find((r) => r.method === 'PUT');
-  assert.ok(put, 'save must issue a PUT request');
-  assert.equal(put.pathname, '/api/services/event-center');
-  assert.ok(!('gitRepoUrl' in JSON.parse(put.body)),
-    'the panel must not send gitRepoUrl: it is registry-owned');
-});
-
-test('service contracts: an unregistered service warns but stays editable', async (t) => {
-  const { dom, flush } = makePanel();
-  t.after(() => dom.window.close());
-  const doc = dom.window.document;
-
-  doc.querySelector('[data-tab="services"]').click();
-  await flush();
-  doc.querySelector('[data-svc-edit="acp"]').click();
-  await flush();
-
-  assert.match(doc.querySelector('#svc-msg').textContent, /未返回该服务/,
-    'the panel must say why saving a brand-new id would be rejected');
-  assert.equal(doc.querySelector('#svc-serviceId').value, 'acp');
-  assert.equal(doc.querySelector('#svc-form-cancel').hidden, false);
+  const links = Array.from(doc.querySelectorAll('#svc-table tbody [data-svc-edit]'));
+  assert.equal(links.length, 3, 'every catalog row must have a 配置 link');
+  for (const link of links) {
+    assert.equal(link.tagName, 'A', '配置 entries must be links');
+    assert.equal(link.getAttribute('href'),
+      'service-edit.html?serviceId=' + encodeURIComponent(link.dataset.svcEdit));
+    assert.match(link.textContent, /配置/);
+  }
 });
 
 test('service contracts: trigger selects only list configured services', async (t) => {
@@ -432,40 +389,6 @@ test('service contracts: trigger selects only list configured services', async (
   // ...but it stays filterable in the history lists.
   const filterValues = Array.from(doc.querySelectorAll('#pipe-f-serviceId option')).map((o) => o.value);
   assert.ok(filterValues.includes('event-center'), 'history filters keep every service id');
-});
-
-test('service contracts: save sends PUT /api/services/:id with the form body', async (t) => {
-  const { dom, flush, servicesRequests } = makePanel();
-  t.after(() => dom.window.close());
-  const doc = dom.window.document;
-
-  doc.querySelector('[data-tab="services"]').click();
-  await flush();
-  doc.querySelector('[data-svc-edit="web-cursor"]').click();
-  await flush();
-
-  doc.querySelector('#svc-name').value = 'Web Cursor Agent';
-  doc.querySelector('#svc-runtimeDir').value = '/tmp/runtime';
-  doc.querySelector('#svc-healthUrl').value = 'http://127.0.0.1:4211/health';
-  doc.querySelector('#svc-startCmd').value = 'start';
-  doc.querySelector('#svc-stopCmd').value = 'stop';
-  doc.querySelector('#svc-restartCmd').value = 'restart';
-  doc.querySelector('#svc-gracefulRestartMaxWaitMs').value = '90000';
-  doc.querySelector('#svc-save').click();
-  await flush();
-
-  const put = servicesRequests().find((r) => r.method === 'PUT');
-  assert.ok(put, 'save must issue a PUT request');
-  assert.equal(put.pathname, '/api/services/web-cursor');
-  const body = JSON.parse(put.body);
-  assert.equal(body.name, 'Web Cursor Agent');
-  assert.equal(body.runtimeDir, '/tmp/runtime');
-  assert.equal(body.healthUrl, 'http://127.0.0.1:4211/health');
-  assert.equal(body.startCmd, 'start');
-  assert.equal(body.stopCmd, 'stop');
-  assert.equal(body.restartCmd, 'restart');
-  assert.equal(body.gracefulRestartMaxWaitMs, 90000);
-  assert.ok(!('gitRepoUrl' in body), 'gitRepoUrl is registry-owned: never sent from the panel');
 });
 
 test('service contracts: 服务端口 column shows explicit port, else 未指定', async (t) => {
@@ -485,89 +408,4 @@ test('service contracts: 服务端口 column shows explicit port, else 未指定
   assert.match(doc.querySelector('#svc-table thead').textContent, /端口/, '表头要有「端口」列');
 });
 
-test('service contracts: 服务端口 必填，读出来并作为数字提交', async (t) => {
-  const { dom, flush, servicesRequests } = makePanel();
-  t.after(() => dom.window.close());
-  const doc = dom.window.document;
 
-  doc.querySelector('[data-tab="services"]').click();
-  await flush();
-
-  // 已配置的服务：表单里读出显式端口
-  doc.querySelector('[data-svc-edit="web-cursor"]').click();
-  await flush();
-  assert.equal(doc.querySelector('#svc-port').value, '4212');
-  assert.ok(doc.querySelector('#svc-port').required, '端口在表单里是必填项');
-
-  // 老契约：端口为空 → 直接保存会被前端拦下（不发 PUT）
-  doc.querySelector('[data-svc-edit="acp"]').click();
-  await flush();
-  assert.equal(doc.querySelector('#svc-port').value, '', '没配 port 时表单为空');
-  const before = servicesRequests().filter((r) => r.method === 'PUT').length;
-  doc.querySelector('#svc-save').click();
-  await flush();
-  assert.equal(servicesRequests().filter((r) => r.method === 'PUT').length, before,
-    '端口为空时不能提交');
-  assert.match(doc.querySelector('#svc-msg').textContent, /端口/, '要给出可见的必填提示');
-
-  // 填上端口再保存 → 数字提交
-  doc.querySelector('#svc-port').value = '4301';
-  doc.querySelector('#svc-save').click();
-  await flush();
-  const put = servicesRequests().filter((r) => r.method === 'PUT').at(-1);
-  assert.ok(put, '填了端口应该能保存');
-  assert.equal(JSON.parse(put.body).port, 4301, '端口要作为数字提交');
-});
-
-test('service contracts: 非法服务端口（0 / 越界）不会被提交', async (t) => {
-  const { dom, flush, servicesRequests } = makePanel();
-  t.after(() => dom.window.close());
-  const doc = dom.window.document;
-
-  doc.querySelector('[data-tab="services"]').click();
-  await flush();
-  doc.querySelector('[data-svc-edit="web-cursor"]').click();
-  await flush();
-
-  for (const bad of ['0', '70000']) {
-    const before = servicesRequests().filter((r) => r.method === 'PUT').length;
-    doc.querySelector('#svc-port').value = bad;
-    doc.querySelector('#svc-save').click();
-    await flush();
-    const puts = servicesRequests().filter((r) => r.method === 'PUT');
-    assert.equal(puts.length, before, `port=${bad} 不能被提交`);
-    assert.ok(puts.every((p) => String(JSON.parse(p.body).port) !== bad),
-      `port=${bad} 不能出现在请求里`);
-  }
-  assert.match(doc.querySelector('#svc-msg').textContent, /端口/, '要给出可见的必填提示');
-});
-
-test('service contracts: 端口唯一性（前端先拦，不发请求）', async (t) => {
-  const { dom, flush, servicesRequests } = makePanel();
-  t.after(() => dom.window.close());
-  const doc = dom.window.document;
-
-  doc.querySelector('[data-tab="services"]').click();
-  await flush();
-  doc.querySelector('[data-svc-edit="acp"]').click();
-  await flush();
-
-  // 4212 已被 web-cursor 占用 → 前端直接给出可见提示，不发 PUT
-  const before = servicesRequests().filter((r) => r.method === 'PUT').length;
-  doc.querySelector('#svc-port').value = '4212';
-  doc.querySelector('#svc-save').click();
-  await flush();
-  assert.equal(servicesRequests().filter((r) => r.method === 'PUT').length, before,
-    '端口冲突时不能发 PUT');
-  const msg = doc.querySelector('#svc-msg').textContent;
-  assert.match(msg, /4212/, '提示要指出冲突端口');
-  assert.match(msg, /web-cursor/, '提示要指出占用者');
-  assert.match(msg, /唯一/, '提示要说明端口必须唯一');
-
-  // 换一个没人用的端口 → 正常保存
-  doc.querySelector('#svc-port').value = '4310';
-  doc.querySelector('#svc-save').click();
-  await flush();
-  const put = servicesRequests().filter((r) => r.method === 'PUT').at(-1);
-  assert.ok(put && JSON.parse(put.body).port === 4310, '换端口后可以保存');
-});
