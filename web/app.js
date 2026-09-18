@@ -292,13 +292,13 @@ function renderServiceContracts() {
     const reg = s.registry || {};
     const versionOwner = [reg.version, reg.owner].filter(Boolean).join(' / ') || '—';
     // 列表里不展示 gitRepoUrl（注册中心同步过来的信息，本机不能改）、healthUrl
-    // （探活地址，属于细粒度配置）与 runtimeDir（部署参数；要看去「配置」表单里看）。
-    // 这三个都还在「配置」表单里：gitRepoUrl 只读，healthUrl / runtimeDir 可改。
+    // （探活地址，属于细粒度配置）与 runtimeDir（部署参数；要看去独立配置页里看）。
+    // 这三个都还在独立配置页里：gitRepoUrl 只读，healthUrl / runtimeDir 可改。
     const state = registryBadge(s) +
       (s.configured ? '' : ' <span class="badge badge--wait">未配置</span>');
-    const actions = s.configured
-      ? `<button class="btn btn--sm" data-svc-edit="${esc(s.serviceId)}">配置</button>`
-      : `<button class="btn btn--sm btn--primary" data-svc-edit="${esc(s.serviceId)}">配置</button>`;
+    const editHref = 'service-edit.html?serviceId=' + encodeURIComponent(s.serviceId);
+    const editCls = s.configured ? 'btn btn--sm' : 'btn btn--sm btn--primary';
+    const actions = `<a class="${editCls}" data-svc-edit="${esc(s.serviceId)}" href="${esc(editHref)}">配置</a>`;
     return `<tr>
       <td class="mono">${esc(s.serviceId)}</td>
       <td>${esc(s.name || reg.description || '—')}</td>
@@ -309,116 +309,6 @@ function renderServiceContracts() {
       <td class="cell-actions">${actions}</td>
     </tr>`;
   }).join('');
-}
-
-const SVC_FORM_FIELDS = [
-  '#svc-serviceId', '#svc-name', '#svc-runtimeDir', '#svc-healthUrl', '#svc-port',
-  '#svc-startCmd', '#svc-stopCmd', '#svc-restartCmd', '#svc-gitRepoUrl',
-  '#svc-defaultBranch', '#svc-restartNotifyUrl', '#svc-restartPollUrl',
-  '#svc-gracefulRestartMaxWaitMs',
-];
-
-let editingServiceID = null;
-
-function clearServiceForm() {
-  for (const id of SVC_FORM_FIELDS) {
-    const el = $(id);
-    if (el) el.value = '';
-  }
-}
-
-function resetServiceForm() {
-  editingServiceID = null;
-  clearServiceForm();
-  $('#svc-form-title').textContent = '配置服务';
-  const idEl = $('#svc-serviceId');
-  if (idEl) idEl.disabled = true; // serviceId always comes from the list
-  const cancel = $('#svc-form-cancel');
-  if (cancel) cancel.hidden = true;
-  setServiceFormMsg('');
-}
-
-// Visible hint inside the form card (e.g. "未在注册中心登记，保存会被拒绝").
-function setServiceFormMsg(msg) {
-  const el = $('#svc-msg');
-  if (el) el.textContent = msg;
-}
-
-function fillServiceForm(svc) {
-  editingServiceID = svc.serviceId;
-  const reg = svc.registry || {};
-  $('#svc-form-title').textContent = (svc.configured ? '编辑部署配置：' : '配置部署参数：') + svc.serviceId;
-  $('#svc-serviceId').value = svc.serviceId || '';
-  $('#svc-serviceId').disabled = true;
-  $('#svc-name').value = svc.name || reg.description || '';
-  $('#svc-runtimeDir').value = svc.runtimeDir || '';
-  $('#svc-healthUrl').value = svc.healthUrl || '';
-  $('#svc-port').value = svc.port || '';
-  $('#svc-startCmd').value = svc.startCmd || '';
-  $('#svc-stopCmd').value = svc.stopCmd || '';
-  $('#svc-restartCmd').value = svc.restartCmd || '';
-  // 注册中心登记值优先展示（它才是真源）；只有注册中心没登记时才显示本机镜像的旧值。
-  $('#svc-gitRepoUrl').value = reg.gitRepoUrl || svc.gitRepoUrl || '';
-  $('#svc-defaultBranch').value = svc.defaultBranch || '';
-  $('#svc-restartNotifyUrl').value = svc.restartNotifyUrl || '';
-  $('#svc-restartPollUrl').value = svc.restartPollUrl || '';
-  $('#svc-gracefulRestartMaxWaitMs').value = svc.gracefulRestartMaxWaitMs || '';
-  setServiceFormMsg(svc.registered
-    ? ''
-    : '⚠ service_registry 未返回该服务（未登记 / 注册中心不可用）：已配置的仍可编辑，新建会被拒绝。');
-  const cancel = $('#svc-form-cancel');
-  if (cancel) cancel.hidden = false;
-  const card = $('#svc-form-card');
-  if (card && card.scrollIntoView) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
-}
-
-function serviceFormBody() {
-  const serviceId = $('#svc-serviceId').value.trim();
-  const name = $('#svc-name').value.trim();
-  const runtimeDir = $('#svc-runtimeDir').value.trim();
-  const healthUrl = $('#svc-healthUrl').value.trim();
-  const portRaw = $('#svc-port').value.trim();
-  const port = portRaw === '' ? 0 : Number(portRaw);
-  const startCmd = $('#svc-startCmd').value.trim();
-  const stopCmd = $('#svc-stopCmd').value.trim();
-  const restartCmd = $('#svc-restartCmd').value.trim();
-  if (!serviceId) return { error: '请先从列表里点「配置」选择服务' };
-  if (!runtimeDir || !healthUrl || !startCmd || !stopCmd || !restartCmd) {
-    return { error: 'runtimeDir / healthUrl / startCmd / stopCmd / restartCmd 为必填项' };
-  }
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    return { error: '服务端口必填，且必须是 1..65535 的整数（启动时会注入 SERVICE_PORT）' };
-  }
-  // 端口唯一性：本机目录里已经有的服务列表就能查（后端也会再校验一次，防并发）。
-  const holder = services.find((s) => s.serviceId !== serviceId && Number(s.port) === port);
-  if (holder) {
-    return { error: `端口 ${port} 已被服务 ${holder.serviceId} 占用；服务端口必须唯一，请换一个` };
-  }
-  return {
-    serviceId,
-    body: {
-      // gitRepoUrl 不在这里发送：它来自 service_registry，本机不能改（后端也会拒绝改）。
-      name, runtimeDir, healthUrl, port, startCmd, stopCmd, restartCmd,
-      defaultBranch: $('#svc-defaultBranch').value.trim(),
-      restartNotifyUrl: $('#svc-restartNotifyUrl').value.trim(),
-      restartPollUrl: $('#svc-restartPollUrl').value.trim(),
-      gracefulRestartMaxWaitMs: Number($('#svc-gracefulRestartMaxWaitMs').value) || 0,
-    },
-  };
-}
-
-async function saveServiceContract() {
-  const built = serviceFormBody();
-  if (built.error) { toast(built.error, 'err'); setServiceFormMsg(built.error); return; }
-  try {
-    await apiSend('PUT', '/api/services/' + encodeURIComponent(built.serviceId), built.body);
-    toast('已保存 ' + built.serviceId + ' 的部署配置', 'ok');
-    resetServiceForm();
-    await refreshServices();
-  } catch (e) {
-    toast('保存失败：' + e.message, 'err');
-    setServiceFormMsg('保存失败：' + e.message);
-  }
 }
 
 // ---- 清除服务配置：先确认历史记录的去处 -------------------------------------
@@ -529,7 +419,6 @@ async function confirmRemoveService() {
       await apiSend('DELETE', '/api/services/' + encodeURIComponent(serviceId));
       toast('已清除 ' + serviceId + ' 的本机部署配置（历史记录保留在库里）', 'ok');
     }
-    if (editingServiceID === serviceId) resetServiceForm();
     closeRemoveDialog();
     await refreshServices();
   } catch (e) {
@@ -538,16 +427,8 @@ async function confirmRemoveService() {
   }
 }
 
-$('#svc-save').addEventListener('click', saveServiceContract);
 $('#svc-refresh').addEventListener('click', refreshServices);
-$('#svc-form-cancel').addEventListener('click', resetServiceForm);
 $('#svc-table tbody').addEventListener('click', (e) => {
-  const editBtn = e.target.closest('[data-svc-edit]');
-  if (editBtn) {
-    const svc = services.find((s) => s.serviceId === editBtn.dataset.svcEdit);
-    if (svc) fillServiceForm(svc);
-    return;
-  }
   const delBtn = e.target.closest('[data-svc-delete]');
   if (delBtn) openRemoveDialog(delBtn.dataset.svcDelete);
 });
@@ -1099,7 +980,6 @@ $('#autorefresh').addEventListener('change', () => {
 });
 
 // init
-resetServiceForm();
 refreshServices();
 refresh();
 startPolling();
