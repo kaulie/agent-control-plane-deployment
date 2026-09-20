@@ -94,6 +94,13 @@ func (s *apiServer) registerPanel(mux *http.ServeMux) {
 	})
 }
 
+// handleHealth is a liveness probe for the deployment control plane itself.
+//
+// @Summary  健康检查
+// @Tags     meta
+// @Produce  json
+// @Success  200  {object}  map[string]interface{}
+// @Router   /health [get]
 func (s *apiServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":      true,
@@ -108,6 +115,13 @@ func (s *apiServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 // this control plane's deployment config. `registry` in the response tells the
 // panel whether the pull succeeded, so a registry outage is visible instead of
 // looking like "no services".
+//
+// @Summary  服务目录（service_registry 契约 + 本机部署配置）
+// @Tags     services
+// @Produce  json
+// @Success  200  {object}  map[string]interface{}
+// @Failure  500  {object}  map[string]string
+// @Router   /api/services [get]
 func (s *apiServer) handleListServices(w http.ResponseWriter, r *http.Request) {
 	services, status, err := buildServiceCatalog(r.Context(), s.store, s.registry)
 	if err != nil {
@@ -119,6 +133,14 @@ func (s *apiServer) handleListServices(w http.ResponseWriter, r *http.Request) {
 
 // handleGetService returns one merged catalog entry (404 when the service is
 // neither registered nor locally configured).
+//
+// @Summary  单个服务目录项
+// @Tags     services
+// @Produce  json
+// @Param    serviceId  path  string  true  "服务 id（service_registry 里的 name）"
+// @Success  200  {object}  main.ServiceCatalogEntry
+// @Failure  404  {object}  map[string]string
+// @Router   /api/services/{serviceId} [get]
 func (s *apiServer) handleGetService(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("serviceId"))
 	services, _, err := buildServiceCatalog(r.Context(), s.store, s.registry)
@@ -150,6 +172,21 @@ type putServiceBody struct {
 	GracefulMaxWaitMs *int    `json:"gracefulRestartMaxWaitMs"`
 }
 
+// handlePutService 配置/更新一个服务的**本机部署参数**。服务是否存在由
+// service_registry 决定：未登记 → 400，注册中心不可用且本机也无配置 → 503。
+//
+// @Summary  配置 / 更新服务的部署参数
+// @Tags     services
+// @Accept   json
+// @Produce  json
+// @Param    serviceId  path  string               true  "服务 id（service_registry 里的 name）"
+// @Param    body       body  main.putServiceBody  true  "部署参数（port 必填，1..65535；gitRepoUrl 只读，来自注册中心）"
+// @Success  200  {object}  main.ServiceContract  "已存在配置：更新"
+// @Success  201  {object}  main.ServiceContract  "首次配置"
+// @Failure  400  {object}  map[string]string     "参数非法 / 未在 service_registry 登记"
+// @Failure  409  {object}  map[string]string     "服务端口被其它服务占用"
+// @Failure  503  {object}  map[string]string     "service_registry 不可用，无法确认登记状态"
+// @Router   /api/services/{serviceId} [put]
 func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 	serviceID := strings.TrimSpace(r.PathValue("serviceId"))
 	if serviceID == "" {
@@ -360,6 +397,15 @@ func isServicePortConflict(err error) bool {
 // handleDeleteService 只删本机的部署配置（服务本身仍在 service_registry，可重新
 // 配置）。有在途任务时拒绝（排队中的任务被认领时会找不到契约）；历史记录不在这里
 // 处理 —— 想一起搬走请用 POST /api/services/{serviceId}/history/move。
+//
+// @Summary  清除本机部署配置（不删注册中心契约、不删历史）
+// @Tags     services
+// @Produce  json
+// @Param    serviceId  path  string  true  "服务 id"
+// @Success  200  {object}  map[string]interface{}  "ok + 该 serviceId 名下剩余历史条数（会变成孤儿）"
+// @Failure  404  {object}  map[string]string
+// @Failure  409  {object}  map[string]string  "有在途任务"
+// @Router   /api/services/{serviceId} [delete]
 func (s *apiServer) handleDeleteService(w http.ResponseWriter, r *http.Request) {
 	serviceID := strings.TrimSpace(r.PathValue("serviceId"))
 	if serviceID == "" {
@@ -403,6 +449,14 @@ type ServiceHistoryTarget struct {
 // handleServiceHistory 返回一个 serviceId 名下的历史记录条数 + 可迁移的目标服务，
 // 供面板在「清除旧契约」前确认：是把历史迁到别的服务，还是直接清除配置。
 // 它只读，不改任何东西。
+//
+// @Summary  服务历史概览（条数 + 在途 + 可迁移目标）
+// @Tags     services
+// @Produce  json
+// @Param    serviceId  path  string  true  "服务 id"
+// @Success  200  {object}  map[string]interface{}  "serviceId / history / inflight / targets"
+// @Failure  404  {object}  map[string]string
+// @Router   /api/services/{serviceId}/history [get]
 func (s *apiServer) handleServiceHistory(w http.ResponseWriter, r *http.Request) {
 	serviceID := strings.TrimSpace(r.PathValue("serviceId"))
 	if serviceID == "" {
@@ -459,6 +513,18 @@ type moveServiceHistoryBody struct {
 // handleMoveServiceHistory 把 {serviceId} 名下的流水线 / 部署 / 制品索引改挂到
 // body.to 名下，可选地删掉来源契约 —— 一个事务里完成，用来收拾「注册中心接入前
 // 本机自建的老契约」：老契约删掉，历史记录不丢，跟着新 serviceId 继续显示。
+//
+// @Summary  把历史记录迁移到另一个服务（可顺带删来源契约）
+// @Tags     services
+// @Accept   json
+// @Produce  json
+// @Param    serviceId  path  string                    true  "来源服务 id"
+// @Param    body       body  main.moveServiceHistoryBody true  "to 必须是本机已配置的服务"
+// @Success  200  {object}  map[string]interface{}  "ok + move 明细 + message"
+// @Failure  400  {object}  map[string]string  "to 缺失 / 目标未配置"
+// @Failure  404  {object}  map[string]string
+// @Failure  409  {object}  map[string]string  "有在途任务，一条都不改"
+// @Router   /api/services/{serviceId}/history/move [post]
 func (s *apiServer) handleMoveServiceHistory(w http.ResponseWriter, r *http.Request) {
 	serviceID := strings.TrimSpace(r.PathValue("serviceId"))
 	var body moveServiceHistoryBody
@@ -538,6 +604,22 @@ type createDeployBody struct {
 	RequestID  string `json:"requestId"`
 }
 
+// handleCreateDeploy enqueues a deploy of an already packaged artifact. The
+// caller must identify itself (identity_role / identity_id).
+//
+// @Summary  触发一次部署（部署已打包的制品）
+// @Tags     deploys
+// @Accept   json
+// @Produce  json
+// @Param    body  body  main.createDeployBody  true  "serviceId + deployment（或 hash）"
+// @Success  202  {object}  map[string]interface{}  "DeployJob + poll"
+// @Failure  400  {object}  map[string]string  "参数非法 / 找不到对应制品"
+// @Failure  401  {object}  map[string]string  "缺少或非法的身份头"
+// @Failure  404  {object}  map[string]string  "服务未配置"
+// @Failure  409  {object}  map[string]string  "requestId 已存在"
+// @Security IdentityRole
+// @Security IdentityID
+// @Router   /api/deploys [post]
 func (s *apiServer) handleCreateDeploy(w http.ResponseWriter, r *http.Request) {
 	var body createDeployBody
 	_ = json.NewDecoder(r.Body).Decode(&body)
@@ -600,6 +682,22 @@ func (s *apiServer) handleCreateDeploy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, resp{DeployJob: job, Poll: "/api/deploys/" + requestID})
 }
 
+// @Summary  部署任务历史列表（筛选 + 分页）
+// @Tags     deploys
+// @Produce  json
+// @Param    serviceId        query  string  false  "服务 id"
+// @Param    state            query  string  false  "状态 queued/running/succeeded/failed/cancelled"
+// @Param    triggeredByRole  query  string  false  "触发者角色"
+// @Param    triggeredById    query  string  false  "触发者 id"
+// @Param    deployment       query  string  false  "deployment tag"
+// @Param    version          query  string  false  "版本"
+// @Param    q                query  string  false  "关键字"
+// @Param    from             query  string  false  "requestedAt 下界（ISO）"
+// @Param    to               query  string  false  "requestedAt 上界（ISO）"
+// @Param    page             query  int     false  "页码（默认 1）"
+// @Param    pageSize         query  int     false  "每页条数（默认 20，最大 200）"
+// @Success  200  {object}  map[string]interface{}  "deploys / total / page / pageSize"
+// @Router   /api/deploys [get]
 func (s *apiServer) handleListDeploys(w http.ResponseWriter, r *http.Request) {
 	f := parseListFilter(r)
 	deploys, total, err := s.store.ListDeploysFiltered(f)
@@ -615,6 +713,13 @@ func (s *apiServer) handleListDeploys(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// @Summary  单个部署任务
+// @Tags     deploys
+// @Produce  json
+// @Param    requestId  path  string  true  "部署任务 id"
+// @Success  200  {object}  main.DeployJob
+// @Failure  404  {object}  map[string]string
+// @Router   /api/deploys/{requestId} [get]
 func (s *apiServer) handleGetDeploy(w http.ResponseWriter, r *http.Request) {
 	job, err := s.store.GetDeploy(r.PathValue("requestId"))
 	if err != nil {
@@ -628,6 +733,13 @@ func (s *apiServer) handleGetDeploy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, job)
 }
 
+// @Summary  部署任务事件时间线
+// @Tags     deploys
+// @Produce  json
+// @Param    requestId  path  string  true  "部署任务 id"
+// @Success  200  {object}  map[string]interface{}  "events: []main.DeployEvent"
+// @Failure  404  {object}  map[string]string
+// @Router   /api/deploys/{requestId}/events [get]
 func (s *apiServer) handleListDeployEvents(w http.ResponseWriter, r *http.Request) {
 	requestID := r.PathValue("requestId")
 	job, err := s.store.GetDeploy(requestID)
@@ -653,7 +765,23 @@ type deployNotifyBody struct {
 	RequestID string `json:"requestId"`
 }
 
-// POST /api/deploy-notify — service asks ACP to package then deploy (graceful).
+// handleDeployNotify — 服务通知 ACP「打包当前代码 → 部署」：ACP 统一打包后进入
+// graceful 部署（部署前通知业务方 drain、就绪后 rsync + restart）。调用方必须带
+// 身份头，流水线与它入队的部署都会记录触发者。
+//
+// @Summary  通知打包 + 部署（服务方一键发版）
+// @Tags     pipelines
+// @Accept   json
+// @Produce  json
+// @Param    body  body  main.deployNotifyBody  true  "serviceId + ref?（默认 defaultBranch）"
+// @Success  202  {object}  map[string]interface{}  "PipelineJob + poll"
+// @Failure  400  {object}  map[string]string  "参数非法 / 未登记 gitRepoUrl"
+// @Failure  401  {object}  map[string]string  "缺少或非法的身份头"
+// @Failure  404  {object}  map[string]string  "服务未配置"
+// @Failure  409  {object}  map[string]string  "requestId 已存在"
+// @Security IdentityRole
+// @Security IdentityID
+// @Router   /api/deploy-notify [post]
 func (s *apiServer) handleDeployNotify(w http.ResponseWriter, r *http.Request) {
 	var body deployNotifyBody
 	_ = json.NewDecoder(r.Body).Decode(&body)
@@ -722,6 +850,22 @@ func (s *apiServer) handleDeployNotify(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// @Summary  部署流水线历史列表（筛选 + 分页）
+// @Tags     pipelines
+// @Produce  json
+// @Param    serviceId        query  string  false  "服务 id"
+// @Param    state            query  string  false  "状态 queued/packaging/deploying/succeeded/failed"
+// @Param    triggeredByRole  query  string  false  "触发者角色"
+// @Param    triggeredById    query  string  false  "触发者 id"
+// @Param    ref              query  string  false  "git ref"
+// @Param    version          query  string  false  "版本"
+// @Param    q                query  string  false  "关键字"
+// @Param    from             query  string  false  "requestedAt 下界（ISO）"
+// @Param    to               query  string  false  "requestedAt 上界（ISO）"
+// @Param    page             query  int     false  "页码（默认 1）"
+// @Param    pageSize         query  int     false  "每页条数（默认 20，最大 200）"
+// @Success  200  {object}  map[string]interface{}  "pipelines / total / page / pageSize"
+// @Router   /api/pipelines [get]
 func (s *apiServer) handleListPipelines(w http.ResponseWriter, r *http.Request) {
 	f := parseListFilter(r)
 	jobs, total, err := s.store.ListPipelinesFiltered(f)
@@ -766,6 +910,13 @@ func parseListFilter(r *http.Request) ListFilter {
 	return f
 }
 
+// @Summary  单个部署流水线
+// @Tags     pipelines
+// @Produce  json
+// @Param    requestId  path  string  true  "流水线 id"
+// @Success  200  {object}  main.PipelineJob
+// @Failure  404  {object}  map[string]string
+// @Router   /api/pipelines/{requestId} [get]
 func (s *apiServer) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
 	job, err := s.store.GetPipeline(r.PathValue("requestId"))
 	if err != nil {
@@ -779,6 +930,13 @@ func (s *apiServer) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, job)
 }
 
+// @Summary  流水线事件时间线
+// @Tags     pipelines
+// @Produce  json
+// @Param    requestId  path  string  true  "流水线 id"
+// @Success  200  {object}  map[string]interface{}  "events: []main.PipelineEvent"
+// @Failure  404  {object}  map[string]string
+// @Router   /api/pipelines/{requestId}/events [get]
 func (s *apiServer) handleListPipelineEvents(w http.ResponseWriter, r *http.Request) {
 	requestID := r.PathValue("requestId")
 	job, err := s.store.GetPipeline(requestID)
@@ -800,6 +958,13 @@ func (s *apiServer) handleListPipelineEvents(w http.ResponseWriter, r *http.Requ
 
 // handleListArtifacts returns artifact metadata, optionally filtered by
 // ?serviceId=. The bytes live on GitHub Releases; this is the local index.
+//
+// @Summary  制品索引列表（可选按服务过滤）
+// @Tags     artifacts
+// @Produce  json
+// @Param    serviceId  query  string  false  "服务 id"
+// @Success  200  {object}  map[string]interface{}  "artifacts: []main.Artifact"
+// @Router   /api/artifacts [get]
 func (s *apiServer) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 	serviceID := strings.TrimSpace(r.URL.Query().Get("serviceId"))
 	arts, err := s.store.ListArtifacts(serviceID)
@@ -812,6 +977,15 @@ func (s *apiServer) handleListArtifacts(w http.ResponseWriter, r *http.Request) 
 
 // handleGetArtifact returns a single artifact by tag (requires ?serviceId=
 // because tags are unique per service, not globally).
+//
+// @Summary  单个制品（tag + serviceId）
+// @Tags     artifacts
+// @Produce  json
+// @Param    tag        path   string  true  "deployment tag"
+// @Param    serviceId  query  string  true  "服务 id"
+// @Success  200  {object}  main.Artifact
+// @Failure  404  {object}  map[string]string
+// @Router   /api/artifacts/{tag} [get]
 func (s *apiServer) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	tag := r.PathValue("tag")
 	serviceID := strings.TrimSpace(r.URL.Query().Get("serviceId"))
@@ -834,6 +1008,16 @@ func (s *apiServer) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 // handleScanArtifacts scans the service repo's GitHub Releases and upserts
 // artifact rows, backfilling the local table from existing storage. Requires
 // ?serviceId= whose contract has a gitRepoUrl.
+//
+// @Summary  扫描制品存储并回填本地索引
+// @Tags     artifacts
+// @Produce  json
+// @Param    serviceId  query  string  true  "服务 id"
+// @Success  200  {object}  map[string]interface{}  "scanned / recorded / serviceId / storage"
+// @Failure  400  {object}  map[string]string  "未登记 gitRepoUrl"
+// @Failure  404  {object}  map[string]string
+// @Failure  502  {object}  map[string]string  "扫描后端失败"
+// @Router   /api/artifacts/scan [post]
 func (s *apiServer) handleScanArtifacts(w http.ResponseWriter, r *http.Request) {
 	serviceID := strings.TrimSpace(r.URL.Query().Get("serviceId"))
 	if serviceID == "" {
@@ -893,6 +1077,14 @@ func (s *apiServer) handleScanArtifacts(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"scanned": len(items), "recorded": recorded, "serviceId": serviceID, "storage": storageName})
 }
 
+// @Summary  graceful：通知进入 drain（平台请求排空）
+// @Tags     ops
+// @Accept   json
+// @Produce  json
+// @Param    body  body  main.restartNotifyBody  true  "requestId（本次重启的部署任务 id）"
+// @Success  202  {object}  map[string]interface{}  "ok / draining"
+// @Failure  400  {object}  map[string]string
+// @Router   /restart/notify [post]
 func (s *apiServer) handleRestartNotify(w http.ResponseWriter, r *http.Request) {
 	var body restartNotifyBody
 	_ = json.NewDecoder(r.Body).Decode(&body)
@@ -905,6 +1097,11 @@ func (s *apiServer) handleRestartNotify(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "draining": true})
 }
 
+// @Summary  graceful：轮询是否可重启（无在途任务）
+// @Tags     ops
+// @Produce  json
+// @Success  200  {object}  map[string]interface{}  "canRestart / canDeploy / ready / draining / inflightDeploys / inflightPipes"
+// @Router   /restart/poll [get]
 func (s *apiServer) handleRestartPoll(w http.ResponseWriter, r *http.Request) {
 	if !s.drain.IsDraining() {
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -972,6 +1169,11 @@ func (s *apiServer) deployRunning(requestID string) bool {
 	return dep.State == StateRunning
 }
 
+// @Summary  元信息（路径 / 端口 / 制品后端 / 注册中心状态）
+// @Tags     meta
+// @Produce  json
+// @Success  200  {object}  map[string]interface{}
+// @Router   /api/meta [get]
 func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
 	example, _ := normalizeDeploymentTag("abc12345")
 	writeJSON(w, http.StatusOK, map[string]any{

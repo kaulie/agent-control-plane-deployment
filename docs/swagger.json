@@ -1,0 +1,1539 @@
+{
+    "schemes": [
+        "http"
+    ],
+    "swagger": "2.0",
+    "info": {
+        "description": "独立部署控制面（:4220）：打包 / 部署 / 制品索引 / 服务契约部署参数 + Web 面板。\n服务目录（GET /api/services）的唯一真源是 service-registry（:4240），本机只存部署参数。\n鉴权（第一阶段）：触发部署的接口（POST /api/deploys、POST /api/deploy-notify）要求身份头 identity_role / identity_id；只读接口与 /restart/* 不校验。",
+        "title": "agent-control-plane-deployment",
+        "contact": {},
+        "version": "1.0.0"
+    },
+    "host": "127.0.0.1:4220",
+    "basePath": "/",
+    "paths": {
+        "/api/artifacts": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "artifacts"
+                ],
+                "summary": "制品索引列表（可选按服务过滤）",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "服务 id",
+                        "name": "serviceId",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "artifacts: []main.Artifact",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/artifacts/scan": {
+            "post": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "artifacts"
+                ],
+                "summary": "扫描制品存储并回填本地索引",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "服务 id",
+                        "name": "serviceId",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "scanned / recorded / serviceId / storage",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "未登记 gitRepoUrl",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "扫描后端失败",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/artifacts/{tag}": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "artifacts"
+                ],
+                "summary": "单个制品（tag + serviceId）",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "deployment tag",
+                        "name": "tag",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "服务 id",
+                        "name": "serviceId",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/main.Artifact"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/deploy-notify": {
+            "post": {
+                "security": [
+                    {
+                        "IdentityRole": []
+                    },
+                    {
+                        "IdentityID": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "pipelines"
+                ],
+                "summary": "通知打包 + 部署（服务方一键发版）",
+                "parameters": [
+                    {
+                        "description": "serviceId + ref?（默认 defaultBranch）",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/main.deployNotifyBody"
+                        }
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "PipelineJob + poll",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "参数非法 / 未登记 gitRepoUrl",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "缺少或非法的身份头",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "服务未配置",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "requestId 已存在",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/deploys": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "deploys"
+                ],
+                "summary": "部署任务历史列表（筛选 + 分页）",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "服务 id",
+                        "name": "serviceId",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "状态 queued/running/succeeded/failed/cancelled",
+                        "name": "state",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "触发者角色",
+                        "name": "triggeredByRole",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "触发者 id",
+                        "name": "triggeredById",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "deployment tag",
+                        "name": "deployment",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "版本",
+                        "name": "version",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "关键字",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "requestedAt 下界（ISO）",
+                        "name": "from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "requestedAt 上界（ISO）",
+                        "name": "to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "页码（默认 1）",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "每页条数（默认 20，最大 200）",
+                        "name": "pageSize",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "deploys / total / page / pageSize",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "IdentityRole": []
+                    },
+                    {
+                        "IdentityID": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "deploys"
+                ],
+                "summary": "触发一次部署（部署已打包的制品）",
+                "parameters": [
+                    {
+                        "description": "serviceId + deployment（或 hash）",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/main.createDeployBody"
+                        }
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "DeployJob + poll",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "参数非法 / 找不到对应制品",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "缺少或非法的身份头",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "服务未配置",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "requestId 已存在",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/deploys/{requestId}": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "deploys"
+                ],
+                "summary": "单个部署任务",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "部署任务 id",
+                        "name": "requestId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/main.DeployJob"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/deploys/{requestId}/events": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "deploys"
+                ],
+                "summary": "部署任务事件时间线",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "部署任务 id",
+                        "name": "requestId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "events: []main.DeployEvent",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/meta": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "meta"
+                ],
+                "summary": "元信息（路径 / 端口 / 制品后端 / 注册中心状态）",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/pipelines": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "pipelines"
+                ],
+                "summary": "部署流水线历史列表（筛选 + 分页）",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "服务 id",
+                        "name": "serviceId",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "状态 queued/packaging/deploying/succeeded/failed",
+                        "name": "state",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "触发者角色",
+                        "name": "triggeredByRole",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "触发者 id",
+                        "name": "triggeredById",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "git ref",
+                        "name": "ref",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "版本",
+                        "name": "version",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "关键字",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "requestedAt 下界（ISO）",
+                        "name": "from",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "requestedAt 上界（ISO）",
+                        "name": "to",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "页码（默认 1）",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "每页条数（默认 20，最大 200）",
+                        "name": "pageSize",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "pipelines / total / page / pageSize",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/pipelines/{requestId}": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "pipelines"
+                ],
+                "summary": "单个部署流水线",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "流水线 id",
+                        "name": "requestId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/main.PipelineJob"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/pipelines/{requestId}/events": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "pipelines"
+                ],
+                "summary": "流水线事件时间线",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "流水线 id",
+                        "name": "requestId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "events: []main.PipelineEvent",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/services": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "services"
+                ],
+                "summary": "服务目录（service_registry 契约 + 本机部署配置）",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/services/{serviceId}": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "services"
+                ],
+                "summary": "单个服务目录项",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "服务 id（service_registry 里的 name）",
+                        "name": "serviceId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/main.ServiceCatalogEntry"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "services"
+                ],
+                "summary": "配置 / 更新服务的部署参数",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "服务 id（service_registry 里的 name）",
+                        "name": "serviceId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "部署参数（port 必填，1..65535；gitRepoUrl 只读，来自注册中心）",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/main.putServiceBody"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "已存在配置：更新",
+                        "schema": {
+                            "$ref": "#/definitions/main.ServiceContract"
+                        }
+                    },
+                    "201": {
+                        "description": "首次配置",
+                        "schema": {
+                            "$ref": "#/definitions/main.ServiceContract"
+                        }
+                    },
+                    "400": {
+                        "description": "参数非法 / 未在 service_registry 登记",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "服务端口被其它服务占用",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "service_registry 不可用，无法确认登记状态",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "services"
+                ],
+                "summary": "清除本机部署配置（不删注册中心契约、不删历史）",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "服务 id",
+                        "name": "serviceId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "ok + 该 serviceId 名下剩余历史条数（会变成孤儿）",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "有在途任务",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/services/{serviceId}/history": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "services"
+                ],
+                "summary": "服务历史概览（条数 + 在途 + 可迁移目标）",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "服务 id",
+                        "name": "serviceId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "serviceId / history / inflight / targets",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/services/{serviceId}/history/move": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "services"
+                ],
+                "summary": "把历史记录迁移到另一个服务（可顺带删来源契约）",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "来源服务 id",
+                        "name": "serviceId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "to 必须是本机已配置的服务",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/main.moveServiceHistoryBody"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "ok + move 明细 + message",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "to 缺失 / 目标未配置",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "有在途任务，一条都不改",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/health": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "meta"
+                ],
+                "summary": "健康检查",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/restart/notify": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "ops"
+                ],
+                "summary": "graceful：通知进入 drain（平台请求排空）",
+                "parameters": [
+                    {
+                        "description": "requestId（本次重启的部署任务 id）",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/main.restartNotifyBody"
+                        }
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "ok / draining",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/restart/poll": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "ops"
+                ],
+                "summary": "graceful：轮询是否可重启（无在途任务）",
+                "responses": {
+                    "200": {
+                        "description": "canRestart / canDeploy / ready / draining / inflightDeploys / inflightPipes",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "main.Artifact": {
+            "type": "object",
+            "properties": {
+                "assetId": {
+                    "type": "integer"
+                },
+                "assetName": {
+                    "type": "string"
+                },
+                "assetUrl": {
+                    "description": "GitHub API download URL",
+                    "type": "string"
+                },
+                "browserDownloadUrl": {
+                    "description": "direct https download",
+                    "type": "string"
+                },
+                "commit": {
+                    "description": "full sha",
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "gitRepoUrl": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "releaseUrl": {
+                    "description": "release html_url",
+                    "type": "string"
+                },
+                "repoSlug": {
+                    "description": "owner/repo",
+                    "type": "string"
+                },
+                "serviceId": {
+                    "type": "string"
+                },
+                "size": {
+                    "type": "integer"
+                },
+                "storage": {
+                    "description": "github_release",
+                    "type": "string"
+                },
+                "tag": {
+                    "description": "deployment-\u003chash\u003e",
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.DeployJob": {
+            "type": "object",
+            "properties": {
+                "deployment": {
+                    "type": "string"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "finishedAt": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "requestId": {
+                    "type": "string"
+                },
+                "requestedAt": {
+                    "type": "string"
+                },
+                "serviceId": {
+                    "type": "string"
+                },
+                "startedAt": {
+                    "type": "string"
+                },
+                "state": {
+                    "$ref": "#/definitions/main.DeployState"
+                },
+                "triggeredBy": {
+                    "type": "string"
+                },
+                "triggeredById": {
+                    "type": "string"
+                },
+                "triggeredByRole": {
+                    "description": "Who triggered this deploy (phase-1 identity headers). Empty = unidentified\n(requests recorded before the feature, or IDENTITY_ENFORCE=0).",
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.DeployState": {
+            "type": "string",
+            "enum": [
+                "queued",
+                "running",
+                "succeeded",
+                "failed",
+                "cancelled"
+            ],
+            "x-enum-varnames": [
+                "StateQueued",
+                "StateRunning",
+                "StateSucceeded",
+                "StateFailed",
+                "StateCancelled"
+            ]
+        },
+        "main.PipelineJob": {
+            "type": "object",
+            "properties": {
+                "deployRequestId": {
+                    "type": "string"
+                },
+                "deployment": {
+                    "type": "string"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "finishedAt": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "ref": {
+                    "type": "string"
+                },
+                "requestId": {
+                    "type": "string"
+                },
+                "requestedAt": {
+                    "type": "string"
+                },
+                "serviceId": {
+                    "type": "string"
+                },
+                "startedAt": {
+                    "type": "string"
+                },
+                "state": {
+                    "$ref": "#/definitions/main.PipelineState"
+                },
+                "triggeredBy": {
+                    "type": "string"
+                },
+                "triggeredById": {
+                    "type": "string"
+                },
+                "triggeredByRole": {
+                    "description": "Who triggered this pipeline (phase-1 identity headers). Empty =\nunidentified (recorded before the feature, or IDENTITY_ENFORCE=0).",
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.PipelineState": {
+            "type": "string",
+            "enum": [
+                "queued",
+                "packaging",
+                "deploying",
+                "succeeded",
+                "failed"
+            ],
+            "x-enum-varnames": [
+                "PipelineQueued",
+                "PipelinePackaging",
+                "PipelineDeploying",
+                "PipelineSucceeded",
+                "PipelineFailed"
+            ]
+        },
+        "main.RegistryAPI": {
+            "type": "object",
+            "properties": {
+                "docsUrl": {
+                    "type": "string"
+                },
+                "endpoints": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/main.RegistryEndpoint"
+                    }
+                },
+                "hasSpec": {
+                    "type": "boolean"
+                },
+                "protocols": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "specHash": {
+                    "type": "string"
+                },
+                "specUrl": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.RegistryEndpoint": {
+            "type": "object",
+            "properties": {
+                "method": {
+                    "type": "string"
+                },
+                "path": {
+                    "type": "string"
+                },
+                "summary": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.RegistryService": {
+            "type": "object",
+            "properties": {
+                "api": {
+                    "$ref": "#/definitions/main.RegistryAPI"
+                },
+                "basePath": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "gitRepoUrl": {
+                    "type": "string"
+                },
+                "healthPath": {
+                    "type": "string"
+                },
+                "instanceCount": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "namespace": {
+                    "type": "string"
+                },
+                "owner": {
+                    "type": "string"
+                },
+                "revision": {
+                    "type": "integer"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "updatedAt": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.ServiceCatalogEntry": {
+            "type": "object",
+            "properties": {
+                "configured": {
+                    "description": "Configured: this control plane has deployment settings for it.",
+                    "type": "boolean"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "defaultBranch": {
+                    "description": "Default git branch/ref for packaging when notify omits ref (default: main).",
+                    "type": "string"
+                },
+                "gitRepoUrl": {
+                    "description": "Git repo used by POST /api/deploy-notify packaging.",
+                    "type": "string"
+                },
+                "gracefulRestartMaxWaitMs": {
+                    "description": "0 = use server default (GRACEFUL_RESTART_MAX_WAIT_MS).",
+                    "type": "integer"
+                },
+                "healthUrl": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "port": {
+                    "description": "Port 是部署契约里显式声明的服务端口（本地运行端口，1..65535）。\n0 = 未设置 → 仍按 HealthURL 里的端口推导（老契约行为不变）。它只用于给\nstart/stop/restart 脚本传 PORT；探活仍然走 HealthURL。",
+                    "type": "integer"
+                },
+                "registered": {
+                    "description": "Registered: the service exists in service_registry — the only way a\nservice can appear here, since the control plane cannot create one.",
+                    "type": "boolean"
+                },
+                "registry": {
+                    "description": "Registry: the registry's metadata (nil when registered=false).",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/main.RegistryService"
+                        }
+                    ]
+                },
+                "restartCmd": {
+                    "type": "string"
+                },
+                "restartNotifyUrl": {
+                    "description": "Project-provided graceful restart endpoints (both required to enable).",
+                    "type": "string"
+                },
+                "restartPollUrl": {
+                    "type": "string"
+                },
+                "runtimeDir": {
+                    "type": "string"
+                },
+                "serviceId": {
+                    "type": "string"
+                },
+                "startCmd": {
+                    "type": "string"
+                },
+                "stopCmd": {
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.ServiceContract": {
+            "type": "object",
+            "properties": {
+                "createdAt": {
+                    "type": "string"
+                },
+                "defaultBranch": {
+                    "description": "Default git branch/ref for packaging when notify omits ref (default: main).",
+                    "type": "string"
+                },
+                "gitRepoUrl": {
+                    "description": "Git repo used by POST /api/deploy-notify packaging.",
+                    "type": "string"
+                },
+                "gracefulRestartMaxWaitMs": {
+                    "description": "0 = use server default (GRACEFUL_RESTART_MAX_WAIT_MS).",
+                    "type": "integer"
+                },
+                "healthUrl": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "port": {
+                    "description": "Port 是部署契约里显式声明的服务端口（本地运行端口，1..65535）。\n0 = 未设置 → 仍按 HealthURL 里的端口推导（老契约行为不变）。它只用于给\nstart/stop/restart 脚本传 PORT；探活仍然走 HealthURL。",
+                    "type": "integer"
+                },
+                "restartCmd": {
+                    "type": "string"
+                },
+                "restartNotifyUrl": {
+                    "description": "Project-provided graceful restart endpoints (both required to enable).",
+                    "type": "string"
+                },
+                "restartPollUrl": {
+                    "type": "string"
+                },
+                "runtimeDir": {
+                    "type": "string"
+                },
+                "serviceId": {
+                    "type": "string"
+                },
+                "startCmd": {
+                    "type": "string"
+                },
+                "stopCmd": {
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.createDeployBody": {
+            "type": "object",
+            "properties": {
+                "deployment": {
+                    "type": "string"
+                },
+                "hash": {
+                    "type": "string"
+                },
+                "requestId": {
+                    "type": "string"
+                },
+                "serviceId": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.deployNotifyBody": {
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string"
+                },
+                "requestId": {
+                    "type": "string"
+                },
+                "serviceId": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.moveServiceHistoryBody": {
+            "type": "object",
+            "properties": {
+                "deleteSourceContract": {
+                    "description": "DeleteSourceContract = 迁移完成后顺手删掉来源 serviceId 的本机部署配置。",
+                    "type": "boolean"
+                },
+                "to": {
+                    "description": "To = 目标 serviceId（必须在本机已有部署配置）。",
+                    "type": "string"
+                }
+            }
+        },
+        "main.putServiceBody": {
+            "type": "object",
+            "properties": {
+                "defaultBranch": {
+                    "type": "string"
+                },
+                "gitRepoUrl": {
+                    "type": "string"
+                },
+                "gracefulRestartMaxWaitMs": {
+                    "type": "integer"
+                },
+                "healthUrl": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "port": {
+                    "type": "integer"
+                },
+                "restartCmd": {
+                    "type": "string"
+                },
+                "restartNotifyUrl": {
+                    "type": "string"
+                },
+                "restartPollUrl": {
+                    "type": "string"
+                },
+                "runtimeDir": {
+                    "type": "string"
+                },
+                "startCmd": {
+                    "type": "string"
+                },
+                "stopCmd": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.restartNotifyBody": {
+            "type": "object",
+            "properties": {
+                "deployment": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "requestId": {
+                    "type": "string"
+                },
+                "serviceId": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        }
+    },
+    "securityDefinitions": {
+        "IdentityID": {
+            "description": "调用者标识（如 user_001 / agent_002）；触发部署的接口必填",
+            "type": "apiKey",
+            "name": "identity_id",
+            "in": "header"
+        },
+        "IdentityRole": {
+            "description": "调用者角色（user | agent）；触发部署的接口必填",
+            "type": "apiKey",
+            "name": "identity_role",
+            "in": "header"
+        }
+    }
+}
