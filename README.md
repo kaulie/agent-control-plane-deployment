@@ -141,6 +141,33 @@ curl -sS -X PUT http://127.0.0.1:4220/api/services/web-cursor \
 | `SERVICE_REGISTRY_TOKEN` | 空 | 注册中心读令牌（`REGISTRY_READ_AUTH=token` 时用） |
 | `SERVICE_REGISTRY_TIMEOUT_SEC` | `5` | 单次拉取超时（秒） |
 
+### 本服务自身的契约登记（注解是唯一真源）
+
+本服务登记到注册中心（`:4240`）的**契约由代码注解自动生成 / 上报**，不再有手工维护的规范文件
+（老做法「手工贴 spec」已废弃）：
+
+1. `src/main.go` 顶部的 General API Info（`@title/@version/@BasePath/@host` + 身份鉴权定义 + tag 说明）；
+2. `src/server.go` 每个 handler 的 `@Summary/@Tags/@Router`（外加 `@Param/@Success/@Failure/@Security`），
+   类型引用真实的 `ServiceContract` / `DeployJob` / `PipelineJob` / `Artifact` 等 —— 规范里的结构就是
+   handler 真正编解码的结构；
+3. `swag init -g src/main.go -o docs --parseInternal --outputTypes json` 从注解生成
+   `docs/swagger.json`（**生成物**，接口改了重新生成即可；`-g` 相对仓库根、`-d` 默认 `.`，别写 `-d src`）；
+4. `build.sh` 末尾按注解登记：读注解 → 生成规范 → 幂等 `PUT` 给注册中心
+   （`client/ci/register-go-service.sh`；`client/` 是注册中心脚本的原样拷贝，见 `client/README.md`）。
+
+登记**幂等**：契约没变化时 `register.sh` 跳过 `PUT`、不刷 revision；实例集合按声明式对齐
+（默认 `127.0.0.1:4220`）。登记**不参与打包成败** —— 注册中心不可达 / 缺 `swag` 只告警，不挡发布；
+要跳过设 `REGISTER_CONTRACT=0`，换端口 / 部门 / 实例用 `INSTANCES` / `DEPARTMENT_ID` /
+`SERVICE_NAME` 覆盖。
+
+```bash
+# 手动登记一次（本机；注册中心只绑 127.0.0.1，GitHub-hosted runner 够不到）
+SERVICE_NAME=agent-control-plane-deployment REGISTRY_URL=http://127.0.0.1:4240 \
+SWAG_MAIN=src/main.go SWAG_OUT=docs SWAG_ARGS="--parseInternal --outputTypes json" \
+DEPARTMENT_ID=D0004 INSTANCES=127.0.0.1:4220 OWNER=kaulie HEALTH_PATH=/health \
+VERSION="$(git describe --tags --always)" \
+  bash client/ci/register-go-service.sh
+```
 
 ### Graceful restart（可选）
 

@@ -61,6 +61,45 @@ func seedACPService(store *Store, cfg Config) {
 	log.Printf("[seed] registered service agent-control-plane-deployment → %s", cfg.Home)
 }
 
+// General API Info for swag — the **single source of truth** of this service's
+// HTTP contract. `swag init -d src -g main.go -o docs --parseInternal
+// --outputTypes json` reads this block plus the @Summary/@Tags/@Router
+// annotations on every handler (see server.go) and writes docs/swagger.json.
+// `client/ci/register-go-service.sh` then reports that spec to service-registry
+// (:4240). There is no hand-maintained spec file to keep in sync: change a
+// route, change its annotation.
+//
+// @title        agent-control-plane-deployment
+// @version      1.0.0
+// @description  独立部署控制面（:4220）：打包 / 部署 / 制品索引 / 服务契约部署参数 + Web 面板。
+// @description  服务目录（GET /api/services）的唯一真源是 service-registry（:4240），本机只存部署参数。
+// @description  鉴权（第一阶段）：触发部署的接口（POST /api/deploys、POST /api/deploy-notify）要求身份头 identity_role / identity_id；只读接口与 /restart/* 不校验。
+// @BasePath     /
+// @schemes      http
+// @host         127.0.0.1:4220
+//
+// @securityDefinitions.apikey  IdentityRole
+// @in                          header
+// @name                        identity_role
+// @description                 调用者角色（user | agent）；触发部署的接口必填
+//
+// @securityDefinitions.apikey  IdentityID
+// @in                          header
+// @name                        identity_id
+// @description                 调用者标识（如 user_001 / agent_002）；触发部署的接口必填
+//
+// @tag.name         meta
+// @tag.description  元信息与健康检查
+// @tag.name         services
+// @tag.description  服务契约：目录来自 service-registry，本机只配置部署参数
+// @tag.name         pipelines
+// @tag.description  部署流水线（打包 → 部署）
+// @tag.name         deploys
+// @tag.description  部署任务（部署已打包好的制品）
+// @tag.name         artifacts
+// @tag.description  制品索引（GitHub Release / 阿里云制品仓库）
+// @tag.name         ops
+// @tag.description  graceful 重启（drain 通知与轮询）
 func main() {
 	cfg := loadConfig()
 	store, err := NewStore(cfg.DBPath)
