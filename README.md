@@ -195,6 +195,14 @@ Notify 请求体示例：`{ serviceId, requestId, deployment, version, message }
 
 ACP 自己（自升级）的 `GET /restart/poll` 在 drain 期间统计**真正在途**的工作：`running` 的部署 + 正在打包（`packaging`）的流水线 + 部署**已开始跑**（`deploying` 且其 deploy 为 `running`）的流水线。**只是排了队还没开始的 deploy 不算在途** —— drain 期间 worker 不认领新任务，若把它算在途就会和 restart 窗口互相等待（轮询永远不 ready，队列里的 deploy 也永远不跑），只能等 `gracefulRestartMaxWaitMs` 超时强制重启；现在这种 deploy 直接留给重启后的新进程认领执行。
 
+### 部署并发：同一运行目录串行，不同服务并行
+
+`DeployWorker` **不再一次只跑一个部署**：它按 **runtimeDir** 做互斥（两个契约可以指向同一个运行目录，例如本机自建的 `web-cursor` 与注册中心同步过来的 `agent-control-plane` 都部署 `~/runtime/web-cursor`，这两个永远串行），**不同运行目录的部署并行执行**（每个部署一个 goroutine；`Stop()` 会等它们跑完）。drain 期间照旧不认领新部署。
+
+为什么改：某个服务停在业务方的 graceful 窗口里（最长 `gracefulRestartMaxWaitMs`，默认 10 分钟）时，旧实现会让**整个部署队列停摆** —— 排在后面的服务（哪怕毫不相干）一直停在 `queued`，而它们的流水线状态已经是 `deploying`，面板上看起来就是「卡住了」。不同服务的 rsync/restart 互不影响，串行只会互相拖累。
+
+同一个运行目录的部署按 `requested_at` 先到先得：排在后面的那条会一直等到前面那条结束（下一次 tick 认领），不会两条同时 rsync 同一个目录。
+
 本服务**不再**内置 watchdog（不探活、不自动 `startCmd`）。应用存活由外部 ops（如 `~/deployment/web-cursor/ops/watchdog.sh`）负责。
 
 ## 发版与部署

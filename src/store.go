@@ -441,10 +441,17 @@ func (s *Store) ClaimNextQueued() (*DeployJob, error) {
 		}
 		return nil, err
 	}
-	startedAt := nowISO()
+	return s.ClaimQueued(requestID)
+}
+
+// ClaimQueued atomically moves one specific queued deploy to `running`.
+// Returns (nil, nil) when the row is no longer queued (already claimed by
+// another tick/process) — callers must treat that as "somebody else took it".
+// The conditional UPDATE is the CAS that keeps concurrent claims safe.
+func (s *Store) ClaimQueued(requestID string) (*DeployJob, error) {
 	res, err := s.db.Exec(
 		`UPDATE deploys SET state = 'running', started_at = ? WHERE request_id = ? AND state = 'queued'`,
-		startedAt, requestID,
+		nowISO(), requestID,
 	)
 	if err != nil {
 		return nil, err
@@ -454,6 +461,29 @@ func (s *Store) ClaimNextQueued() (*DeployJob, error) {
 		return nil, nil
 	}
 	return s.GetDeploy(requestID)
+}
+
+// QueuedDeploys returns every deploy still waiting to be claimed, oldest first.
+// The worker uses the whole list (not just the head) so it can pick the oldest
+// entry that is *runnable* instead of blocking on one that is not.
+func (s *Store) QueuedDeploys() ([]DeployJob, error) {
+	rows, err := s.db.Query("SELECT " + deployColumns + " FROM deploys WHERE state = 'queued' ORDER BY requested_at ASC, request_id ASC")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DeployJob
+	for rows.Next() {
+		job, err := scanDeployRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *job)
+	}
+	if out == nil {
+		out = []DeployJob{}
+	}
+	return out, rows.Err()
 }
 
 type FinishPatch struct {

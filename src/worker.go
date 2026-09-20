@@ -531,9 +531,17 @@ type DeployWorker struct {
 	storage ArtifactStorage
 	drain   *GracefulDrain
 	mu      sync.Mutex
-	busy    bool
-	stopCh  chan struct{}
-	wg      sync.WaitGroup
+	ticking bool
+	// active maps a deployment unit (a runtime dir) to the requestID currently
+	// deploying it. Deploys of *different* units run concurrently; the same
+	// unit never runs twice at once (two contracts can share one runtimeDir,
+	// e.g. the seeded `web-cursor` and the registry `agent-control-plane`).
+	active   map[string]string
+	stopCh   chan struct{}
+	loopWg   sync.WaitGroup
+	deployWg sync.WaitGroup
+	// run executes one claimed deploy. Overridable in tests.
+	run func(requestID string)
 }
 
 func NewDeployWorker(store *Store, cfg Config, storage ArtifactStorage, drain *GracefulDrain) *DeployWorker {
@@ -542,14 +550,18 @@ func NewDeployWorker(store *Store, cfg Config, storage ArtifactStorage, drain *G
 		cfg:     cfg,
 		storage: storage,
 		drain:   drain,
+		active:  map[string]string{},
 		stopCh:  make(chan struct{}),
+		run: func(requestID string) {
+			executeDeploy(store, cfg, storage, drain, requestID)
+		},
 	}
 }
 
 func (w *DeployWorker) Start() {
-	w.wg.Add(1)
+	w.loopWg.Add(1)
 	go func() {
-		defer w.wg.Done()
+		defer w.loopWg.Done()
 		t := time.NewTicker(time.Second)
 		defer t.Stop()
 		w.tick()
@@ -570,40 +582,107 @@ func (w *DeployWorker) Stop() {
 	default:
 		close(w.stopCh)
 	}
-	w.wg.Wait()
+	w.loopWg.Wait()   // no new claims
+	w.deployWg.Wait() // let the in-flight deploys finish
 }
 
 func (w *DeployWorker) Kick() {
 	go w.tick()
 }
 
+// tick claims every queued deploy whose runtime is idle and runs each one in
+// its own goroutine.
+//
+// It used to run exactly one deploy at a time (single `busy` flag + a
+// synchronous executeDeploy), which meant one service sitting in its peer's
+// graceful restart window blocked the whole queue: the peer is polled for up to
+// `gracefulRestartMaxWaitMs` (default 10 minutes) before the deploy is forced,
+// and during that time every later deploy — including deploys of unrelated
+// services — stayed `queued` while its pipeline showed `deploying`. Deploys of
+// different services touch different runtimeDir/processes, so they are run
+// concurrently; only the same runtimeDir is serialized.
 func (w *DeployWorker) tick() {
-	w.mu.Lock()
-	if w.busy {
-		w.mu.Unlock()
-		return
-	}
 	if w.drain.IsDraining() {
 		// graceful self-restart in progress: do not claim new deploys
+		return
+	}
+	w.mu.Lock()
+	if w.ticking {
 		w.mu.Unlock()
 		return
 	}
-	w.busy = true
+	w.ticking = true
 	w.mu.Unlock()
-
 	defer func() {
 		w.mu.Lock()
-		w.busy = false
+		w.ticking = false
 		w.mu.Unlock()
 	}()
 
-	job, err := w.store.ClaimNextQueued()
+	queued, err := w.store.QueuedDeploys()
 	if err != nil {
 		fmt.Printf("[deploy-worker] %v\n", err)
 		return
 	}
-	if job == nil {
-		return
+	for _, candidate := range queued {
+		if w.drain.IsDraining() {
+			return
+		}
+		unit, ok := w.reserveUnit(candidate.ServiceID, candidate.RequestID)
+		if !ok {
+			// another deploy of the same runtime is in flight; its turn comes
+			// when that one finishes (the next tick picks it up)
+			continue
+		}
+		job, err := w.store.ClaimQueued(candidate.RequestID)
+		if err != nil {
+			w.releaseUnit(unit, candidate.RequestID)
+			fmt.Printf("[deploy-worker] claim %s: %v\n", candidate.RequestID, err)
+			continue
+		}
+		if job == nil {
+			// lost the race (another tick/process claimed it)
+			w.releaseUnit(unit, candidate.RequestID)
+			continue
+		}
+		w.deployWg.Add(1)
+		go func(job DeployJob, unit string) {
+			defer w.deployWg.Done()
+			defer w.releaseUnit(unit, job.RequestID)
+			w.run(job.RequestID)
+		}(*job, unit)
 	}
-	executeDeploy(w.store, w.cfg, w.storage, w.drain, job.RequestID)
+}
+
+// deployUnit is the mutual-exclusion key for a deploy: the service's runtime
+// dir, so two contracts pointing at the same runtime never deploy at once.
+func (w *DeployWorker) deployUnit(serviceID string) string {
+	if svc, err := w.store.GetService(serviceID); err == nil && svc != nil {
+		if dir := strings.TrimSpace(svc.RuntimeDir); dir != "" {
+			return filepath.Clean(dir)
+		}
+	}
+	return "service:" + serviceID
+}
+
+func (w *DeployWorker) reserveUnit(serviceID, requestID string) (string, bool) {
+	unit := w.deployUnit(serviceID)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, busy := w.active[unit]; busy {
+		return unit, false
+	}
+	w.active[unit] = requestID
+	return unit, true
+}
+
+// releaseUnit only drops the reservation this requestID holds, so a tick that
+// reserved the same unit and then lost the claim race can never free a unit
+// that the winner is using.
+func (w *DeployWorker) releaseUnit(unit, requestID string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.active[unit] == requestID {
+		delete(w.active, unit)
+	}
 }

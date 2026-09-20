@@ -177,7 +177,7 @@ func (w *PipelineWorker) execute(job *PipelineJob) {
 		Deployment:      pkg.Tag,
 		DeployRequestID: deployID,
 		Version:         pkg.Hash,
-		Message:         "deploy queued; waiting for graceful restart window then apply",
+		Message:         "deploy queued; waiting for a free deploy slot, then graceful notify+poll before restart",
 	})
 	w.deploy.Kick()
 	fmt.Printf("[pipeline] %s packaged %s → deploy %s (by=%s)\n",
