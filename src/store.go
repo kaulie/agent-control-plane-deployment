@@ -580,3 +580,11 @@ func nullIfEmpty(s string) any {
 	}
 	return s
 }
+
+// boolToInt stores a Go bool in a SQLite INTEGER column (0/1).
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}

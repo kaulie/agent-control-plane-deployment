@@ -18,18 +18,21 @@ const (
 )
 
 type PipelineJob struct {
-	RequestID       string        `json:"requestId"`
-	ServiceID       string        `json:"serviceId"`
-	Ref             string        `json:"ref"`
-	State           PipelineState `json:"state"`
-	Deployment      string        `json:"deployment,omitempty"`
-	DeployRequestID string        `json:"deployRequestId,omitempty"`
-	Version         string        `json:"version,omitempty"`
-	Error           string        `json:"error,omitempty"`
-	Message         string        `json:"message,omitempty"`
-	RequestedAt     string        `json:"requestedAt"`
-	StartedAt       string        `json:"startedAt,omitempty"`
-	FinishedAt      string        `json:"finishedAt,omitempty"`
+	RequestID string        `json:"requestId"`
+	ServiceID string        `json:"serviceId"`
+	Ref       string        `json:"ref"`
+	State     PipelineState `json:"state"`
+	// UseProxy 是发起时的选项：打包（git fetch + build.sh）走本机代理。
+	// 本机代理从 data/proxy.env（PROXY_ENV_FILE）读。
+	UseProxy        bool   `json:"useProxy,omitempty"`
+	Deployment      string `json:"deployment,omitempty"`
+	DeployRequestID string `json:"deployRequestId,omitempty"`
+	Version         string `json:"version,omitempty"`
+	Error           string `json:"error,omitempty"`
+	Message         string `json:"message,omitempty"`
+	RequestedAt     string `json:"requestedAt"`
+	StartedAt       string `json:"startedAt,omitempty"`
+	FinishedAt      string `json:"finishedAt,omitempty"`
 	// Who triggered this pipeline (phase-1 identity headers). Empty =
 	// unidentified (recorded before the feature, or IDENTITY_ENFORCE=0).
 	TriggeredByRole string `json:"triggeredByRole,omitempty"`
@@ -56,6 +59,7 @@ func (s *Store) migratePipelines() error {
         service_id TEXT NOT NULL,
         ref TEXT NOT NULL,
         state TEXT NOT NULL,
+        use_proxy INTEGER NOT NULL DEFAULT 0,
         deployment TEXT,
         deploy_request_id TEXT,
         version TEXT,
@@ -71,31 +75,36 @@ func (s *Store) migratePipelines() error {
     `); err != nil {
 		return err
 	}
-	return s.ensureColumns("pipelines", identityColumnDDL("pipelines"))
+	cols := identityColumnDDL("pipelines")
+	// 老库补列：发起时的「打包走本机代理」选项。
+	cols["use_proxy"] = `ALTER TABLE pipelines ADD COLUMN use_proxy INTEGER NOT NULL DEFAULT 0`
+	return s.ensureColumns("pipelines", cols)
 }
 
 // pipelineColumns is the canonical SELECT list for pipelines rows.
-const pipelineColumns = `request_id, service_id, ref, state, deployment, deploy_request_id,
+const pipelineColumns = `request_id, service_id, ref, state, use_proxy, deployment, deploy_request_id,
 	version, error, message, requested_at, started_at, finished_at,
 	triggered_by_role, triggered_by_id`
 
-func (s *Store) CreatePipeline(requestID, serviceID, ref string, by Identity, message string) (PipelineJob, error) {
+func (s *Store) CreatePipeline(requestID, serviceID, ref string, useProxy bool, by Identity, message string) (PipelineJob, error) {
 	requestedAt := nowISO()
 	job := PipelineJob{
 		RequestID:   requestID,
 		ServiceID:   serviceID,
 		Ref:         ref,
 		State:       PipelineQueued,
+		UseProxy:    useProxy,
 		RequestedAt: requestedAt,
 		Message:     message,
 	}
 	job.setIdentity(by)
 	_, err := s.db.Exec(`
 		INSERT INTO pipelines (
-		  request_id, service_id, ref, state, message, requested_at,
+		  request_id, service_id, ref, state, use_proxy, message, requested_at,
 		  triggered_by_role, triggered_by_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		job.RequestID, job.ServiceID, job.Ref, string(job.State),
+		boolToInt(job.UseProxy),
 		nullIfEmpty(message), job.RequestedAt,
 		job.TriggeredByRole, job.TriggeredByID,
 	)
@@ -194,8 +203,10 @@ func scanPipeline(row scannable) (*PipelineJob, error) {
 	var job PipelineJob
 	var deployment, deployID, version, errStr, message, started, finished sql.NullString
 	var state string
+	// use_proxy 在 SQLite 里是 INTEGER；扫进 int 再转 bool（老行是 0）。
+	var useProxy int
 	err := row.Scan(
-		&job.RequestID, &job.ServiceID, &job.Ref, &state,
+		&job.RequestID, &job.ServiceID, &job.Ref, &state, &useProxy,
 		&deployment, &deployID, &version, &errStr, &message,
 		&job.RequestedAt, &started, &finished,
 		&job.TriggeredByRole, &job.TriggeredByID,
@@ -204,6 +215,7 @@ func scanPipeline(row scannable) (*PipelineJob, error) {
 		return nil, err
 	}
 	job.State = PipelineState(state)
+	job.UseProxy = useProxy != 0
 	job.Deployment = deployment.String
 	job.DeployRequestID = deployID.String
 	job.Version = version.String

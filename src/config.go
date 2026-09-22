@@ -58,6 +58,11 @@ type Config struct {
 	ServiceRegistryToken string
 	// Per-request timeout for registry pulls.
 	ServiceRegistryTimeout time.Duration
+	// Where the「打包走本机代理」option reads the local proxy from
+	// (PROXY_ENV_FILE; default <home>/data/proxy.env, the file the ops scripts
+	// use). "off" disables the option entirely; a missing file falls back to
+	// the service process' own HTTP(S)_PROXY.
+	ProxyEnvFile string
 }
 
 func expandHome(p string) string {
@@ -176,6 +181,13 @@ func loadConfig() Config {
 		}
 	}
 
+	// 本机代理（发起流水线时可勾选「走本机代理」）。默认读运维脚本同一份文件
+	// data/proxy.env；PROXY_ENV_FILE=off 关掉这个选项。
+	proxyEnvFile := strings.TrimSpace(os.Getenv("PROXY_ENV_FILE"))
+	if proxyEnvFile == "" {
+		proxyEnvFile = filepath.Join(dataDir, "proxy.env")
+	}
+
 	return Config{
 		Host:                   host,
 		Port:                   port,
@@ -199,5 +211,6 @@ func loadConfig() Config {
 		ServiceRegistryURL:     registryURL,
 		ServiceRegistryToken:   strings.TrimSpace(os.Getenv("SERVICE_REGISTRY_TOKEN")),
 		ServiceRegistryTimeout: registryTimeout,
+		ProxyEnvFile:           proxyEnvFile,
 	}
 }

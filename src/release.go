@@ -26,13 +26,44 @@ type PackageResult struct {
 // the canonical eventlevel set. A nil sink simply discards the lines.
 type PackageEventFunc func(level eventlevel.Level, message string)
 
+// PackageOptions carries what packageFromGit needs beyond the service/ref:
+// the time budget, the artifact storage backend, the per-request "use the
+// machine proxy" switch (the local proxy is read from ProxyEnvFile) and the
+// progress sink.
+type PackageOptions struct {
+	MaxSec  int
+	Storage ArtifactStorage
+	// UseProxy routes `git fetch` + `build.sh` through the machine's local
+	// proxy (opt-in from the trigger page). ProxyEnvFile is where that proxy is
+	// configured (default <home>/data/proxy.env); missing/unreadable falls back
+	// to this process' own HTTP(S)_PROXY.
+	UseProxy     bool
+	ProxyEnvFile string
+	Events       PackageEventFunc
+}
+
+// useProxySettings resolves the machine proxy for this pack. Zero value (no
+// proxy) unless the caller opted in and something is configured — applying a
+// zero value is a no-op, so the default path is byte-for-byte unchanged. The
+// env overlay only reaches the packaging subprocesses (git / build.sh), which
+// is exactly why a per-request switch is possible at all.
+func (o PackageOptions) useProxySettings() ProxySettings {
+	if !o.UseProxy {
+		return ProxySettings{}
+	}
+	return loadProxySettings(o.ProxyEnvFile)
+}
+
 // packageFromGit clones/fetches ref, runs build.sh, and stores the frozen
 // outputs via the configured ArtifactStorage (local disk or GitHub Releases,
 // etc.). Nothing is persisted under packagesDir unless the storage is local;
 // the storage backend is the single source of truth for the bytes. events, when
 // non-nil, receives granular build/upload progress lines (e.g. 上传开始/上传结束).
-func packageFromGit(serviceID, gitRepoURL, ref string, maxSec int, storage ArtifactStorage, events PackageEventFunc) (PackageResult, error) {
+func packageFromGit(serviceID, gitRepoURL, ref string, opts PackageOptions) (PackageResult, error) {
 	var out PackageResult
+	storage := opts.Storage
+	events := opts.Events
+	maxSec := opts.MaxSec
 	gitRepoURL = strings.TrimSpace(gitRepoURL)
 	ref = strings.TrimSpace(ref)
 	if gitRepoURL == "" {
@@ -49,6 +80,20 @@ func packageFromGit(serviceID, gitRepoURL, ref string, maxSec int, storage Artif
 		maxSec = 60
 	}
 
+	// 打包走本机代理（发起时勾选）：git fetch / build.sh 都能按请求换 env。
+	// 勾了但本机没配代理时说清楚，别让人以为生效了（applyTo 对空设置是 no-op，
+	// 所以「没勾选」的路径和以前完全一致）。
+	proxy := opts.useProxySettings()
+	cmdEnv := proxy.applyTo(os.Environ())
+	if opts.UseProxy && events != nil {
+		if proxy.Configured() {
+			events(eventlevel.Info, "打包走本机代理："+proxy.Label())
+		} else {
+			events(eventlevel.Warn, "已勾选「走本机代理」，但本机没有代理配置（"+
+				opts.ProxyEnvFile+" / 进程环境），本次按直连打包")
+		}
+	}
+
 	workDir, err := os.MkdirTemp("", tempPrefixReleaseBuild+"*")
 	if err != nil {
 		return out, err
@@ -63,7 +108,7 @@ func packageFromGit(serviceID, gitRepoURL, ref string, maxSec int, storage Artif
 	run := func(dir string, name string, args ...string) (string, error) {
 		cmd := exec.Command(name, args...)
 		cmd.Dir = dir
-		cmd.Env = os.Environ()
+		cmd.Env = cmdEnv
 		b, err := cmd.CombinedOutput()
 		s := string(b)
 		if len(s) > 50_000 {

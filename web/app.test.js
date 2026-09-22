@@ -46,8 +46,10 @@ function makePanel(options = {}) {
     ],
   };
   const historyPayloads = options.history || {};
+  const metaPayload = options.meta || {};
   const payload = (pathname) => {
     if (pathname === '/api/services') return servicesPayload;
+    if (pathname === '/api/meta') return metaPayload;
     if (pathname === '/api/deploys') return { deploys: [], total: 0, page: 1, pageSize: 20 };
     if (pathname === '/api/pipelines') return { pipelines: [], total: 0, page: 1, pageSize: 20 };
     if (pathname === '/health') return { ok: true };
@@ -91,6 +93,8 @@ function makePanel(options = {}) {
       window.fetch = fetchMock;
       window.setInterval = () => 0; // keep the 3s auto-refresh from running in tests
       window.confirm = () => true;
+      // jsdom 没有实现 scrollIntoView（详情页渲染时会调用）。
+      window.HTMLElement.prototype.scrollIntoView = function () {};
     },
   });
 
@@ -100,7 +104,7 @@ function makePanel(options = {}) {
   const servicesRequests = () => requests.filter((r) => r.pathname.startsWith('/api/services'));
   const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-  return { dom, flush, deploysCalls, servicesRequests };
+  return { dom, flush, calls, requests, deploysCalls, servicesRequests };
 }
 
 test('deploy history: filter change does not refresh; 查询 does', async (t) => {
@@ -406,6 +410,48 @@ test('service contracts: 服务端口 column shows explicit port, else 未指定
   assert.match(rowText('acp'), /未指定/, '老契约（没配 port）标出未指定');
   assert.match(rowText('acp'), /4220/, '未指定时仍展示 healthUrl 推导值作为参考');
   assert.match(doc.querySelector('#svc-table thead').textContent, /端口/, '表头要有「端口」列');
+});
+
+// ---- 发起流水线：「打包走本机代理」选项 -----------------------------------
+
+const triggerRequest = (requests) =>
+  requests.filter((r) => r.pathname === '/api/deploy-notify').at(-1);
+
+test('pipeline trigger: 勾选「走本机代理」→ useProxy 随请求发出', async (t) => {
+  const { dom, flush, requests } = makePanel({ meta: { proxyConfigured: true, proxyEnvFile: '/tmp/dep/data/proxy.env' } });
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+  await flush();
+
+  const box = doc.querySelector('#pipe-use-proxy');
+  assert.ok(box, '发起卡片要有「打包走本机代理」勾选框');
+  assert.equal(box.checked, true, '本机有代理配置时默认勾选');
+  assert.match(doc.querySelector('#pipe-proxy-hint').textContent, /proxy\.env/, '要说明代理配置来源');
+
+  box.checked = false; // 用户显式取消 → 直连
+  doc.querySelector('#pipe-trigger').click();
+  await flush();
+  const direct = triggerRequest(requests);
+  assert.ok(direct, 'should POST /api/deploy-notify');
+  assert.equal(direct.method, 'POST');
+  assert.ok(!direct.body.includes('useProxy'), '不勾选时请求体不带 useProxy：' + direct.body);
+
+  box.checked = true;
+  doc.querySelector('#pipe-trigger').click();
+  await flush();
+  const proxied = triggerRequest(requests);
+  assert.equal(JSON.parse(proxied.body).useProxy, true, '勾选后请求体带 useProxy:true');
+});
+
+test('pipeline trigger: 本机没有代理配置时不默认勾选，并给出提示', async (t) => {
+  const { dom, flush } = makePanel({ meta: { proxyConfigured: false, proxyEnvFile: '/tmp/dep/data/proxy.env' } });
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+  await flush();
+
+  const box = doc.querySelector('#pipe-use-proxy');
+  assert.equal(box.checked, false, '没有代理配置时不该默认勾选');
+  assert.match(doc.querySelector('#pipe-proxy-hint').textContent, /未检测到代理/, '要提示勾了也不生效');
 });
 
 
