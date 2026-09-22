@@ -763,6 +763,9 @@ type deployNotifyBody struct {
 	ServiceID string `json:"serviceId"`
 	Ref       string `json:"ref"`
 	RequestID string `json:"requestId"`
+	// UseProxy: 打包（git fetch + build.sh）走本机代理（data/proxy.env）。
+	// 直连 github 失败时（HTTP2 framing layer / 超时）在发起页面勾选。
+	UseProxy bool `json:"useProxy"`
 }
 
 // handleDeployNotify — 服务通知 ACP「打包当前代码 → 部署」：ACP 统一打包后进入
@@ -773,7 +776,7 @@ type deployNotifyBody struct {
 // @Tags     pipelines
 // @Accept   json
 // @Produce  json
-// @Param    body  body  main.deployNotifyBody  true  "serviceId + ref?（默认 defaultBranch）"
+// @Param    body  body  main.deployNotifyBody  true  "serviceId + ref?（默认 defaultBranch）+ useProxy?（打包走本机代理）"
 // @Success  202  {object}  map[string]interface{}  "PipelineJob + poll"
 // @Failure  400  {object}  map[string]string  "参数非法 / 未登记 gitRepoUrl"
 // @Failure  401  {object}  map[string]string  "缺少或非法的身份头"
@@ -824,7 +827,7 @@ func (s *apiServer) handleDeployNotify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "request already exists: "+requestID)
 		return
 	}
-	job, err := s.store.CreatePipeline(requestID, serviceID, ref, by,
+	job, err := s.store.CreatePipeline(requestID, serviceID, ref, body.UseProxy, by,
 		"accepted; package "+ref+" (latest) then deploy with graceful notify+poll")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -834,8 +837,12 @@ func (s *apiServer) handleDeployNotify(w http.ResponseWriter, r *http.Request) {
 	if byLabel == "" {
 		byLabel = "未知"
 	}
+	queueNote := ""
+	if body.UseProxy {
+		queueNote = "（打包走本机代理）"
+	}
 	_ = s.store.AddPipelineEvent(requestID, eventlevel.Info,
-		"流水线已入队：service="+serviceID+" ref="+ref+" 触发者="+byLabel)
+		"流水线已入队：service="+serviceID+" ref="+ref+" 触发者="+byLabel+queueNote)
 	fmt.Printf("[pipeline] %s service=%s ref=%s by=%s\n", requestID, serviceID, ref, by.String())
 	if s.pipeline != nil {
 		s.pipeline.Kick()
@@ -1188,10 +1195,14 @@ func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
 		"releaseMaxSec":           s.cfg.ReleaseMaxSec,
 		"artifactStorage":         s.storageName(),
 		"githubReleaseEnabled":    s.cfg.GitHubToken != "",
-		"deployNotify":            "POST /api/deploy-notify {serviceId, ref?}",
-		"serviceRegistryUrl":      s.registry.BaseURL(),
-		"serviceRegistryEnabled":  s.registry.Enabled(),
-		"serviceCatalog":          "GET /api/services（服务列表来自 service_registry，本机只存部署配置）",
+		"deployNotify":            "POST /api/deploy-notify {serviceId, ref?, useProxy?}",
+		"proxyEnvFile":            s.cfg.ProxyEnvFile,
+		"proxyConfigured":         proxyConfigured(s.cfg),
+		"proxyHint": "发起流水线时可勾选「走本机代理」：git fetch + build.sh 用 " +
+			s.cfg.ProxyEnvFile + " 里的 HTTP(S)_PROXY（直连 github 失败时用）",
+		"serviceRegistryUrl":     s.registry.BaseURL(),
+		"serviceRegistryEnabled": s.registry.Enabled(),
+		"serviceCatalog":         "GET /api/services（服务列表来自 service_registry，本机只存部署配置）",
 	})
 }
 

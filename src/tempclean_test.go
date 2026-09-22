@@ -216,7 +216,7 @@ chmod 555 .gomodcache/pkg/mod/example@v1 .gomodcache/pkg/mod .gomodcache/pkg .go
 
 	before := ourTempDirs(t)
 	storage := &localStorage{base: t.TempDir()}
-	res, err := packageFromGit("svc-clean", "file://"+repo, "main", 120, storage, nil)
+	res, err := packageFromGit("svc-clean", "file://"+repo, "main", PackageOptions{MaxSec: 120, Storage: storage})
 	if err != nil {
 		t.Fatalf("packageFromGit: %v", err)
 	}

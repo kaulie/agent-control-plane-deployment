@@ -162,7 +162,7 @@
                 "summary": "通知打包 + 部署（服务方一键发版）",
                 "parameters": [
                     {
-                        "description": "serviceId + ref?（默认 defaultBranch）",
+                        "description": "serviceId + ref?（默认 defaultBranch）+ useProxy?（打包走本机代理）",
                         "name": "body",
                         "in": "body",
                         "required": true,
@@ -1178,6 +1178,10 @@
                     "description": "Who triggered this pipeline (phase-1 identity headers). Empty =\nunidentified (recorded before the feature, or IDENTITY_ENFORCE=0).",
                     "type": "string"
                 },
+                "useProxy": {
+                    "description": "UseProxy 是发起时的选项：打包（git fetch + build.sh）走本机代理。\n本机代理从 data/proxy.env（PROXY_ENV_FILE）读。",
+                    "type": "boolean"
+                },
                 "version": {
                     "type": "string"
                 }
@@ -1444,6 +1448,10 @@
                 },
                 "serviceId": {
                     "type": "string"
+                },
+                "useProxy": {
+                    "description": "UseProxy: 打包（git fetch + build.sh）走本机代理（data/proxy.env）。\n直连 github 失败时（HTTP2 framing layer / 超时）在发起页面勾选。",
+                    "type": "boolean"
                 }
             }
         },

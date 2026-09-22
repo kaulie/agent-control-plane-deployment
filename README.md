@@ -219,12 +219,23 @@ curl -sS -X POST http://127.0.0.1:4220/api/deploy-notify \
   -H 'identity_role: agent' -H 'identity_id: agent_002' \
   -d '{"serviceId":"web-cursor"}'
 # 未传 ref → 默认拉该服务 defaultBranch（缺省 main）的最新 tip
+# useProxy:true → 本次打包走本机代理（见「打包走本机代理」）
 # identity_role / identity_id 为必填（第一阶段身份校验，见下节）
 
 curl -sS http://127.0.0.1:4220/api/pipelines/<requestId>
 ```
 
 流水线状态：`queued` → `packaging` → `deploying` → `succeeded`/`failed`。
+
+### 打包走本机代理（可选，按次）
+
+本机直连 github 在有些网络里会失败（典型：`fatal: unable to access 'https://github.com/...': Error in the HTTP2 framing layer` / 超时），这类流水线会以 `package failed: fetch ref "main" failed` 收场。发版时**按次**选择是否走本机代理：
+
+- **面板**：「部署流水线 → 发起」里的勾选框「打包走本机代理」。本机检测到代理时**默认勾选**（`/api/meta` 的 `proxyConfigured`），没检测到就不勾并给出提示。
+- **API**：`POST /api/deploy-notify {"serviceId": ..., "ref": ..., "useProxy": true}`。选项会记在流水线上（`GET /api/pipelines/:id` 的 `useProxy`），打包时进时间线（`打包走本机代理：HTTPS_PROXY=http://127.0.0.1:7897（<配置文件>）`）。
+- **代理从哪读**：`PROXY_ENV_FILE`（默认 `<home>/data/proxy.env`，和运维脚本同一份，形如 `export HTTPS_PROXY=http://127.0.0.1:7897` + `NO_PROXY=localhost,127.0.0.1,::1`）。文件缺失/没写代理时退回**服务进程自己的** `HTTP(S)_PROXY`；`PROXY_ENV_FILE=off` 关掉这个选项。勾了但两处都没代理 → 事件里告警，本次按直连跑。
+- **作用范围**：只作用于打包命令（`git fetch` + 服务自己的 `build.sh`）——它们按请求换 env 是安全的子进程。制品**下载**走进程内的 HTTP client，只认进程启动时的 env（`scripts/start.sh` 里加载 `data/proxy.env` 即可全局生效，服务重启后生效）。代理 URL 里的 `user:pass@` 会在事件里打码。
+- **默认行为不变**：不勾选时完全不注入代理 env，和以前一模一样。
 
 ### 手工发版 + 部署
 
@@ -276,7 +287,7 @@ curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 | DELETE | `/api/services/:id` | 清除本机部署配置（服务仍在注册中心，可重新配置）；响应带剩余历史条数；**有在途任务 → 409** |
 | GET | `/api/services/:id/history` | 该 serviceId 名下的历史条数（流水线 / 部署 / 制品索引 + 在途任务数）与可迁移的**目标服务**（清除前确认用，只列本机已配置的服务） |
 | POST | `/api/services/:id/history/move` | 把 `{id}` 的历史（流水线 / 部署 / 制品索引）**迁移**到 `{to}`，`deleteSourceContract` = 迁移后删掉来源契约；在途任务 → 409，目标未配置 → 400，全程一个事务 |
-| POST | `/api/deploy-notify` | 服务方通知：打包 → 再部署（**需身份头**） |
+| POST | `/api/deploy-notify` | 服务方通知：打包 → 再部署（**需身份头**）；`ref?`、`useProxy?`（打包走本机代理） |
 | GET | `/api/pipelines` | 流水线列表（**多属性筛选 + 分页**，见下） |
 | GET | `/api/pipelines/:id` | 单条流水线状态 |
 | GET | `/api/pipelines/:id/events` | 流水线事件日志 |
@@ -395,5 +406,6 @@ curl -sS -X POST http://127.0.0.1:4220/api/deploys \
 
 - **发起 / 历史列表 分离**：流水线、部署各自拆成「发起」与「历史列表」两个子页；历史列表支持按 服务 / 状态 / 触发者 / ref / deployment / version / 关键字 / 时间范围 筛选，并在**服务端分页**（每页 10/20/50/100）。筛选作为"已应用"快照生效，避免 3s 自动刷新把正在输入的内容当成筛选条件：部署流水线历史列表在点「查询」（或输入框回车 / 改每页）时应用，**部署任务历史列表只在点「查询」时应用**。
 - **发起后自动进入详情页**：在「发起」子页提交后，自动切到「历史列表」并打开刚创建的那条记录的详情（流水线详情含事件时间线 + 关联部署任务；部署详情含该次部署的事件时间线）。历史列表里点任意一行也可打开详情。
+- **发起流水线的「打包走本机代理」勾选框**：流水线发起卡片里按次选择打包是否走本机代理（详情页也显示这条流水线是「走本机代理」还是「直连」）；本机检测到代理时默认勾选。见「打包走本机代理（可选，按次）」。
 - **面板行为测试**：`npm test`（首次先 `npm install`）用 jsdom 加载真实 `web/index.html` + `web/app.js` 并拦截 `fetch`，验证：①「部署任务历史列表」修改筛选项不会触发刷新、只有点「查询」才刷新；②「服务契约只配置不新建」——列表来自 `service_registry`（顶部显示在线状态 + 服务数）、未配置的服务不进触发下拉、面板里没有「新建」入口。
 

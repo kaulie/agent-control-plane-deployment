@@ -138,7 +138,7 @@ func TestRestartPollIgnoresPipelinesWaitingForTheirDeploy(t *testing.T) {
 	})
 
 	// Pipeline claimed just before the drain: packaged, deploy enqueued (queued).
-	_, _ = store.CreatePipeline("pipeline-3318ac5e", "agent-benchmark-tool", "main", Identity{}, "queued")
+	_, _ = store.CreatePipeline("pipeline-3318ac5e", "agent-benchmark-tool", "main", false, Identity{}, "queued")
 	if err := store.UpdatePipeline("pipeline-3318ac5e", PipelineJob{
 		State:           PipelineDeploying,
 		Deployment:      "deployment-cabb1e98",
@@ -159,7 +159,7 @@ func TestRestartPollIgnoresPipelinesWaitingForTheirDeploy(t *testing.T) {
 	}
 
 	// A pipeline that is still packaging IS in-flight work.
-	_, _ = store.CreatePipeline("pipeline-pack", "organization", "main", Identity{}, "queued")
+	_, _ = store.CreatePipeline("pipeline-pack", "organization", "main", false, Identity{}, "queued")
 	_ = store.UpdatePipeline("pipeline-pack", PipelineJob{State: PipelinePackaging})
 	poll = drainGet(t, srv.URL+"/restart/poll")
 	if poll["canRestart"] != false {

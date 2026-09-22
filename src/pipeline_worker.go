@@ -67,6 +67,19 @@ func (w *PipelineWorker) Kick() {
 	go w.tick()
 }
 
+// packageOptions maps a claimed pipeline onto the packaging call: the per-request
+// 「走本机代理」option travels with the job (the pack runs later, in this worker),
+// together with where that proxy is configured.
+func (w *PipelineWorker) packageOptions(job *PipelineJob, events PackageEventFunc) PackageOptions {
+	return PackageOptions{
+		MaxSec:       w.cfg.ReleaseMaxSec,
+		Storage:      w.storage,
+		UseProxy:     job.UseProxy,
+		ProxyEnvFile: w.cfg.ProxyEnvFile,
+		Events:       events,
+	}
+}
+
 func (w *PipelineWorker) tick() {
 	w.mu.Lock()
 	if w.busy {
@@ -112,12 +125,15 @@ func (w *PipelineWorker) execute(job *PipelineJob) {
 	}
 
 	fmt.Printf("[pipeline] %s packaging service=%s ref=%s repo=%s\n", job.RequestID, job.ServiceID, job.Ref, gitURL)
+	envNote := ""
+	if job.UseProxy {
+		envNote = "（走本机代理）"
+	}
 	_ = w.store.AddPipelineEvent(job.RequestID, eventlevel.Info,
-		"开始打包：service="+job.ServiceID+" ref="+job.Ref+" repo="+gitURL)
-	pkg, err := packageFromGit(job.ServiceID, gitURL, job.Ref, w.cfg.ReleaseMaxSec, w.storage,
-		func(level eventlevel.Level, msg string) {
-			_ = w.store.AddPipelineEvent(job.RequestID, level, msg)
-		})
+		"开始打包：service="+job.ServiceID+" ref="+job.Ref+" repo="+gitURL+envNote)
+	pkg, err := packageFromGit(job.ServiceID, gitURL, job.Ref, w.packageOptions(job, func(level eventlevel.Level, msg string) {
+		_ = w.store.AddPipelineEvent(job.RequestID, level, msg)
+	}))
 	if err != nil {
 		failPipeline(w.store, job.RequestID, "package failed: "+err.Error())
 		return
@@ -149,7 +165,7 @@ func (w *PipelineWorker) execute(job *PipelineJob) {
 			ReleaseURL:         pkg.Artifact.ReleaseURL,
 			Size:               pkg.Artifact.Size,
 			Storage:            pkg.Artifact.Storage,
-			CreatedAt:           nowISO(),
+			CreatedAt:          nowISO(),
 		}); err != nil {
 			fmt.Printf("[pipeline] %s warn: record artifact: %v\n", job.RequestID, err)
 		}

@@ -60,9 +60,14 @@
             <label>ref（可选，默认 defaultBranch）
               <input type="text" id="pipe-ref" placeholder="main / commit" />
             </label>
+            <label class="proxy-opt" title="直连 github 拉取失败（HTTP2 framing layer / 超时）时勾选">
+              <input type="checkbox" id="pipe-use-proxy" />
+              打包走本机代理
+            </label>
             <button class="btn btn--primary" id="pipe-trigger">触发打包+部署</button>
           </div>
           <p class="hint">git clone → build.sh → 上传制品 → 入队部署（graceful notify + poll）。</p>
+          <p class="hint" id="pipe-proxy-hint"></p>
         </div>
       </div>
 

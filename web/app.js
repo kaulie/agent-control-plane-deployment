@@ -158,6 +158,33 @@ async function refreshMeta() {
   }
 }
 
+// ---- 发起流水线：「打包走本机代理」选项 ------------------------------------
+// The pack runs `git fetch` + build.sh on this machine; direct github access is
+// flaky on some networks (HTTP2 framing layer / timeouts). The local proxy is
+// configured in <home>/data/proxy.env (see /api/meta proxyConfigured). The
+// checkbox is per-request — checked by default when the machine has a proxy.
+let proxyConfigured = false;
+let proxySource = '';
+
+async function refreshProxyOption() {
+  try {
+    const m = await apiGet('/api/meta');
+    proxyConfigured = !!m.proxyConfigured;
+    proxySource = m.proxyEnvFile || '';
+  } catch {
+    proxyConfigured = false;
+    proxySource = '';
+  }
+  const box = $('#pipe-use-proxy');
+  if (box) box.checked = proxyConfigured;
+  const hint = $('#pipe-proxy-hint');
+  if (hint) {
+    hint.textContent = proxyConfigured
+      ? '已检测到本机代理（' + (proxySource || '进程环境') + '）：勾选后 git fetch / build.sh 走它，直连失败时用。'
+      : '本机未检测到代理（' + (proxySource || 'data/proxy.env') + ' 里没有 HTTP(S)_PROXY）：勾选也不会生效。';
+  }
+}
+
 // ---- services (dropdown options + 服务契约 tab) ---------------------------
 // The catalog comes from service_registry (GET /api/services merges the
 // registry's contracts with this control plane's deployment config); the panel
@@ -641,6 +668,8 @@ $('#pipe-trigger').addEventListener('click', async () => {
   try {
     const body = { serviceId };
     if (ref) body.ref = ref;
+    // 打包走本机代理（可选）：直连 github 失败时勾上重试。
+    if ($('#pipe-use-proxy') && $('#pipe-use-proxy').checked) body.useProxy = true;
     const r = await apiSend('POST', '/api/deploy-notify', body);
     toast('已触发流水线 ' + r.requestId + '（' + identityLabel(identity.role, identity.id) + '）', 'ok');
     $('#pipe-ref').value = '';
@@ -716,6 +745,7 @@ async function refreshPipelineDetail() {
     fieldRow('requestId', job.requestId),
     fieldRow('serviceId', job.serviceId),
     fieldRow('ref', job.ref),
+    fieldRow('打包代理', job.useProxy ? '走本机代理' : '直连'),
     `<div class="detail-field"><span class="detail-label">状态</span>` +
       `<span class="detail-value">${stateBadge(job.state)}</span></div>`,
     fieldRow('deployment', job.deployment || '—'),
@@ -981,5 +1011,6 @@ $('#autorefresh').addEventListener('change', () => {
 
 // init
 refreshServices();
+refreshProxyOption();
 refresh();
 startPolling();

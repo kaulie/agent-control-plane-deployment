@@ -87,7 +87,7 @@ func TestMoveServiceHistoryRefusesInflightJobs(t *testing.T) {
 	if _, err := store.CreateDeploy("deploy-running", "web-cursor", "deployment-aaa", Identity{}, "queued"); err != nil {
 		t.Fatalf("CreateDeploy: %v", err)
 	}
-	if _, err := store.CreatePipeline("pipeline-packaging", "web-cursor", "main", Identity{}, "queued"); err != nil {
+	if _, err := store.CreatePipeline("pipeline-packaging", "web-cursor", "main", false, Identity{}, "queued"); err != nil {
 		t.Fatalf("CreatePipeline: %v", err)
 	}
 	if _, err := store.ClaimNextPipeline(); err != nil {
@@ -317,7 +317,7 @@ func TestDeleteServiceGuardsInflightAndReportsLeftoverHistory(t *testing.T) {
 
 func seedFinishedPipeline(t *testing.T, store *Store, requestID, serviceID string) {
 	t.Helper()
-	if _, err := store.CreatePipeline(requestID, serviceID, "main", Identity{}, "queued"); err != nil {
+	if _, err := store.CreatePipeline(requestID, serviceID, "main", false, Identity{}, "queued"); err != nil {
 		t.Fatalf("CreatePipeline(%s): %v", requestID, err)
 	}
 	if err := store.UpdatePipeline(requestID, PipelineJob{State: PipelineSucceeded, Message: "pipeline succeeded"}); err != nil {

@@ -111,7 +111,7 @@ func TestListPipelinesFiltered(t *testing.T) {
 		{"p3", "acp", "main", "deploying", "agent", "agent_002"},
 	}
 	for _, x := range seed {
-		if _, err := s.CreatePipeline(x.id, x.svc, x.ref, Identity{Role: x.role, ID: x.uid}, "m "+x.id); err != nil {
+		if _, err := s.CreatePipeline(x.id, x.svc, x.ref, false, Identity{Role: x.role, ID: x.uid}, "m "+x.id); err != nil {
 			t.Fatalf("CreatePipeline %s: %v", x.id, err)
 		}
 		if err := s.UpdatePipeline(x.id, PipelineJob{State: PipelineState(x.state)}); err != nil {
