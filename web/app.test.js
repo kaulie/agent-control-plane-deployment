@@ -47,6 +47,9 @@ function makePanel(options = {}) {
   };
   const historyPayloads = options.history || {};
   const metaPayload = options.meta || {};
+  // Test-visible knobs: metaError=true 让 /api/meta 一直失败，'first' 只失败第一次；
+  // 测完可以让用例把它关掉（服务恢复）验证面板自愈。
+  const state = { metaError: options.metaError || false, metaCalls: 0 };
   const payload = (pathname) => {
     if (pathname === '/api/services') return servicesPayload;
     if (pathname === '/api/meta') return metaPayload;
@@ -76,6 +79,18 @@ function makePanel(options = {}) {
       search: u.search,
       body: options.body || '',
     });
+    // /api/meta 拉不到的模拟（服务升级/重启窗口）：面板必须自己兜住。
+    if (u.pathname === '/api/meta' && state.metaError) {
+      state.metaCalls += 1;
+      if (state.metaError === true || state.metaCalls === 1) {
+        return {
+          ok: false,
+          status: 500,
+          async json() { throw new Error('500'); },
+          async text() { return 'boom'; },
+        };
+      }
+    }
     const data = payload(u.pathname);
     return {
       ok: true,
@@ -104,7 +119,7 @@ function makePanel(options = {}) {
   const servicesRequests = () => requests.filter((r) => r.pathname.startsWith('/api/services'));
   const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-  return { dom, flush, calls, requests, deploysCalls, servicesRequests };
+  return { dom, flush, calls, requests, deploysCalls, servicesRequests, state };
 }
 
 test('deploy history: filter change does not refresh; 查询 does', async (t) => {
@@ -483,6 +498,43 @@ test('pipeline trigger: 选择「部署机器」→ targetMachine 随请求发�
   await flush();
   const chosen = triggerRequest(requests);
   assert.equal(JSON.parse(chosen.body).targetMachine, 'gpu-2', '选定机器后请求体带 targetMachine');
+});
+
+// 这个 bug 的真实形态：ACP 自己升级（#69 部署）时 /api/meta 拿不到机器列表，发起页的
+// 「部署机器」下拉就空着 —— 而且空着不会自己恢复，看着像功能坏了。
+test('pipeline trigger: /api/meta 没给机器列表时下拉也非空（退回默认机器）', async (t) => {
+  const { dom, flush } = makePanel({ meta: { port: 4220 } });
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+  await flush();
+
+  const sel = doc.querySelector('#pipe-machine');
+  assert.ok(sel.options.length >= 1, '下拉不能是空的');
+  assert.equal(sel.value, 'local', '退回默认机器 local');
+  assert.match(doc.querySelector('#pipe-machine-hint').textContent, /默认机器/, '提示说明按默认机器处理');
+});
+
+test('pipeline trigger: /api/meta 拉失败时下拉仍可用，并在刷新里自动重试', async (t) => {
+  const meta = { deployMachines: ['local', 'gpu-2'], defaultDeployMachine: 'local' };
+  const { dom, flush, requests, state } = makePanel({ meta, metaError: true });
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+  await flush();
+
+  const sel = doc.querySelector('#pipe-machine');
+  assert.ok(sel.options.length >= 1, '拉失败也不能是空下拉');
+  assert.equal(sel.value, 'local', '先按默认机器兜住');
+  assert.match(doc.querySelector('#pipe-machine-hint').textContent, /暂未取到/, '提示说明没取到列表');
+  const metaCalls = () => requests.filter((r) => r.pathname === '/api/meta').length;
+  const before = metaCalls();
+  assert.ok(before >= 1, 'init 会拉 /api/meta');
+
+  // 服务回来了（升级结束）：下一次刷新应当重试，并把真实机器列表补上。
+  state.metaError = false;
+  doc.querySelector('[data-tab="pipelines"]').click();
+  await flush();
+  assert.ok(metaCalls() > before, '失败后必须重试，不能一直空着');
+  assert.deepEqual(Array.from(sel.options).map((o) => o.value), ['local', 'gpu-2'], '重试成功后列出真实机器');
 });
 
 

@@ -28,6 +28,11 @@ type apiServer struct {
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	// Every JSON endpoint reports live state (deploys, pipelines, /api/meta) that the
+	// panel polls every few seconds: a response cached by the browser is always wrong.
+	// It also breaks the panel outright — an /api/meta from before an upgrade has no
+	// deployMachines, which renders the 发起 page's 部署机器 dropdown empty.
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
@@ -85,12 +90,25 @@ func (s *apiServer) registerPanel(mux *http.ServeMux) {
 		return
 	}
 	fs := http.FileServer(http.Dir(webDir))
-	mux.Handle("GET /panel/", http.StripPrefix("/panel/", fs))
+	// Panel assets carry no content hash in their names, and a self-upgrade replaces
+	// them in place: with no cache directive the browser may keep the old app.js and
+	// pair it with the new index.html. That half-upgraded page is exactly how the new
+	// 部署机器 dropdown ended up rendered but never populated (its refresh lived only
+	// in the new app.js). no-store keeps the panel always in step with the deploy.
+	mux.Handle("GET /panel/", noStore(http.StripPrefix("/panel/", fs)))
 	mux.HandleFunc("GET /panel", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/panel/", http.StatusFound)
 	})
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/panel/", http.StatusFound)
+	})
+}
+
+// noStore marks responses as uncacheable (panel assets and JSON API alike).
+func noStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		next.ServeHTTP(w, r)
 	})
 }
 
