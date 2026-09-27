@@ -1238,8 +1238,10 @@ func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
 			s.cfg.ProxyEnvFile + " 里的 HTTP(S)_PROXY（直连 github 失败时用）",
 		"deployMachines":       s.cfg.DeployMachineIDs(),
 		"defaultDeployMachine": s.cfg.DefaultDeployMachineID(),
+		// 面板静态资源的指纹：已经打开的标签页靠它发现自己跑的是升级前的 JS，自动刷一次。
+		"panelVersion": s.panelVersion(),
 		"deployMachineHint": "发起流水线时可选择「部署机器」：本次部署落到哪台机器（目标主机/agent）。" +
-			"不选 = 默认机器（" + s.cfg.DefaultDeployMachineID() + "）。",
+			"不选 = 默认机器（" + s.cfg.DefaultDeployMachineID() + "）；列表来自 DEPLOY_MACHINES 或本机 data/deploy-machines。",
 		"serviceRegistryUrl":     s.registry.BaseURL(),
 		"serviceRegistryEnabled": s.registry.Enabled(),
 		"serviceCatalog":         "GET /api/services（服务列表来自 service_registry，本机只存部署配置）",

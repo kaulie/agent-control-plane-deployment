@@ -42,6 +42,17 @@ if [ -z "${ALIYUN_PACKAGES_USER:-}" ] && [ -f "${HOME_DIR}/data/aliyun-credentia
   export ALIYUN_PACKAGES_PASSWORD="$(sed -n '2p' "${HOME_DIR}/data/aliyun-credentials" | tr -d '\r\n')"
 fi
 
+# 部署机器（发起流水线时可选的目标机器）列表，来自 data/deploy-machines —— data/ 跨
+# 自升级保留（见 selfDeployRsyncCmd），所以本机可以自己加机器而不用改仓库。
+# 文件里逗号/空白/换行分隔均可（例如一行 `local,gpu-2`）；继承来的 DEPLOY_MACHINES
+# 优先。可选 data/deploy-default-machine（一行一个 id）覆盖默认机器。
+if [ -z "${DEPLOY_MACHINES:-}" ] && [ -f "${HOME_DIR}/data/deploy-machines" ]; then
+  export DEPLOY_MACHINES="$(tr '\n' ',' < "${HOME_DIR}/data/deploy-machines")"
+fi
+if [ -z "${DEPLOY_DEFAULT_MACHINE:-}" ] && [ -f "${HOME_DIR}/data/deploy-default-machine" ]; then
+  export DEPLOY_DEFAULT_MACHINE="$(tr -d '[:space:]' < "${HOME_DIR}/data/deploy-default-machine")"
+fi
+
 # Default Go module/toolchain proxy to a reachable mirror. The build env
 # (packageFromGit runs each service's build.sh inheriting this process env)
 # often needs to download the Go toolchain (when go.mod's go directive exceeds

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -82,12 +83,18 @@ func TestPanelAndAPIAreUncacheable(t *testing.T) {
 // TestMetaExposesDeployMachines: 面板的「部署机器」下拉读的就是这里的列表，空列表
 // 会让下拉空着，所以缺省也必须是单机 local。
 func TestMetaExposesDeployMachines(t *testing.T) {
-	srv := &apiServer{cfg: Config{}}
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	webDir := filepath.Join(filepath.Dir(filepath.Dir(testFile)), "web")
+	srv := &apiServer{cfg: Config{WebDir: webDir}}
 	rec := httptest.NewRecorder()
 	srv.routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/meta", nil))
 	var meta struct {
 		DeployMachines       []string `json:"deployMachines"`
 		DefaultDeployMachine string   `json:"defaultDeployMachine"`
+		PanelVersion         string   `json:"panelVersion"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &meta); err != nil {
 		t.Fatalf("decode /api/meta: %v", err)
@@ -97,5 +104,39 @@ func TestMetaExposesDeployMachines(t *testing.T) {
 	}
 	if meta.DefaultDeployMachine == "" {
 		t.Fatal("/api/meta defaultDeployMachine must not be empty")
+	}
+	if meta.PanelVersion == "" {
+		t.Fatal("/api/meta panelVersion must be exposed so an open page can notice a redeploy")
+	}
+}
+
+// TestPanelVersionTracksAssets: panelVersion 是面板静态资源的指纹 —— 面板靠它发现
+// 「我这一页跑的是升级前的 JS」并自动刷新，所以「内容不变 → 指纹不变」「内容变了 →
+// 指纹变」都必须成立，没有资源时则给空串（面板不比对空值）。
+func TestPanelVersionTracksAssets(t *testing.T) {
+	webDir := t.TempDir()
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(webDir, name), []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	write("index.html", "<html>panel</html>")
+	srv := &apiServer{cfg: Config{WebDir: webDir}}
+
+	v1 := srv.panelVersion()
+	if v1 == "" {
+		t.Fatal("panelVersion must not be empty when the panel assets exist")
+	}
+	if again := srv.panelVersion(); again != v1 {
+		t.Fatalf("panelVersion must be stable for unchanged assets: %q vs %q", v1, again)
+	}
+	write("app.js", "// a redeploy changed me\n")
+	if v2 := srv.panelVersion(); v2 == v1 {
+		t.Fatal("panelVersion must change when the panel assets change (that's what triggers the reload)")
+	}
+	empty := (&apiServer{cfg: Config{WebDir: filepath.Join(webDir, "missing")}}).panelVersion()
+	if empty != "" {
+		t.Fatalf("no assets → empty panelVersion, got %q", empty)
 	}
 }

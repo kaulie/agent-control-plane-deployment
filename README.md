@@ -140,7 +140,7 @@ curl -sS -X PUT http://127.0.0.1:4220/api/services/web-cursor \
 | `SERVICE_REGISTRY_URL` | `http://127.0.0.1:4240` | 服务目录来源；`off` / `disabled` / `none` = 关闭拉取 |
 | `SERVICE_REGISTRY_TOKEN` | 空 | 注册中心读令牌（`REGISTRY_READ_AUTH=token` 时用） |
 | `SERVICE_REGISTRY_TIMEOUT_SEC` | `5` | 单次拉取超时（秒） |
-| `DEPLOY_MACHINES` | 空（= `local`） | 发起流水线时可选择的**部署机器**（逗号分隔 id）；空 = 只有单机 `local` |
+| `DEPLOY_MACHINES` | 空（= `local`） | 发起流水线时可选择的**部署机器**（逗号分隔 id）；空 = 只有单机 `local`。本机也可以写在 `data/deploy-machines`（`data/` 跨自升级保留，见「部署机器」） |
 | `DEPLOY_DEFAULT_MACHINE` | 空（= 列表第一台） | 未选择机器时用的默认机器 |
 | `PROXY_ENV_FILE` | `<home>/data/proxy.env` | 「打包走本机代理」读取的代理配置；`off` 关闭该选项 |
 
@@ -245,11 +245,13 @@ curl -sS http://127.0.0.1:4220/api/pipelines/<requestId>
 
 发起流水线时可**按次**选择本次部署落到哪台机器（目标主机 / agent）。已知机器由环境变量 `DEPLOY_MACHINES`（逗号分隔的 id，如 `local,gpu-2,build-server`）配置；不配置时只有单机 `local`：
 
+- **数据源（从下往上）**：面板 `#pipe-machine` 下拉 ← `refreshDeployMachineOption()` ← `GET /api/meta` 的 `deployMachines` / `defaultDeployMachine` ← 服务端 `handleMeta` → `Config.DeployMachineIDs()` / `DefaultDeployMachineID()` ← 进程环境 `DEPLOY_MACHINES` / `DEPLOY_DEFAULT_MACHINE`（空 → `["local"]`，**永远不会是空列表**）。本机想加机器又不想改仓库：写一行 `local,gpu-2` 到 `data/deploy-machines`（可选 `data/deploy-default-machine`）；`data/` 跨自升级保留，`scripts/start.sh` 会读它们（继承来的 `DEPLOY_MACHINES` 优先），改完重启服务生效。
 - **面板**：「部署流水线 → 发起」里的「部署机器」下拉（选项来自 `/api/meta` 的 `deployMachines`，默认选中 `defaultDeployMachine`）。选默认机器时请求体**不带** `targetMachine`。列表拉不到时（例如 ACP 自己正在升级、`/api/meta` 暂时不可用）下拉**退回默认机器**而不是空着，并在之后每次刷新自动重试补齐。
 - **API**：`POST /api/deploy-notify {"serviceId": ..., "ref": ..., "targetMachine": "gpu-2"}`；`POST /api/deploys {"serviceId": ..., "deployment": ..., "targetMachine": "gpu-2"}` 同样接受。非空机器必须是已知机器，否则 **400**（错误里附允许列表）。
 - **默认机器**：`DEPLOY_DEFAULT_MACHINE`；不配置则取 `DEPLOY_MACHINES` 第一台。请求不带 `targetMachine` 时按默认机器处理——**默认行为不变**。
 - **随任务转发**：机器记在流水线上（`GET /api/pipelines/:id` 的 `targetMachine`）并转发给部署任务（`GET /api/deploys/:id` 的 `targetMachine`）；部署时写入部署 `/events`（`开始部署：… 部署机器=<machine>`），并作为 `DEPLOY_MACHINE` 注入服务的 `restartCmd`，服务内可读到本次部署落到的机器。`DEPLOY_MACHINES` 变更后旧任务若指向已下线的机器，部署会告警并退回默认机器。
 - **面板不会被浏览器缓存**：面板静态文件（`/panel/*`）与所有 JSON API 都回 `Cache-Control: no-store`。面板文件名没有指纹、又是就地升级的，没有这条指令时浏览器可能留着旧的 `app.js` 配新的 `index.html`（半新半旧的页面：新控件在、但没人填充它），或者拿升级前的 `/api/meta` 渲染新面板。
+- **已经打开的页面会自己跟上升级**：`/api/meta` 还带 `panelVersion`（面板静态资源的指纹）。已经打开的标签页跑的是加载那一刻的 JS，轮询不会换掉它 —— 面板把指纹和自己加载时看到的值比，**一变就提示并自动刷新一次**（同一个版本只刷一次，避免抖动）。所以「升级后新控件在、填充它的代码不在」这类半新半旧页面不会再长期存在。
 
 ### 手工发版 + 部署
 
