@@ -24,6 +24,18 @@ type apiServer struct {
 	// configured). The service catalog is its data; local rows are only
 	// deployment config.
 	registry *ServiceRegistry
+	// machines is the 部署机器 catalog: the registry's machines (+ 本机 + 显式
+	// 配置). Panel dropdown, trigger validation and deploy execution all read it.
+	machines *MachineCatalog
+}
+
+// machineCatalog 返回机器目录。生产路径由 main 注入；测试里直接构造 apiServer
+// 时不注入，就在本地按配置兜一个（不查注册中心），避免每处都判空。
+func (s *apiServer) machineCatalog() *MachineCatalog {
+	if s.machines != nil {
+		return s.machines
+	}
+	return NewMachineCatalog(s.cfg, s.registry)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -614,7 +626,6 @@ func (s *apiServer) handleMoveServiceHistory(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "move": move, "message": msg})
 }
 
-
 type createDeployBody struct {
 	ServiceID  string `json:"serviceId"`
 	Deployment string `json:"deployment"`
@@ -684,8 +695,9 @@ func (s *apiServer) handleCreateDeploy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "request already exists: "+requestID)
 		return
 	}
-	// 「部署机器」：可选；空 = 默认机器。非空必须是已知机器，否则 400。
-	targetMachine, err := s.cfg.ValidateDeployMachine(body.TargetMachine)
+	// 「部署机器」：可选；空 = 默认机器。非空必须是已知机器（真源：service-registry），
+	// 否则 400。
+	targetMachine, err := s.machineCatalog().Validate(r.Context(), body.TargetMachine)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -732,9 +744,9 @@ func (s *apiServer) handleListDeploys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"deploys": deploys,
-		"total":   total,
-		"page":    f.Page,
+		"deploys":  deploys,
+		"total":    total,
+		"page":     f.Page,
 		"pageSize": f.PageSize,
 	})
 }
@@ -843,8 +855,9 @@ func (s *apiServer) handleDeployNotify(w http.ResponseWriter, r *http.Request) {
 				"本机不能设置): "+serviceID)
 		return
 	}
-	// 「部署机器」：可选；空 = 默认机器。非空必须是已知机器，否则 400（附允许列表）。
-	targetMachine, err := s.cfg.ValidateDeployMachine(body.TargetMachine)
+	// 「部署机器」：可选；空 = 默认机器。非空必须是已知机器（真源：service-registry），
+	// 否则 400（附允许列表）。
+	targetMachine, err := s.machineCatalog().Validate(r.Context(), body.TargetMachine)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -1110,7 +1123,7 @@ func (s *apiServer) handleScanArtifacts(w http.ResponseWriter, r *http.Request) 
 			ReleaseURL:         it.ReleaseURL,
 			Size:               it.Size,
 			Storage:            storageName,
-			CreatedAt:           nowISO(),
+			CreatedAt:          nowISO(),
 		}); err != nil {
 			writeError(w, http.StatusInternalServerError, "record artifact "+it.Tag+": "+err.Error())
 			return
@@ -1149,8 +1162,8 @@ func (s *apiServer) handleRestartPoll(w http.ResponseWriter, r *http.Request) {
 	if !s.drain.IsDraining() {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"canRestart": false, "canDeploy": false, "ready": false,
-			"draining":    false,
-			"reason":      "not notified",
+			"draining": false,
+			"reason":   "not notified",
 		})
 		return
 	}
@@ -1187,8 +1200,8 @@ func (s *apiServer) handleRestartPoll(w http.ResponseWriter, r *http.Request) {
 
 	canRestart := otherDeploys == 0 && otherPipelines == 0
 	writeJSON(w, http.StatusOK, map[string]any{
-		"canRestart":     canRestart,
-		"canDeploy":      canRestart,
+		"canRestart":      canRestart,
+		"canDeploy":       canRestart,
 		"ready":           canRestart,
 		"draining":        true,
 		"restartingId":    restartID,
@@ -1219,6 +1232,18 @@ func (s *apiServer) deployRunning(requestID string) bool {
 // @Router   /api/meta [get]
 func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
 	example, _ := normalizeDeploymentTag("abc12345")
+	machines, machineSource, machineNote := s.machineCatalog().List(r.Context())
+	defaultMachine := s.machineCatalog().DefaultID(r.Context())
+	machineHint := "发起流水线时可选择「部署机器」：本次部署落到哪台机器（目标主机/agent）。" +
+		"不选 = 默认机器（" + defaultMachine + "）；列表来自 service-registry 登记的实例主机"
+	switch machineSource {
+	case "env", "registry+env":
+		machineHint += " + DEPLOY_MACHINES"
+	}
+	machineHint += "。"
+	if machineNote != "" {
+		machineHint += " " + machineNote + "。"
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"home":                    s.cfg.Home,
 		"packagesDir":             s.cfg.PackagesDir,
@@ -1236,12 +1261,14 @@ func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
 		"proxyConfigured":         proxyConfigured(s.cfg),
 		"proxyHint": "发起流水线时可勾选「走本机代理」：git fetch + build.sh 用 " +
 			s.cfg.ProxyEnvFile + " 里的 HTTP(S)_PROXY（直连 github 失败时用）",
-		"deployMachines":       s.cfg.DeployMachineIDs(),
-		"defaultDeployMachine": s.cfg.DefaultDeployMachineID(),
+		"deployMachines":       machines,
+		"defaultDeployMachine": defaultMachine,
+		// 机器列表的来源与回退原因（registry / registry+env / env / local）。
+		"deployMachineSource": machineSource,
+		"deployMachineNote":   machineNote,
 		// 面板静态资源的指纹：已经打开的标签页靠它发现自己跑的是升级前的 JS，自动刷一次。
-		"panelVersion": s.panelVersion(),
-		"deployMachineHint": "发起流水线时可选择「部署机器」：本次部署落到哪台机器（目标主机/agent）。" +
-			"不选 = 默认机器（" + s.cfg.DefaultDeployMachineID() + "）；列表来自 DEPLOY_MACHINES 或本机 data/deploy-machines。",
+		"panelVersion":           s.panelVersion(),
+		"deployMachineHint":      machineHint,
 		"serviceRegistryUrl":     s.registry.BaseURL(),
 		"serviceRegistryEnabled": s.registry.Enabled(),
 		"serviceCatalog":         "GET /api/services（服务列表来自 service_registry，本机只存部署配置）",
