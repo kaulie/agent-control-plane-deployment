@@ -169,6 +169,7 @@ let proxySource = '';
 async function refreshProxyOption() {
   try {
     const m = await apiGet('/api/meta');
+    notePanelVersion(m);
     proxyConfigured = !!m.proxyConfigured;
     proxySource = m.proxyEnvFile || '';
   } catch {
@@ -183,6 +184,33 @@ async function refreshProxyOption() {
       ? '已检测到本机代理（' + (proxySource || '进程环境') + '）：勾选后 git fetch / build.sh 走它，直连失败时用。'
       : '本机未检测到代理（' + (proxySource || 'data/proxy.env') + ' 里没有 HTTP(S)_PROXY）：勾选也不会生效。';
   }
+}
+
+// ---- 面板自身的新鲜度：升级后已经打开的标签页也要跟上 ------------------------
+// /api/meta 带 panelVersion（面板静态资源的指纹）。已经打开的页面跑的是加载那一刻
+// 的 JS，轮询不会把它换掉 —— 部署新版本后就会出现「新控件在、填充它的代码不在」的
+// 半新半旧页面（例如「部署机器」下拉渲染出来却一直是空的）。指纹一变就自动刷新一次
+// （同一个版本只刷一次，避免抖动循环）。
+let panelVersionSeen = '';
+
+function notePanelVersion(m) {
+  const v = (m && m.panelVersion) || '';
+  if (!v) return;
+  if (!panelVersionSeen) { panelVersionSeen = v; return; }
+  if (v === panelVersionSeen) return;
+  panelVersionSeen = v;
+  try {
+    if (sessionStorage.getItem('acpPanelReloadedFor') === v) return; // 已为这个版本刷过
+    sessionStorage.setItem('acpPanelReloadedFor', v);
+  } catch { /* 隐私模式等：sessionStorage 不可用也要刷一次 */ }
+  toast('面板已随部署更新，正在刷新…', 'ok');
+  setTimeout(() => { try { window.location.reload(); } catch { /* jsdom 等环境 */ } }, 300);
+}
+
+async function checkPanelVersion() {
+  try {
+    notePanelVersion(await apiGet('/api/meta'));
+  } catch { /* 拉不到就下次轮询再说 */ }
 }
 
 // ---- 发起流水线：「部署机器」选项 ------------------------------------------
@@ -204,6 +232,7 @@ async function refreshDeployMachineOption() {
   machineFetchInFlight = true;
   try {
     const m = await apiGet('/api/meta');
+    notePanelVersion(m);
     deployMachines = Array.isArray(m.deployMachines) ? m.deployMachines.filter((id) => id) : [];
     defaultDeployMachine = m.defaultDeployMachine || (deployMachines[0] || '');
     machineListLoaded = deployMachines.length > 0;
@@ -1040,6 +1069,7 @@ $('#art-scan').addEventListener('click', async () => {
 // ---- refresh loop ---------------------------------------------------------
 function refreshActiveTab() {
   const active = $('#tabs .tab--active').dataset.tab;
+  checkPanelVersion(); // 面板静态资源被重新部署过 → 自动刷一次（升级后别停在旧 JS 上）
   if (active === 'pipelines') {
     healTriggerOptions();
     // only the 历史列表 sub-panel has a list to poll

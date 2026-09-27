@@ -7,7 +7,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
-const { JSDOM } = require('jsdom');
+const { JSDOM, VirtualConsole } = require('jsdom');
 
 const root = path.resolve(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'web', 'index.html'), 'utf8')
@@ -100,10 +100,20 @@ function makePanel(options = {}) {
     };
   }
 
+  // jsdom 没有实现 location.reload()（升级后自动刷新会调它），它会报
+  // 「Not implemented: navigation」——把它当重载次数记下来；其它 jsdom 报错照旧可见。
+  let navAttempts = 0;
+  const virtualConsole = new VirtualConsole();
+  virtualConsole.on('jsdomError', (err) => {
+    if (/Not implemented: navigation/.test(err.message)) { navAttempts += 1; return; }
+    console.error('[jsdom]', err.message);
+  });
+
   const dom = new JSDOM(html, {
     runScripts: 'dangerously',
     url: 'http://localhost/',
     pretendToBeVisual: true,
+    virtualConsole,
     beforeParse(window) {
       window.fetch = fetchMock;
       window.setInterval = () => 0; // keep the 3s auto-refresh from running in tests
@@ -119,7 +129,7 @@ function makePanel(options = {}) {
   const servicesRequests = () => requests.filter((r) => r.pathname.startsWith('/api/services'));
   const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-  return { dom, flush, calls, requests, deploysCalls, servicesRequests, state };
+  return { dom, flush, calls, requests, deploysCalls, servicesRequests, state, navAttempts: () => navAttempts };
 }
 
 test('deploy history: filter change does not refresh; 查询 does', async (t) => {
@@ -512,6 +522,31 @@ test('pipeline trigger: /api/meta 没给机器列表时下拉也非空（退回�
   assert.ok(sel.options.length >= 1, '下拉不能是空的');
   assert.equal(sel.value, 'local', '退回默认机器 local');
   assert.match(doc.querySelector('#pipe-machine-hint').textContent, /默认机器/, '提示说明按默认机器处理');
+});
+
+test('pipeline trigger: 面板被重新部署后，已经打开的页面自动刷新一次', async (t) => {
+  const meta = { panelVersion: 'panel-1', deployMachines: ['local'], defaultDeployMachine: 'local' };
+  const { dom, flush, navAttempts } = makePanel({ meta });
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+  await flush();
+  assert.equal(navAttempts(), 0, '指纹没变不该刷新');
+  assert.equal(doc.querySelector('#toast').hidden, true, '指纹没变不该提示');
+
+  // 服务端换了面板静态资源（部署把我们升级了）：下一次刷新（3s 轮询 / 切 tab）要比出来。
+  meta.panelVersion = 'panel-2';
+  doc.querySelector('[data-tab="pipelines"]').click();
+  await flush();
+  await new Promise((r) => setTimeout(r, 400)); // 等 toast 里的 reload
+  assert.match(doc.querySelector('#toast').textContent, /刷新/, '要提示面板已更新');
+  assert.equal(navAttempts(), 1, '要自动重载一次，别让页面停在旧 JS 上');
+
+  // 重载之后指纹就一致了，不会反复刷（同一个版本只刷一次）。
+  meta.panelVersion = 'panel-2';
+  doc.querySelector('[data-tab="pipelines"]').click();
+  await flush();
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(navAttempts(), 1, '同一个版本不能反复重载');
 });
 
 test('pipeline trigger: /api/meta 拉失败时下拉仍可用，并在刷新里自动重试', async (t) => {
