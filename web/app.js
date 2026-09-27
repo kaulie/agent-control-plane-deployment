@@ -188,29 +188,50 @@ async function refreshProxyOption() {
 // ---- 发起流水线：「部署机器」选项 ------------------------------------------
 // 本次部署落到哪台机器（目标主机/agent）。机器列表来自 /api/meta deployMachines；
 // 不选 / 选默认机器时请求体不带 targetMachine，服务端按默认机器处理。
+//
+// 列表拉不到时（升级/重启窗口、网络抖动）也必须给出一个能用的下拉：留空会让
+// 「部署机器」看起来是坏的，而且空着不会自己恢复（发起子页不在 3s 轮询里）。
+// 所以 ① 渲染时至少摆上默认机器，② 没拉到时每次刷新再补拉一次。
+const FALLBACK_DEPLOY_MACHINE = 'local'; // 与服务端 defaultDeployMachine 一致
 let deployMachines = [];
 let defaultDeployMachine = '';
+let machineListLoaded = false;
+let machineFetchInFlight = false;
 
 async function refreshDeployMachineOption() {
+  // init 与自愈（healTriggerOptions）可能同时来一次，去重。
+  if (machineFetchInFlight) return;
+  machineFetchInFlight = true;
   try {
     const m = await apiGet('/api/meta');
-    deployMachines = Array.isArray(m.deployMachines) ? m.deployMachines : [];
+    deployMachines = Array.isArray(m.deployMachines) ? m.deployMachines.filter((id) => id) : [];
     defaultDeployMachine = m.defaultDeployMachine || (deployMachines[0] || '');
+    machineListLoaded = deployMachines.length > 0;
   } catch {
     deployMachines = [];
     defaultDeployMachine = '';
+    machineListLoaded = false;
+  } finally {
+    machineFetchInFlight = false;
   }
+  renderDeployMachineOption();
+}
+
+function renderDeployMachineOption() {
   const sel = $('#pipe-machine');
   if (!sel) return;
-  sel.innerHTML = deployMachines
-    .map((id) => `<option value="${esc(id)}">${esc(id)}${id === defaultDeployMachine ? '（默认）' : ''}</option>`)
+  const known = deployMachines.length > 0;
+  const list = known ? deployMachines : [defaultDeployMachine || FALLBACK_DEPLOY_MACHINE];
+  const dflt = defaultDeployMachine || list[0];
+  sel.innerHTML = list
+    .map((id) => `<option value="${esc(id)}">${esc(id)}${id === dflt ? '（默认）' : ''}</option>`)
     .join('');
-  if (defaultDeployMachine) sel.value = defaultDeployMachine;
+  sel.value = dflt;
   const hint = $('#pipe-machine-hint');
   if (hint) {
-    hint.textContent = deployMachines.length
-      ? '部署机器：本次部署落到哪台机器；不选/默认（' + (defaultDeployMachine || '—') + '）即本机。'
-      : '未配置部署机器（DEPLOY_MACHINES），本次部署按默认机器处理。';
+    hint.textContent = known
+      ? '部署机器：本次部署落到哪台机器；不选/默认（' + dflt + '）即本机。'
+      : '暂未取到机器列表（GET /api/meta）；本次部署按默认机器 ' + dflt + ' 处理，稍后自动重试。';
   }
 }
 
@@ -221,6 +242,8 @@ async function refreshDeployMachineOption() {
 let services = [];
 let servicesError = '';
 let registryStatus = null;
+// 服务目录是否真的拉到过（用于发起卡片的空列表自愈，见 healTriggerOptions）。
+let servicesLoaded = false;
 
 async function refreshServices() {
   try {
@@ -228,14 +251,24 @@ async function refreshServices() {
     services = data.services || [];
     registryStatus = data.registry || null;
     servicesError = '';
+    servicesLoaded = true;
   } catch (e) {
     services = [];
     registryStatus = null;
     servicesError = e.message;
+    servicesLoaded = false;
   }
   populateServiceSelects();
   renderServiceContracts();
   renderRegistryStatus();
+}
+
+// 发起卡片（服务 + 部署机器）靠两个列表接口渲染，而它们只在 init / 切页时拉，
+// 「发起」子页不在 3s 轮询里 —— 任何一次拉失败（例如服务刚好在重启）都会让下拉
+// 空着不会自己恢复。这里把「还没拉到」当成待办：轮询到就补一次。
+function healTriggerOptions() {
+  if (!machineListLoaded) refreshDeployMachineOption();
+  if (!servicesLoaded) refreshServices();
 }
 
 function populateServiceSelects() {
@@ -1008,6 +1041,7 @@ $('#art-scan').addEventListener('click', async () => {
 function refreshActiveTab() {
   const active = $('#tabs .tab--active').dataset.tab;
   if (active === 'pipelines') {
+    healTriggerOptions();
     // only the 历史列表 sub-panel has a list to poll
     if (activeSubPanel('pipe-subtabs') !== 'pipe-history') return;
     if (pipeDetailID) refreshPipelineDetail();
