@@ -7,6 +7,11 @@ import (
 
 // 部署机器（deploy machine）：发起流水线时可选择本次部署落到哪台机器（目标主机 / agent）。
 //
+// **真源是 service-registry**：机器来自它登记的服务实例（见 machine_catalog.go 的
+// MachineCatalog —— 面板下拉、触发校验、部署执行都走那里）。本文件只保留「本机 +
+// DEPLOY_MACHINES」这一层的解析与校验：本机（local）永远可用，DEPLOY_MACHINES 用来
+// 补充还没在注册中心登记实例的机器。
+//
 // 已知机器由 DEPLOY_MACHINES（逗号分隔的 id）配置；未选择时用
 // DEPLOY_DEFAULT_MACHINE，未配置默认则用列表里的第一台。缺省（都不配）只有单台
 // "local"，因此「不选机器」的行为与以前完全一致。

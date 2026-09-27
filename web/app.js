@@ -223,6 +223,9 @@ async function checkPanelVersion() {
 const FALLBACK_DEPLOY_MACHINE = 'local'; // 与服务端 defaultDeployMachine 一致
 let deployMachines = [];
 let defaultDeployMachine = '';
+// 服务端给的机器说明（含数据源：来自 service-registry 的实例主机）。有就用它，
+// 免得面板自己再编一份容易过时的文案。
+let deployMachineHintText = '';
 let machineListLoaded = false;
 let machineFetchInFlight = false;
 
@@ -233,6 +236,7 @@ async function refreshDeployMachineOption() {
   try {
     const m = await apiGet('/api/meta');
     notePanelVersion(m);
+    deployMachineHintText = m.deployMachineHint || '';
     deployMachines = Array.isArray(m.deployMachines) ? m.deployMachines.filter((id) => id) : [];
     defaultDeployMachine = m.defaultDeployMachine || (deployMachines[0] || '');
     machineListLoaded = deployMachines.length > 0;
@@ -258,9 +262,13 @@ function renderDeployMachineOption() {
   sel.value = dflt;
   const hint = $('#pipe-machine-hint');
   if (hint) {
-    hint.textContent = known
-      ? '部署机器：本次部署落到哪台机器；不选/默认（' + dflt + '）即本机。'
-      : '暂未取到机器列表（GET /api/meta）；本次部署按默认机器 ' + dflt + ' 处理，稍后自动重试。';
+    if (known && deployMachineHintText) {
+      hint.textContent = deployMachineHintText; // 服务端文案里带着数据源
+    } else {
+      hint.textContent = known
+        ? '部署机器：本次部署落到哪台机器；不选/默认（' + dflt + '）即本机。'
+        : '暂未取到机器列表（GET /api/meta）；本次部署按默认机器 ' + dflt + ' 处理，稍后自动重试。';
+    }
   }
 }
 

@@ -228,7 +228,8 @@ func clearStaleDeployPauses(store *Store) int {
 	return n
 }
 
-func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *GracefulDrain, requestID string) {
+func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *GracefulDrain,
+	machines *MachineCatalog, requestID string) {
 	job, err := store.GetDeploy(requestID)
 	if err != nil || job == nil || job.State != StateRunning {
 		return
@@ -260,9 +261,10 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 	}
 	hash := strings.TrimPrefix(tag, "deployment-")
 	// 本次部署落到的「部署机器」：触发时选择并随任务转发而来；空/未知 → 默认机器。
-	machine, mErr := cfg.ValidateDeployMachine(job.TargetMachine)
+	// 已知机器来自注册中心（+ 本机 + DEPLOY_MACHINES），见 MachineCatalog。
+	machine, mErr := machines.Validate(context.Background(), job.TargetMachine)
 	if mErr != nil {
-		machine = cfg.DefaultDeployMachineID()
+		machine = machines.DefaultID(context.Background())
 		_ = store.AddDeployEvent(job.RequestID, eventlevel.Warn,
 			"部署机器未知（"+mErr.Error()+"），退回默认机器="+machine)
 	}
@@ -534,12 +536,13 @@ func reconcileOrphanDeploys(store *Store) int {
 }
 
 type DeployWorker struct {
-	store   *Store
-	cfg     Config
-	storage ArtifactStorage
-	drain   *GracefulDrain
-	mu      sync.Mutex
-	ticking bool
+	store    *Store
+	cfg      Config
+	storage  ArtifactStorage
+	drain    *GracefulDrain
+	machines *MachineCatalog
+	mu       sync.Mutex
+	ticking  bool
 	// active maps a deployment unit (a runtime dir) to the requestID currently
 	// deploying it. Deploys of *different* units run concurrently; the same
 	// unit never runs twice at once (two contracts can share one runtimeDir,
@@ -552,16 +555,22 @@ type DeployWorker struct {
 	run func(requestID string)
 }
 
-func NewDeployWorker(store *Store, cfg Config, storage ArtifactStorage, drain *GracefulDrain) *DeployWorker {
+func NewDeployWorker(store *Store, cfg Config, storage ArtifactStorage, drain *GracefulDrain,
+	machines *MachineCatalog) *DeployWorker {
+	if machines == nil {
+		// 没给机器目录（测试/未注入）：按本地配置兜一个，本机永远是已知机器。
+		machines = NewMachineCatalog(cfg, nil)
+	}
 	return &DeployWorker{
-		store:   store,
-		cfg:     cfg,
-		storage: storage,
-		drain:   drain,
-		active:  map[string]string{},
-		stopCh:  make(chan struct{}),
+		store:    store,
+		cfg:      cfg,
+		storage:  storage,
+		drain:    drain,
+		machines: machines,
+		active:   map[string]string{},
+		stopCh:   make(chan struct{}),
 		run: func(requestID string) {
-			executeDeploy(store, cfg, storage, drain, requestID)
+			executeDeploy(store, cfg, storage, drain, machines, requestID)
 		},
 	}
 }

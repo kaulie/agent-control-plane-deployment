@@ -549,6 +549,22 @@ test('pipeline trigger: 面板被重新部署后，已经打开的页面自动�
   assert.equal(navAttempts(), 1, '同一个版本不能反复重载');
 });
 
+test('pipeline trigger: 机器列表的说明用服务端文案（写明数据源）', async (t) => {
+  const { dom, flush } = makePanel({
+    meta: {
+      deployMachines: ['local'],
+      defaultDeployMachine: 'local',
+      deployMachineHint: '发起流水线时可选择「部署机器」…；列表来自 service-registry 登记的实例主机。',
+    },
+  });
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+  await flush();
+
+  assert.match(doc.querySelector('#pipe-machine-hint').textContent, /service-registry/,
+    '说明里要带数据源，别让面板自己编一份容易过时的文案');
+});
+
 test('pipeline trigger: /api/meta 拉失败时下拉仍可用，并在刷新里自动重试', async (t) => {
   const meta = { deployMachines: ['local', 'gpu-2'], defaultDeployMachine: 'local' };
   const { dom, flush, requests, state } = makePanel({ meta, metaError: true });

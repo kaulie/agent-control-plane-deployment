@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -109,15 +110,32 @@ type registryListBody struct {
 	Total    int               `json:"total"`
 }
 
-// List pulls the whole service catalog from the registry.
-func (r *ServiceRegistry) List(ctx context.Context) ([]RegistryService, error) {
+// RegistryInstance is one service instance of the registry (only the fields that
+// say *which machine it runs on* matter here).
+type RegistryInstance struct {
+	Namespace string            `json:"namespace"`
+	Service   string            `json:"service"`
+	Host      string            `json:"host"`
+	Port      int               `json:"port"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
+}
+
+// registrySnapshotBody mirrors service-registry's GET /v1/snapshot envelope: the
+// whole catalog — services *and* their instances — in one call. It is the single
+// pull the control plane needs to answer "which machines exist".
+type registrySnapshotBody struct {
+	Services  []RegistryService  `json:"services"`
+	Instances []RegistryInstance `json:"instances"`
+}
+
+// getJSON performs one authenticated GET against the registry and decodes it.
+func (r *ServiceRegistry) getJSON(ctx context.Context, path string, out any) error {
 	if !r.Enabled() {
-		return nil, fmt.Errorf("service_registry 未配置（SERVICE_REGISTRY_URL 为空）")
+		return fmt.Errorf("service_registry 未配置（SERVICE_REGISTRY_URL 为空）")
 	}
-	endpoint := r.baseURL + "/v1/services?limit=" + strconv.Itoa(registryListLimit)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.baseURL+path, nil)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	req.Header.Set("Accept", "application/json")
 	if r.token != "" {
@@ -125,18 +143,92 @@ func (r *ServiceRegistry) List(ctx context.Context) ([]RegistryService, error) {
 	}
 	resp, err := r.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("请求 service_registry 失败（%s）：%w", r.baseURL, err)
+		return fmt.Errorf("请求 service_registry 失败（%s）：%w", r.baseURL, err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("service_registry 返回 %d：%s", resp.StatusCode, registryErrorMessage(body))
+		return fmt.Errorf("service_registry 返回 %d：%s", resp.StatusCode, registryErrorMessage(body))
 	}
+	if err := json.Unmarshal(body, out); err != nil {
+		return fmt.Errorf("解析 service_registry 响应失败：%w", err)
+	}
+	return nil
+}
+
+// List pulls the whole service catalog from the registry.
+func (r *ServiceRegistry) List(ctx context.Context) ([]RegistryService, error) {
 	var out registryListBody
-	if err := json.Unmarshal(body, &out); err != nil {
-		return nil, fmt.Errorf("解析 service_registry 响应失败：%w", err)
+	if err := r.getJSON(ctx, "/v1/services?limit="+strconv.Itoa(registryListLimit), &out); err != nil {
+		return nil, err
 	}
 	return out.Services, nil
+}
+
+// Snapshot pulls services + instances in one call (GET /v1/snapshot).
+func (r *ServiceRegistry) Snapshot(ctx context.Context) ([]RegistryService, []RegistryInstance, error) {
+	var out registrySnapshotBody
+	if err := r.getJSON(ctx, "/v1/snapshot", &out); err != nil {
+		return nil, nil, err
+	}
+	return out.Services, out.Instances, nil
+}
+
+// DeployMachines returns the machines the registry knows about — the machines its
+// service instances run on. This is the single source of truth for the 部署机器
+// list: nobody has to configure the same machine twice (registry + deployment
+// control plane).
+//
+// The machine id is the instance's `metadata.machine` when the registrant named
+// it (friendly ids like "gpu-2" are welcome), else its host. Instances that live
+// on *this* machine (loopback / localhost / this hostname) all collapse into
+// defaultDeployMachine ("local"), because that is what a deploy to "here" is.
+func (r *ServiceRegistry) DeployMachines(ctx context.Context) ([]string, error) {
+	_, instances, err := r.Snapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	out := []string{}
+	for _, inst := range instances {
+		id := MachineIDForInstance(inst)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// MachineIDForInstance maps one registry instance to the machine it runs on.
+func MachineIDForInstance(inst RegistryInstance) string {
+	if isLocalHost(inst.Host) {
+		return defaultDeployMachine
+	}
+	if named := strings.TrimSpace(inst.Metadata["machine"]); named != "" {
+		return named
+	}
+	return strings.ToLower(strings.TrimSpace(inst.Host))
+}
+
+// isLocalHost reports whether a registry instance host is *this* machine.
+func isLocalHost(host string) bool {
+	h := strings.ToLower(strings.TrimSpace(host))
+	switch h {
+	case "", "localhost", "localhost.localdomain", "127.0.0.1", "::1", "0.0.0.0", "host.docker.internal":
+		return true
+	}
+	if strings.HasPrefix(h, "127.") {
+		return true
+	}
+	self, _ := os.Hostname()
+	self = strings.ToLower(strings.TrimSpace(self))
+	if self == "" {
+		return false
+	}
+	return h == self || strings.HasPrefix(h, self+".") || strings.HasPrefix(self, h+".")
 }
 
 // Lookup returns the registered contract for serviceID. found=false (with a

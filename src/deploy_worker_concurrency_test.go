@@ -119,7 +119,7 @@ func TestDeployWorkerRunsUnrelatedServicesConcurrently(t *testing.T) {
 	mustQueuedDeploy(t, store, "pipeline-blocked", "agent-control-plane")
 	mustQueuedDeploy(t, store, "pipeline-behind", "autonomy")
 
-	worker := NewDeployWorker(store, Config{}, nil, &GracefulDrain{})
+	worker := NewDeployWorker(store, Config{}, nil, &GracefulDrain{}, nil)
 	runner := newGatedRunner("pipeline-blocked", "pipeline-behind")
 	worker.run = runner.run
 
@@ -149,7 +149,7 @@ func TestDeployWorkerSerializesSameRuntimeDir(t *testing.T) {
 	time.Sleep(5 * time.Millisecond) // keep requested_at strictly ordered
 	mustQueuedDeploy(t, store, "pipeline-second", "agent-control-plane")
 
-	worker := NewDeployWorker(store, Config{}, nil, &GracefulDrain{})
+	worker := NewDeployWorker(store, Config{}, nil, &GracefulDrain{}, nil)
 	runner := newGatedRunner("pipeline-first", "pipeline-second")
 	worker.run = runner.run
 
@@ -184,7 +184,7 @@ func TestDeployWorkerDoesNotClaimWhileDraining(t *testing.T) {
 
 	drain := &GracefulDrain{}
 	drain.Notify("pipeline-self")
-	worker := NewDeployWorker(store, Config{}, nil, drain)
+	worker := NewDeployWorker(store, Config{}, nil, drain, nil)
 	runner := newGatedRunner("pipeline-later")
 	worker.run = runner.run
 

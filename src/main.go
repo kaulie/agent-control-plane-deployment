@@ -124,11 +124,16 @@ func main() {
 		log.Printf("[registry] SERVICE_REGISTRY_URL=off: only locally configured services are shown")
 	}
 
+	// 部署机器目录：真源是 service-registry 登记的实例主机（+ 本机 + DEPLOY_MACHINES），
+	// 面板下拉、触发校验、部署执行都从这里取。
+	machines := NewMachineCatalog(cfg, registry)
+
 	drain := &GracefulDrain{}
-	worker := NewDeployWorker(store, cfg, storage, drain)
+	worker := NewDeployWorker(store, cfg, storage, drain, machines)
 	pipeline := NewPipelineWorker(store, cfg, storage, worker, drain)
 	pipeline.registry = registry
-	api := &apiServer{store: store, cfg: cfg, storage: storage, worker: worker, pipeline: pipeline, drain: drain, registry: registry}
+	api := &apiServer{store: store, cfg: cfg, storage: storage, worker: worker, pipeline: pipeline,
+		drain: drain, registry: registry, machines: machines}
 
 	pidFile := filepath.Join(cfg.Home, "deployment.pid")
 	_ = os.WriteFile(pidFile, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644)

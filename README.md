@@ -140,7 +140,7 @@ curl -sS -X PUT http://127.0.0.1:4220/api/services/web-cursor \
 | `SERVICE_REGISTRY_URL` | `http://127.0.0.1:4240` | 服务目录来源；`off` / `disabled` / `none` = 关闭拉取 |
 | `SERVICE_REGISTRY_TOKEN` | 空 | 注册中心读令牌（`REGISTRY_READ_AUTH=token` 时用） |
 | `SERVICE_REGISTRY_TIMEOUT_SEC` | `5` | 单次拉取超时（秒） |
-| `DEPLOY_MACHINES` | 空（= `local`） | 发起流水线时可选择的**部署机器**（逗号分隔 id）；空 = 只有单机 `local`。本机也可以写在 `data/deploy-machines`（`data/` 跨自升级保留，见「部署机器」） |
+| `DEPLOY_MACHINES` | 空（= `local`） | **补充**发起流水线时可选择的**部署机器**（逗号分隔 id）；机器真源是 service-registry 登记的实例主机，这里只补还没登记实例的机器（也可写在本机 `data/deploy-machines`） |
 | `DEPLOY_DEFAULT_MACHINE` | 空（= 列表第一台） | 未选择机器时用的默认机器 |
 | `PROXY_ENV_FILE` | `<home>/data/proxy.env` | 「打包走本机代理」读取的代理配置；`off` 关闭该选项 |
 
@@ -245,7 +245,12 @@ curl -sS http://127.0.0.1:4220/api/pipelines/<requestId>
 
 发起流水线时可**按次**选择本次部署落到哪台机器（目标主机 / agent）。已知机器由环境变量 `DEPLOY_MACHINES`（逗号分隔的 id，如 `local,gpu-2,build-server`）配置；不配置时只有单机 `local`：
 
-- **数据源（从下往上）**：面板 `#pipe-machine` 下拉 ← `refreshDeployMachineOption()` ← `GET /api/meta` 的 `deployMachines` / `defaultDeployMachine` ← 服务端 `handleMeta` → `Config.DeployMachineIDs()` / `DefaultDeployMachineID()` ← 进程环境 `DEPLOY_MACHINES` / `DEPLOY_DEFAULT_MACHINE`（空 → `["local"]`，**永远不会是空列表**）。本机想加机器又不想改仓库：写一行 `local,gpu-2` 到 `data/deploy-machines`（可选 `data/deploy-default-machine`）；`data/` 跨自升级保留，`scripts/start.sh` 会读它们（继承来的 `DEPLOY_MACHINES` 优先），改完重启服务生效。
+- **数据源（从下往上，统一在 service-registry）**：面板 `#pipe-machine` 下拉 ← `refreshDeployMachineOption()` ← `GET /api/meta` 的 `deployMachines` / `defaultDeployMachine` ← 服务端 `MachineCatalog`（`src/machine_catalog.go`）← **注册中心 `GET /v1/snapshot` 的 `instances`**：每个服务实例跑在哪台机器（实例 `host`，或实例 `metadata.machine` 里登记的名字）就是一台可选的部署机器。控制面不再单独维护机器清单：
+  - `local` = **本机**（loopback / localhost / 本机 hostname 的实例都归并成它）—— 永远在列表里，且是不选时的默认；
+  - `DEPLOY_MACHINES`（或本机 `data/deploy-machines`）只作为**显式补充**：给还没登记实例的机器留一个入口；
+  - 注册中心不可达 → 用 30s 内的上一次结果（`deployMachineNote` 说明原因），缓存也没有就退回 `local` + `DEPLOY_MACHINES` —— **列表永远不会是空的**；
+  - `/api/meta` 另有 `deployMachineSource`（`registry` / `registry+env` / `env` / `local`）与 `deployMachineNote`，面板的说明文案直接用服务端给的 `deployMachineHint`（写明数据源）。
+  - 想让某台机器出现在下拉里：**在注册中心登记一个跑在那台机器上的服务实例**（`PUT /v1/namespaces/<ns>/services/<svc>/instances`，`{"host":"10.0.0.7","port":4300,"metadata":{"machine":"gpu-2"}}`；`metadata.machine` 可选，用来给友好名字，不写就用 host）。
 - **面板**：「部署流水线 → 发起」里的「部署机器」下拉（选项来自 `/api/meta` 的 `deployMachines`，默认选中 `defaultDeployMachine`）。选默认机器时请求体**不带** `targetMachine`。列表拉不到时（例如 ACP 自己正在升级、`/api/meta` 暂时不可用）下拉**退回默认机器**而不是空着，并在之后每次刷新自动重试补齐。
 - **API**：`POST /api/deploy-notify {"serviceId": ..., "ref": ..., "targetMachine": "gpu-2"}`；`POST /api/deploys {"serviceId": ..., "deployment": ..., "targetMachine": "gpu-2"}` 同样接受。非空机器必须是已知机器，否则 **400**（错误里附允许列表）。
 - **默认机器**：`DEPLOY_DEFAULT_MACHINE`；不配置则取 `DEPLOY_MACHINES` 第一台。请求不带 `targetMachine` 时按默认机器处理——**默认行为不变**。
