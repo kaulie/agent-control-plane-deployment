@@ -64,10 +64,15 @@
               <input type="checkbox" id="pipe-use-proxy" />
               打包走本机代理
             </label>
+            <label title="本次部署落到哪台机器（目标主机/agent）；不选 = 默认机器">
+              部署机器
+              <select id="pipe-machine"></select>
+            </label>
             <button class="btn btn--primary" id="pipe-trigger">触发打包+部署</button>
           </div>
           <p class="hint">git clone → build.sh → 上传制品 → 入队部署（graceful notify + poll）。</p>
           <p class="hint" id="pipe-proxy-hint"></p>
+          <p class="hint" id="pipe-machine-hint"></p>
         </div>
       </div>
 

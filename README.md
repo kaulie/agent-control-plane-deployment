@@ -140,6 +140,9 @@ curl -sS -X PUT http://127.0.0.1:4220/api/services/web-cursor \
 | `SERVICE_REGISTRY_URL` | `http://127.0.0.1:4240` | 服务目录来源；`off` / `disabled` / `none` = 关闭拉取 |
 | `SERVICE_REGISTRY_TOKEN` | 空 | 注册中心读令牌（`REGISTRY_READ_AUTH=token` 时用） |
 | `SERVICE_REGISTRY_TIMEOUT_SEC` | `5` | 单次拉取超时（秒） |
+| `DEPLOY_MACHINES` | 空（= `local`） | 发起流水线时可选择的**部署机器**（逗号分隔 id）；空 = 只有单机 `local` |
+| `DEPLOY_DEFAULT_MACHINE` | 空（= 列表第一台） | 未选择机器时用的默认机器 |
+| `PROXY_ENV_FILE` | `<home>/data/proxy.env` | 「打包走本机代理」读取的代理配置；`off` 关闭该选项 |
 
 ### 本服务自身的契约登记（注解是唯一真源）
 
@@ -220,6 +223,7 @@ curl -sS -X POST http://127.0.0.1:4220/api/deploy-notify \
   -d '{"serviceId":"web-cursor"}'
 # 未传 ref → 默认拉该服务 defaultBranch（缺省 main）的最新 tip
 # useProxy:true → 本次打包走本机代理（见「打包走本机代理」）
+# targetMachine:"gpu-2" → 本次部署落到指定部署机器（见「部署机器」；不传 = 默认机器）
 # identity_role / identity_id 为必填（第一阶段身份校验，见下节）
 
 curl -sS http://127.0.0.1:4220/api/pipelines/<requestId>
@@ -236,6 +240,15 @@ curl -sS http://127.0.0.1:4220/api/pipelines/<requestId>
 - **代理从哪读**：`PROXY_ENV_FILE`（默认 `<home>/data/proxy.env`，和运维脚本同一份，形如 `export HTTPS_PROXY=http://127.0.0.1:7897` + `NO_PROXY=localhost,127.0.0.1,::1`）。文件缺失/没写代理时退回**服务进程自己的** `HTTP(S)_PROXY`；`PROXY_ENV_FILE=off` 关掉这个选项。勾了但两处都没代理 → 事件里告警，本次按直连跑。
 - **作用范围**：只作用于打包命令（`git fetch` + 服务自己的 `build.sh`）——它们按请求换 env 是安全的子进程。制品**下载**走进程内的 HTTP client，只认进程启动时的 env（`scripts/start.sh` 里加载 `data/proxy.env` 即可全局生效，服务重启后生效）。代理 URL 里的 `user:pass@` 会在事件里打码。
 - **默认行为不变**：不勾选时完全不注入代理 env，和以前一模一样。
+
+### 部署机器（可选，按次）
+
+发起流水线时可**按次**选择本次部署落到哪台机器（目标主机 / agent）。已知机器由环境变量 `DEPLOY_MACHINES`（逗号分隔的 id，如 `local,gpu-2,build-server`）配置；不配置时只有单机 `local`：
+
+- **面板**：「部署流水线 → 发起」里的「部署机器」下拉（选项来自 `/api/meta` 的 `deployMachines`，默认选中 `defaultDeployMachine`）。选默认机器时请求体**不带** `targetMachine`。
+- **API**：`POST /api/deploy-notify {"serviceId": ..., "ref": ..., "targetMachine": "gpu-2"}`；`POST /api/deploys {"serviceId": ..., "deployment": ..., "targetMachine": "gpu-2"}` 同样接受。非空机器必须是已知机器，否则 **400**（错误里附允许列表）。
+- **默认机器**：`DEPLOY_DEFAULT_MACHINE`；不配置则取 `DEPLOY_MACHINES` 第一台。请求不带 `targetMachine` 时按默认机器处理——**默认行为不变**。
+- **随任务转发**：机器记在流水线上（`GET /api/pipelines/:id` 的 `targetMachine`）并转发给部署任务（`GET /api/deploys/:id` 的 `targetMachine`）；部署时写入部署 `/events`（`开始部署：… 部署机器=<machine>`），并作为 `DEPLOY_MACHINE` 注入服务的 `restartCmd`，服务内可读到本次部署落到的机器。`DEPLOY_MACHINES` 变更后旧任务若指向已下线的机器，部署会告警并退回默认机器。
 
 ### 手工发版 + 部署
 
@@ -287,11 +300,11 @@ curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 | DELETE | `/api/services/:id` | 清除本机部署配置（服务仍在注册中心，可重新配置）；响应带剩余历史条数；**有在途任务 → 409** |
 | GET | `/api/services/:id/history` | 该 serviceId 名下的历史条数（流水线 / 部署 / 制品索引 + 在途任务数）与可迁移的**目标服务**（清除前确认用，只列本机已配置的服务） |
 | POST | `/api/services/:id/history/move` | 把 `{id}` 的历史（流水线 / 部署 / 制品索引）**迁移**到 `{to}`，`deleteSourceContract` = 迁移后删掉来源契约；在途任务 → 409，目标未配置 → 400，全程一个事务 |
-| POST | `/api/deploy-notify` | 服务方通知：打包 → 再部署（**需身份头**）；`ref?`、`useProxy?`（打包走本机代理） |
+| POST | `/api/deploy-notify` | 服务方通知：打包 → 再部署（**需身份头**）；`ref?`、`useProxy?`（打包走本机代理）、`targetMachine?`（部署机器） |
 | GET | `/api/pipelines` | 流水线列表（**多属性筛选 + 分页**，见下） |
 | GET | `/api/pipelines/:id` | 单条流水线状态 |
 | GET | `/api/pipelines/:id/events` | 流水线事件日志 |
-| POST | `/api/deploys` | 已有包直接入队部署（**需身份头**） |
+| POST | `/api/deploys` | 已有包直接入队部署（**需身份头**）；`targetMachine?`（部署机器） |
 | GET | `/api/deploys` | 部署任务列表（**多属性筛选 + 分页**，见下） |
 | GET | `/api/deploys/:id` | 查询单条部署任务 |
 | GET | `/api/deploys/:id/events` | 部署执行事件日志 |

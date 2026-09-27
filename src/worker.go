@@ -259,7 +259,15 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		return
 	}
 	hash := strings.TrimPrefix(tag, "deployment-")
-	startMsg := "开始部署：service=" + job.ServiceID + " deployment=" + tag + " version=" + hash
+	// 本次部署落到的「部署机器」：触发时选择并随任务转发而来；空/未知 → 默认机器。
+	machine, mErr := cfg.ValidateDeployMachine(job.TargetMachine)
+	if mErr != nil {
+		machine = cfg.DefaultDeployMachineID()
+		_ = store.AddDeployEvent(job.RequestID, eventlevel.Warn,
+			"部署机器未知（"+mErr.Error()+"），退回默认机器="+machine)
+	}
+	startMsg := "开始部署：service=" + job.ServiceID + " deployment=" + tag + " version=" + hash +
+		" 部署机器=" + machine
 	if by := job.Identity().String(); by != "" {
 		startMsg += " 触发者=" + by
 	}
@@ -438,7 +446,7 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 	restart := runShell(
 		restartCmd,
 		service.RuntimeDir,
-		serviceCmdEnv(*service, map[string]string{"APP_VERSION": hash}),
+		serviceCmdEnv(*service, map[string]string{"APP_VERSION": hash, "DEPLOY_MACHINE": machine}),
 		cfg.DeployMaxSec,
 	)
 	if restart.Code != 0 {

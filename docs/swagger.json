@@ -162,7 +162,7 @@
                 "summary": "通知打包 + 部署（服务方一键发版）",
                 "parameters": [
                     {
-                        "description": "serviceId + ref?（默认 defaultBranch）+ useProxy?（打包走本机代理）",
+                        "description": "serviceId + ref?（默认 defaultBranch）+ useProxy?（打包走本机代理）+ targetMachine?（部署机器）",
                         "name": "body",
                         "in": "body",
                         "required": true,
@@ -180,7 +180,7 @@
                         }
                     },
                     "400": {
-                        "description": "参数非法 / 未登记 gitRepoUrl",
+                        "description": "参数非法 / 未登记 gitRepoUrl / 未知部署机器",
                         "schema": {
                             "type": "object",
                             "additionalProperties": {
@@ -326,7 +326,7 @@
                 "summary": "触发一次部署（部署已打包的制品）",
                 "parameters": [
                     {
-                        "description": "serviceId + deployment（或 hash）",
+                        "description": "serviceId + deployment（或 hash）+ targetMachine?（部署机器）",
                         "name": "body",
                         "in": "body",
                         "required": true,
@@ -344,7 +344,7 @@
                         }
                     },
                     "400": {
-                        "description": "参数非法 / 找不到对应制品",
+                        "description": "参数非法 / 找不到对应制品 / 未知部署机器",
                         "schema": {
                             "type": "object",
                             "additionalProperties": {
@@ -1100,6 +1100,10 @@
                 "state": {
                     "$ref": "#/definitions/main.DeployState"
                 },
+                "targetMachine": {
+                    "description": "TargetMachine 是本次部署落到的「部署机器」（目标主机/agent）。空 = 默认机器。\n由流水线触发时选择的机器转发而来；独立触发部署时可用请求体指定。",
+                    "type": "string"
+                },
                 "triggeredBy": {
                     "type": "string"
                 },
@@ -1167,6 +1171,10 @@
                 },
                 "state": {
                     "$ref": "#/definitions/main.PipelineState"
+                },
+                "targetMachine": {
+                    "description": "TargetMachine 是发起时选择的「部署机器」（目标主机/agent）。空 = 默认机器，\n行为与「不选机器」一致。它随流水线落库，并入队时传给部署任务。",
+                    "type": "string"
                 },
                 "triggeredBy": {
                     "type": "string"
@@ -1434,6 +1442,10 @@
                 },
                 "serviceId": {
                     "type": "string"
+                },
+                "targetMachine": {
+                    "description": "TargetMachine: 本次部署落到哪台机器（目标主机/agent）。可选，空 = 默认机器。",
+                    "type": "string"
                 }
             }
         },
@@ -1447,6 +1459,10 @@
                     "type": "string"
                 },
                 "serviceId": {
+                    "type": "string"
+                },
+                "targetMachine": {
+                    "description": "TargetMachine: 本次部署落到哪台机器（目标主机/agent）。可选，空 = 默认机器。\n必须是 /api/meta deployMachines 里的已知机器，否则 400。",
                     "type": "string"
                 },
                 "useProxy": {

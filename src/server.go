@@ -602,6 +602,8 @@ type createDeployBody struct {
 	Deployment string `json:"deployment"`
 	Hash       string `json:"hash"`
 	RequestID  string `json:"requestId"`
+	// TargetMachine: 本次部署落到哪台机器（目标主机/agent）。可选，空 = 默认机器。
+	TargetMachine string `json:"targetMachine"`
 }
 
 // handleCreateDeploy enqueues a deploy of an already packaged artifact. The
@@ -611,9 +613,9 @@ type createDeployBody struct {
 // @Tags     deploys
 // @Accept   json
 // @Produce  json
-// @Param    body  body  main.createDeployBody  true  "serviceId + deployment（或 hash）"
+// @Param    body  body  main.createDeployBody  true  "serviceId + deployment（或 hash）+ targetMachine?（部署机器）"
 // @Success  202  {object}  map[string]interface{}  "DeployJob + poll"
-// @Failure  400  {object}  map[string]string  "参数非法 / 找不到对应制品"
+// @Failure  400  {object}  map[string]string  "参数非法 / 找不到对应制品 / 未知部署机器"
 // @Failure  401  {object}  map[string]string  "缺少或非法的身份头"
 // @Failure  404  {object}  map[string]string  "服务未配置"
 // @Failure  409  {object}  map[string]string  "requestId 已存在"
@@ -664,13 +666,19 @@ func (s *apiServer) handleCreateDeploy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "request already exists: "+requestID)
 		return
 	}
-	job, err := s.store.CreateDeploy(requestID, serviceID, deployment, by, "queued for deployment worker")
+	// 「部署机器」：可选；空 = 默认机器。非空必须是已知机器，否则 400。
+	targetMachine, err := s.cfg.ValidateDeployMachine(body.TargetMachine)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	job, err := s.store.CreateDeploy(requestID, serviceID, deployment, by, "queued for deployment worker", targetMachine)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	fmt.Printf("[deploy] %s service=%s deployment=%s by=%s\n",
-		requestID, serviceID, deployment, by.String())
+	fmt.Printf("[deploy] %s service=%s deployment=%s machine=%s by=%s\n",
+		requestID, serviceID, deployment, targetMachine, by.String())
 	if s.worker != nil {
 		s.worker.Kick()
 	}
@@ -766,6 +774,9 @@ type deployNotifyBody struct {
 	// UseProxy: 打包（git fetch + build.sh）走本机代理（data/proxy.env）。
 	// 直连 github 失败时（HTTP2 framing layer / 超时）在发起页面勾选。
 	UseProxy bool `json:"useProxy"`
+	// TargetMachine: 本次部署落到哪台机器（目标主机/agent）。可选，空 = 默认机器。
+	// 必须是 /api/meta deployMachines 里的已知机器，否则 400。
+	TargetMachine string `json:"targetMachine"`
 }
 
 // handleDeployNotify — 服务通知 ACP「打包当前代码 → 部署」：ACP 统一打包后进入
@@ -776,9 +787,9 @@ type deployNotifyBody struct {
 // @Tags     pipelines
 // @Accept   json
 // @Produce  json
-// @Param    body  body  main.deployNotifyBody  true  "serviceId + ref?（默认 defaultBranch）+ useProxy?（打包走本机代理）"
+// @Param    body  body  main.deployNotifyBody  true  "serviceId + ref?（默认 defaultBranch）+ useProxy?（打包走本机代理）+ targetMachine?（部署机器）"
 // @Success  202  {object}  map[string]interface{}  "PipelineJob + poll"
-// @Failure  400  {object}  map[string]string  "参数非法 / 未登记 gitRepoUrl"
+// @Failure  400  {object}  map[string]string  "参数非法 / 未登记 gitRepoUrl / 未知部署机器"
 // @Failure  401  {object}  map[string]string  "缺少或非法的身份头"
 // @Failure  404  {object}  map[string]string  "服务未配置"
 // @Failure  409  {object}  map[string]string  "requestId 已存在"
@@ -814,6 +825,12 @@ func (s *apiServer) handleDeployNotify(w http.ResponseWriter, r *http.Request) {
 				"本机不能设置): "+serviceID)
 		return
 	}
+	// 「部署机器」：可选；空 = 默认机器。非空必须是已知机器，否则 400（附允许列表）。
+	targetMachine, err := s.cfg.ValidateDeployMachine(body.TargetMachine)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	// Default: service defaultBranch (usually main) tip — latest code.
 	ref := strings.TrimSpace(body.Ref)
 	if ref == "" {
@@ -828,7 +845,7 @@ func (s *apiServer) handleDeployNotify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	job, err := s.store.CreatePipeline(requestID, serviceID, ref, body.UseProxy, by,
-		"accepted; package "+ref+" (latest) then deploy with graceful notify+poll")
+		"accepted; package "+ref+" (latest) then deploy with graceful notify+poll", targetMachine)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -842,7 +859,8 @@ func (s *apiServer) handleDeployNotify(w http.ResponseWriter, r *http.Request) {
 		queueNote = "（打包走本机代理）"
 	}
 	_ = s.store.AddPipelineEvent(requestID, eventlevel.Info,
-		"流水线已入队：service="+serviceID+" ref="+ref+" 触发者="+byLabel+queueNote)
+		"流水线已入队：service="+serviceID+" ref="+ref+" 触发者="+byLabel+queueNote+
+			" 部署机器="+targetMachine)
 	fmt.Printf("[pipeline] %s service=%s ref=%s by=%s\n", requestID, serviceID, ref, by.String())
 	if s.pipeline != nil {
 		s.pipeline.Kick()
@@ -1195,11 +1213,15 @@ func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
 		"releaseMaxSec":           s.cfg.ReleaseMaxSec,
 		"artifactStorage":         s.storageName(),
 		"githubReleaseEnabled":    s.cfg.GitHubToken != "",
-		"deployNotify":            "POST /api/deploy-notify {serviceId, ref?, useProxy?}",
+		"deployNotify":            "POST /api/deploy-notify {serviceId, ref?, useProxy?, targetMachine?}",
 		"proxyEnvFile":            s.cfg.ProxyEnvFile,
 		"proxyConfigured":         proxyConfigured(s.cfg),
 		"proxyHint": "发起流水线时可勾选「走本机代理」：git fetch + build.sh 用 " +
 			s.cfg.ProxyEnvFile + " 里的 HTTP(S)_PROXY（直连 github 失败时用）",
+		"deployMachines":       s.cfg.DeployMachineIDs(),
+		"defaultDeployMachine": s.cfg.DefaultDeployMachineID(),
+		"deployMachineHint": "发起流水线时可选择「部署机器」：本次部署落到哪台机器（目标主机/agent）。" +
+			"不选 = 默认机器（" + s.cfg.DefaultDeployMachineID() + "）。",
 		"serviceRegistryUrl":     s.registry.BaseURL(),
 		"serviceRegistryEnabled": s.registry.Enabled(),
 		"serviceCatalog":         "GET /api/services（服务列表来自 service_registry，本机只存部署配置）",

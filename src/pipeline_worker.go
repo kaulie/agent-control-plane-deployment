@@ -182,12 +182,16 @@ func (w *PipelineWorker) execute(job *PipelineJob) {
 		deployID = "deploy-req-" + uuid.NewString()[:8]
 	}
 	_, err = w.store.CreateDeploy(deployID, job.ServiceID, pkg.Tag, job.Identity(),
-		"queued after package (graceful notify+poll before restart)")
+		"queued after package (graceful notify+poll before restart)", job.TargetMachine)
 	if err != nil {
 		failPipeline(w.store, job.RequestID, "enqueue deploy failed: "+err.Error())
 		return
 	}
-	_ = w.store.AddPipelineEvent(job.RequestID, eventlevel.Info, "已入队部署任务：deployRequestId="+deployID)
+	deployNote := ""
+	if job.TargetMachine != "" {
+		deployNote = " 部署机器=" + job.TargetMachine
+	}
+	_ = w.store.AddPipelineEvent(job.RequestID, eventlevel.Info, "已入队部署任务：deployRequestId="+deployID+deployNote)
 	_ = w.store.UpdatePipeline(job.RequestID, PipelineJob{
 		State:           PipelineDeploying,
 		Deployment:      pkg.Tag,
