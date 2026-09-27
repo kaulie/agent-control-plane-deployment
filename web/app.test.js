@@ -454,4 +454,35 @@ test('pipeline trigger: 本机没有代理配置时不默认勾选，并给出�
   assert.match(doc.querySelector('#pipe-proxy-hint').textContent, /未检测到代理/, '要提示勾了也不生效');
 });
 
+// ---- 发起流水线：「部署机器」选项 -----------------------------------------
+
+test('pipeline trigger: 选择「部署机器」→ targetMachine 随请求发出', async (t) => {
+  const { dom, flush, requests } = makePanel({
+    meta: { deployMachines: ['local', 'gpu-2'], defaultDeployMachine: 'local' },
+  });
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+  await flush();
+
+  const sel = doc.querySelector('#pipe-machine');
+  assert.ok(sel, '发起卡片要有「部署机器」下拉');
+  assert.deepEqual(Array.from(sel.options).map((o) => o.value), ['local', 'gpu-2'], '下拉列出已知机器');
+  assert.equal(sel.value, 'local', '默认选中默认机器');
+  assert.match(doc.querySelector('#pipe-machine-hint').textContent, /local/, '提示里说明默认机器');
+
+  // 默认机器 → 请求体不带 targetMachine（由服务端按默认机器处理）。
+  doc.querySelector('#pipe-trigger').click();
+  await flush();
+  const dflt = triggerRequest(requests);
+  assert.ok(dflt, 'should POST /api/deploy-notify');
+  assert.ok(!dflt.body.includes('targetMachine'), '默认机器不显式发送：' + dflt.body);
+
+  // 选非默认机器 → 请求体带 targetMachine。
+  sel.value = 'gpu-2';
+  doc.querySelector('#pipe-trigger').click();
+  await flush();
+  const chosen = triggerRequest(requests);
+  assert.equal(JSON.parse(chosen.body).targetMachine, 'gpu-2', '选定机器后请求体带 targetMachine');
+});
+
 

@@ -63,6 +63,13 @@ type Config struct {
 	// use). "off" disables the option entirely; a missing file falls back to
 	// the service process' own HTTP(S)_PROXY.
 	ProxyEnvFile string
+	// Known deployment machines (DEPLOY_MACHINES, comma-separated ids) that a
+	// triggered pipeline may deploy to. Empty = the single machine "local"
+	// (behaviour identical to not selecting one).
+	DeployMachines []string
+	// Machine used when a trigger does not pick one (DEPLOY_DEFAULT_MACHINE).
+	// Empty = the first configured machine.
+	DefaultDeployMachine string
 }
 
 func expandHome(p string) string {
@@ -188,6 +195,17 @@ func loadConfig() Config {
 		proxyEnvFile = filepath.Join(dataDir, "proxy.env")
 	}
 
+	// 部署机器（发起流水线时可选择）：DEPLOY_MACHINES 逗号分隔；缺省单机 "local"。
+	// DEPLOY_DEFAULT_MACHINE 指定默认机器（未选时用），缺省用列表第一台。
+	deployMachines := parseDeployMachines(os.Getenv("DEPLOY_MACHINES"))
+	if len(deployMachines) == 0 {
+		deployMachines = []string{defaultDeployMachine}
+	}
+	defaultDeployMachine := strings.TrimSpace(os.Getenv("DEPLOY_DEFAULT_MACHINE"))
+	if defaultDeployMachine == "" {
+		defaultDeployMachine = deployMachines[0]
+	}
+
 	return Config{
 		Host:                   host,
 		Port:                   port,
@@ -212,5 +230,7 @@ func loadConfig() Config {
 		ServiceRegistryToken:   strings.TrimSpace(os.Getenv("SERVICE_REGISTRY_TOKEN")),
 		ServiceRegistryTimeout: registryTimeout,
 		ProxyEnvFile:           proxyEnvFile,
+		DeployMachines:         deployMachines,
+		DefaultDeployMachine:   defaultDeployMachine,
 	}
 }

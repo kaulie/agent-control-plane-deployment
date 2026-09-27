@@ -47,16 +47,19 @@ type ServiceContract struct {
 }
 
 type DeployJob struct {
-	RequestID   string      `json:"requestId"`
-	ServiceID   string      `json:"serviceId"`
-	Deployment  string      `json:"deployment"`
-	State       DeployState `json:"state"`
-	RequestedAt string      `json:"requestedAt"`
-	StartedAt   string      `json:"startedAt,omitempty"`
-	FinishedAt  string      `json:"finishedAt,omitempty"`
-	Version     string      `json:"version,omitempty"`
-	Error       string      `json:"error,omitempty"`
-	Message     string      `json:"message,omitempty"`
+	RequestID  string `json:"requestId"`
+	ServiceID  string `json:"serviceId"`
+	Deployment string `json:"deployment"`
+	// TargetMachine 是本次部署落到的「部署机器」（目标主机/agent）。空 = 默认机器。
+	// 由流水线触发时选择的机器转发而来；独立触发部署时可用请求体指定。
+	TargetMachine string      `json:"targetMachine,omitempty"`
+	State         DeployState `json:"state"`
+	RequestedAt   string      `json:"requestedAt"`
+	StartedAt     string      `json:"startedAt,omitempty"`
+	FinishedAt    string      `json:"finishedAt,omitempty"`
+	Version       string      `json:"version,omitempty"`
+	Error         string      `json:"error,omitempty"`
+	Message       string      `json:"message,omitempty"`
 	// Who triggered this deploy (phase-1 identity headers). Empty = unidentified
 	// (requests recorded before the feature, or IDENTITY_ENFORCE=0).
 	TriggeredByRole string `json:"triggeredByRole,omitempty"`
@@ -216,7 +219,10 @@ func (s *Store) ensureServiceExtraColumns() error {
 // ensureDeployExtraColumns adds the phase-1 identity columns to existing rows
 // (unidentified deploys keep the empty default).
 func (s *Store) ensureDeployExtraColumns() error {
-	return s.ensureColumns("deploys", identityColumnDDL("deploys"))
+	cols := identityColumnDDL("deploys")
+	// 老库补列：本次部署的「部署机器」。
+	cols["target_machine"] = `ALTER TABLE deploys ADD COLUMN target_machine TEXT NOT NULL DEFAULT ''`
+	return s.ensureColumns("deploys", cols)
 }
 
 // identityColumnDDL is the shared ALTER list for the identity columns; both the
@@ -366,27 +372,31 @@ func (s *Store) DeleteService(serviceID string) (bool, error) {
 
 // deployColumns is the canonical SELECT list for deploys rows (shared by every
 // query so a new column is added in one place).
-const deployColumns = `request_id, service_id, deployment, state, requested_at,
+const deployColumns = `request_id, service_id, deployment, target_machine, state, requested_at,
 	started_at, finished_at, version, error, message,
 	triggered_by_role, triggered_by_id`
 
-func (s *Store) CreateDeploy(requestID, serviceID, deployment string, by Identity, message string) (DeployJob, error) {
+// CreateDeploy records a queued deploy. targetMachine is optional (variadic so
+// existing call sites stay unchanged): the first value is the deploy machine;
+// empty/omitted = the default.
+func (s *Store) CreateDeploy(requestID, serviceID, deployment string, by Identity, message string, targetMachine ...string) (DeployJob, error) {
 	requestedAt := nowISO()
 	job := DeployJob{
-		RequestID:   requestID,
-		ServiceID:   serviceID,
-		Deployment:  deployment,
-		State:       StateQueued,
-		RequestedAt: requestedAt,
-		Message:     message,
+		RequestID:     requestID,
+		ServiceID:     serviceID,
+		Deployment:    deployment,
+		TargetMachine: firstNonEmptyArg(targetMachine),
+		State:         StateQueued,
+		RequestedAt:   requestedAt,
+		Message:       message,
 	}
 	job.setIdentity(by)
 	_, err := s.db.Exec(`
 		INSERT INTO deploys (
-		  request_id, service_id, deployment, state, requested_at, message,
+		  request_id, service_id, deployment, target_machine, state, requested_at, message,
 		  triggered_by_role, triggered_by_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		job.RequestID, job.ServiceID, job.Deployment, string(job.State), job.RequestedAt,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		job.RequestID, job.ServiceID, job.Deployment, job.TargetMachine, string(job.State), job.RequestedAt,
 		nullIfEmpty(message), job.TriggeredByRole, job.TriggeredByID,
 	)
 	return job, err
@@ -553,7 +563,7 @@ func scanDeploy(row scannable) (*DeployJob, error) {
 	var started, finished, version, errStr, message sql.NullString
 	var state string
 	err := row.Scan(
-		&job.RequestID, &job.ServiceID, &job.Deployment, &state, &job.RequestedAt,
+		&job.RequestID, &job.ServiceID, &job.Deployment, &job.TargetMachine, &state, &job.RequestedAt,
 		&started, &finished, &version, &errStr, &message,
 		&job.TriggeredByRole, &job.TriggeredByID,
 	)
@@ -579,6 +589,17 @@ func nullIfEmpty(s string) any {
 		return nil
 	}
 	return s
+}
+
+// firstNonEmptyArg returns the first non-empty (trimmed) value, else "". Used
+// for the optional variadic machine argument on CreatePipeline/CreateDeploy.
+func firstNonEmptyArg(vals []string) string {
+	for _, v := range vals {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // boolToInt stores a Go bool in a SQLite INTEGER column (0/1).

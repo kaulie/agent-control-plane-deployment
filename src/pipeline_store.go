@@ -24,7 +24,10 @@ type PipelineJob struct {
 	State     PipelineState `json:"state"`
 	// UseProxy 是发起时的选项：打包（git fetch + build.sh）走本机代理。
 	// 本机代理从 data/proxy.env（PROXY_ENV_FILE）读。
-	UseProxy        bool   `json:"useProxy,omitempty"`
+	UseProxy bool `json:"useProxy,omitempty"`
+	// TargetMachine 是发起时选择的「部署机器」（目标主机/agent）。空 = 默认机器，
+	// 行为与「不选机器」一致。它随流水线落库，并入队时传给部署任务。
+	TargetMachine   string `json:"targetMachine,omitempty"`
 	Deployment      string `json:"deployment,omitempty"`
 	DeployRequestID string `json:"deployRequestId,omitempty"`
 	Version         string `json:"version,omitempty"`
@@ -60,6 +63,7 @@ func (s *Store) migratePipelines() error {
         ref TEXT NOT NULL,
         state TEXT NOT NULL,
         use_proxy INTEGER NOT NULL DEFAULT 0,
+        target_machine TEXT NOT NULL DEFAULT '',
         deployment TEXT,
         deploy_request_id TEXT,
         version TEXT,
@@ -78,33 +82,39 @@ func (s *Store) migratePipelines() error {
 	cols := identityColumnDDL("pipelines")
 	// 老库补列：发起时的「打包走本机代理」选项。
 	cols["use_proxy"] = `ALTER TABLE pipelines ADD COLUMN use_proxy INTEGER NOT NULL DEFAULT 0`
+	// 老库补列：发起时选择的「部署机器」。
+	cols["target_machine"] = `ALTER TABLE pipelines ADD COLUMN target_machine TEXT NOT NULL DEFAULT ''`
 	return s.ensureColumns("pipelines", cols)
 }
 
 // pipelineColumns is the canonical SELECT list for pipelines rows.
-const pipelineColumns = `request_id, service_id, ref, state, use_proxy, deployment, deploy_request_id,
+const pipelineColumns = `request_id, service_id, ref, state, use_proxy, target_machine, deployment, deploy_request_id,
 	version, error, message, requested_at, started_at, finished_at,
 	triggered_by_role, triggered_by_id`
 
-func (s *Store) CreatePipeline(requestID, serviceID, ref string, useProxy bool, by Identity, message string) (PipelineJob, error) {
+// CreatePipeline records a newly accepted pipeline. targetMachine is optional
+// (variadic so existing call sites — most of them tests — stay unchanged): the
+// first value is the selected deploy machine; empty/omitted = the default.
+func (s *Store) CreatePipeline(requestID, serviceID, ref string, useProxy bool, by Identity, message string, targetMachine ...string) (PipelineJob, error) {
 	requestedAt := nowISO()
 	job := PipelineJob{
-		RequestID:   requestID,
-		ServiceID:   serviceID,
-		Ref:         ref,
-		State:       PipelineQueued,
-		UseProxy:    useProxy,
-		RequestedAt: requestedAt,
-		Message:     message,
+		RequestID:     requestID,
+		ServiceID:     serviceID,
+		Ref:           ref,
+		State:         PipelineQueued,
+		UseProxy:      useProxy,
+		TargetMachine: firstNonEmptyArg(targetMachine),
+		RequestedAt:   requestedAt,
+		Message:       message,
 	}
 	job.setIdentity(by)
 	_, err := s.db.Exec(`
 		INSERT INTO pipelines (
-		  request_id, service_id, ref, state, use_proxy, message, requested_at,
+		  request_id, service_id, ref, state, use_proxy, target_machine, message, requested_at,
 		  triggered_by_role, triggered_by_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		job.RequestID, job.ServiceID, job.Ref, string(job.State),
-		boolToInt(job.UseProxy),
+		boolToInt(job.UseProxy), job.TargetMachine,
 		nullIfEmpty(message), job.RequestedAt,
 		job.TriggeredByRole, job.TriggeredByID,
 	)
@@ -207,7 +217,7 @@ func scanPipeline(row scannable) (*PipelineJob, error) {
 	var useProxy int
 	err := row.Scan(
 		&job.RequestID, &job.ServiceID, &job.Ref, &state, &useProxy,
-		&deployment, &deployID, &version, &errStr, &message,
+		&job.TargetMachine, &deployment, &deployID, &version, &errStr, &message,
 		&job.RequestedAt, &started, &finished,
 		&job.TriggeredByRole, &job.TriggeredByID,
 	)

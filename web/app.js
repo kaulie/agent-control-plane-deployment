@@ -185,6 +185,35 @@ async function refreshProxyOption() {
   }
 }
 
+// ---- 发起流水线：「部署机器」选项 ------------------------------------------
+// 本次部署落到哪台机器（目标主机/agent）。机器列表来自 /api/meta deployMachines；
+// 不选 / 选默认机器时请求体不带 targetMachine，服务端按默认机器处理。
+let deployMachines = [];
+let defaultDeployMachine = '';
+
+async function refreshDeployMachineOption() {
+  try {
+    const m = await apiGet('/api/meta');
+    deployMachines = Array.isArray(m.deployMachines) ? m.deployMachines : [];
+    defaultDeployMachine = m.defaultDeployMachine || (deployMachines[0] || '');
+  } catch {
+    deployMachines = [];
+    defaultDeployMachine = '';
+  }
+  const sel = $('#pipe-machine');
+  if (!sel) return;
+  sel.innerHTML = deployMachines
+    .map((id) => `<option value="${esc(id)}">${esc(id)}${id === defaultDeployMachine ? '（默认）' : ''}</option>`)
+    .join('');
+  if (defaultDeployMachine) sel.value = defaultDeployMachine;
+  const hint = $('#pipe-machine-hint');
+  if (hint) {
+    hint.textContent = deployMachines.length
+      ? '部署机器：本次部署落到哪台机器；不选/默认（' + (defaultDeployMachine || '—') + '）即本机。'
+      : '未配置部署机器（DEPLOY_MACHINES），本次部署按默认机器处理。';
+  }
+}
+
 // ---- services (dropdown options + 服务契约 tab) ---------------------------
 // The catalog comes from service_registry (GET /api/services merges the
 // registry's contracts with this control plane's deployment config); the panel
@@ -670,6 +699,9 @@ $('#pipe-trigger').addEventListener('click', async () => {
     if (ref) body.ref = ref;
     // 打包走本机代理（可选）：直连 github 失败时勾上重试。
     if ($('#pipe-use-proxy') && $('#pipe-use-proxy').checked) body.useProxy = true;
+    // 部署机器（可选）：只在选了非默认机器时才带，默认/不选由服务端按默认机器处理。
+    const machine = $('#pipe-machine') ? $('#pipe-machine').value : '';
+    if (machine && machine !== defaultDeployMachine) body.targetMachine = machine;
     const r = await apiSend('POST', '/api/deploy-notify', body);
     toast('已触发流水线 ' + r.requestId + '（' + identityLabel(identity.role, identity.id) + '）', 'ok');
     $('#pipe-ref').value = '';
@@ -1012,5 +1044,6 @@ $('#autorefresh').addEventListener('change', () => {
 // init
 refreshServices();
 refreshProxyOption();
+refreshDeployMachineOption();
 refresh();
 startPolling();
