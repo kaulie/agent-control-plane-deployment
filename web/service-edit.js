@@ -70,6 +70,45 @@ function setFormEnabled(enabled) {
   if (save) save.disabled = !enabled;
 }
 
+// 契约里的 URL 只存**路径**（host+port 在部署时按目标机器拼）——这里把拼出来的真地址
+// 显示出来，让人一眼看到「本机 / 远端机器上」实际会请求什么。
+function isLoopbackHost(host) {
+  const h = (host || '').toLowerCase();
+  return h === 'localhost' || h === '::1' || /^127\./.test(h);
+}
+
+function composedPreview(path, port) {
+  const p = (path || '').trim();
+  if (!p) return '—';
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(p)) {
+    // 完整 URL：loopback + http 的会在保存时被归一成路径（预览就按归一后的样子显示），
+    // 其余（https / 外部主机）是显式端点，原样使用。
+    try {
+      const u = new URL(p);
+      if (u.protocol === 'http:' && isLoopbackHost(u.hostname)) {
+        const q = u.pathname + (u.search || '');
+        return composedPreview(q, Number(u.port || 0) || port);
+      }
+    } catch { /* 解析不了就按外部地址显示 */ }
+    return p + '（外部地址，原样使用）';
+  }
+  if (!port) return 'http://127.0.0.1:<port>' + (p.startsWith('/') ? p : '/' + p);
+  return 'http://127.0.0.1:' + port + (p.startsWith('/') ? p : '/' + p);
+}
+
+function renderURLHint() {
+  const hint = $('#svc-url-hint');
+  if (!hint) return;
+  const port = Number($('#svc-port').value) || 0;
+  const parts = [
+    '健康 ' + composedPreview($('#svc-healthUrl').value, port),
+    'graceful 通知 ' + composedPreview($('#svc-restartNotifyUrl').value, port),
+    'graceful 轮询 ' + composedPreview($('#svc-restartPollUrl').value, port),
+  ];
+  hint.textContent = 'URL 只填路径（不要写 host:port）：部署时按目标机器拼 —— ' + parts.join(' · ') +
+    '。本机部署就在本机请求；远端部署会把同一个地址拿到那台机器上执行（问它自己的 127.0.0.1）。';
+}
+
 function fillForm(svc) {
   const reg = svc.registry || {};
   $('#svc-edit-title').textContent = (svc.configured ? '编辑部署配置：' : '配置部署参数：') + svc.serviceId;
@@ -91,6 +130,7 @@ function fillForm(svc) {
   setMessage(svc.registered
     ? ''
     : '⚠ service_registry 未返回该服务（未登记 / 注册中心不可用）：已配置的仍可编辑，新建会被拒绝。');
+  renderURLHint();
   setFormEnabled(true);
 }
 
@@ -129,7 +169,7 @@ function serviceFormBody() {
   const restartCmd = $('#svc-restartCmd').value.trim();
   if (!serviceID) return { error: '缺少 serviceId：请从服务列表点「配置」进入本页' };
   if (!runtimeDir || !healthUrl || !startCmd || !stopCmd || !restartCmd) {
-    return { error: 'runtimeDir / healthUrl / startCmd / stopCmd / restartCmd 为必填项' };
+    return { error: 'runtimeDir / 健康检查路径 / startCmd / stopCmd / restartCmd 为必填项' };
   }
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     return { error: '服务端口必填，且必须是 1..65535 的整数（启动时会注入 SERVICE_PORT）' };
@@ -150,6 +190,11 @@ function serviceFormBody() {
       gracefulRestartMaxWaitMs: Number($('#svc-gracefulRestartMaxWaitMs').value) || 0,
     },
   };
+}
+
+for (const id of ['#svc-healthUrl', '#svc-restartNotifyUrl', '#svc-restartPollUrl', '#svc-port']) {
+  const el = $(id);
+  if (el) el.addEventListener('input', renderURLHint);
 }
 
 async function saveService() {

@@ -62,8 +62,9 @@ func enqueueACPUpgrade(cfg Config, job DeployJob, service ServiceContract, versi
 		Deployment: deployment,
 		Version:    version,
 		Home:       cfg.Home,
-		HealthURL:  service.HealthURL,
-		StagedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+		// upgrader 会直接请求这个地址探活，所以写**拼好**的（契约里只存路径）。
+		HealthURL: serviceHealthURL(service),
+		StagedAt:  time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	raw, err := json.MarshalIndent(req, "", "  ")
 	if err != nil {
