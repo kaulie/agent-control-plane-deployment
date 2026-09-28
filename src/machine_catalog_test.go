@@ -51,66 +51,99 @@ func TestRegistryDeployMachinesFromInstances(t *testing.T) {
 	}
 }
 
-func TestMachineCatalogMergesRegistryLocalAndEnv(t *testing.T) {
+func TestMachineCatalogDeployableNeedsChannel(t *testing.T) {
 	reg := fakeRegistry(t, snapshotWithHosts, true)
-	cfg := Config{DeployMachines: []string{"gpu-2", "staging"}, DefaultDeployMachine: "staging"}
+	cfg := Config{
+		DeployMachines:       []string{"gpu-2", "staging"},
+		DefaultDeployMachine: "staging",
+		// 只有配了通道的机器才能被选中；"10.0.0.7" 是注册中心发现的主机，"staging" 是
+		// 本地补充的机器 —— 都没通道。
+		DeployMachineTargets: map[string]MachineTarget{
+			"local":    {ID: "local", Kind: "local"},
+			"gpu-2":    {ID: "gpu-2", Kind: "ssh", SSHUser: "ubuntu", SSHHost: "10.0.0.8", RuntimeHome: "/home/ubuntu/runtime"},
+			"10.0.0.7": {ID: "10.0.0.7", Kind: "ssh", SSHUser: "ubuntu", SSHHost: "10.0.0.7", RuntimeHome: "/home/ubuntu/runtime"},
+		},
+	}
 	cat := NewMachineCatalog(cfg, reg)
 
 	ids, source, note := cat.List(t.Context())
-	if strings.Join(ids, ",") != "local,gpu-2,staging,10.0.0.7" {
-		t.Fatalf("ids = %v, want [local gpu-2 staging 10.0.0.7]", ids)
+	if strings.Join(ids, ",") != "local,10.0.0.7,gpu-2" {
+		t.Fatalf("deployable ids = %v, want [local 10.0.0.7 gpu-2]（有通道的才可选）", ids)
 	}
-	if source != "registry+env" || note != "" {
-		t.Fatalf("source = %q note = %q, want registry+env/\"\"", source, note)
+	if source != "targets" {
+		t.Fatalf("source = %q, want targets", source)
 	}
-	if got := cat.DefaultID(t.Context()); got != "staging" {
-		t.Fatalf("default = %q, want staging（显式配置优先）", got)
+	if !strings.Contains(note, "staging") {
+		t.Fatalf("note must name the discovered-but-channel-less machines, got %q", note)
 	}
-	// 注册中心里的机器可被选中（真源），未知机器仍然 400 的依据。
+	if got := strings.Join(cat.Discovered(t.Context()), ","); got != "staging" {
+		t.Fatalf("discovered = %q, want staging（gpu-2/10.0.0.7 有通道，不算发现）", got)
+	}
+	if got := cat.DefaultID(t.Context()); got != "local" {
+		t.Fatalf("default = %q, want local（staging 配成默认但没通道 → 退回 local）", got)
+	}
 	if got, err := cat.Validate(t.Context(), "10.0.0.7"); err != nil || got != "10.0.0.7" {
-		t.Fatalf("Validate(registry machine) = %q, %v", got, err)
+		t.Fatalf("Validate(machine with a channel) = %q, %v", got, err)
+	}
+	if _, err := cat.Validate(t.Context(), "staging"); err == nil || !strings.Contains(err.Error(), "部署通道") {
+		t.Fatalf("a known machine without a channel must be rejected with the channel hint, got %v", err)
 	}
 	if _, err := cat.Validate(t.Context(), "nope"); err == nil || !strings.Contains(err.Error(), "allowed") {
 		t.Fatalf("unknown machine must be rejected with the allowed list, got %v", err)
 	}
-	if got, err := cat.Validate(t.Context(), ""); err != nil || got != "staging" {
+	if got, err := cat.Validate(t.Context(), ""); err != nil || got != "local" {
 		t.Fatalf("empty selection = default, got %q, %v", got, err)
+	}
+	if t2, ok := cat.Target(t.Context(), "gpu-2"); !ok || !t2.Remote() || t2.RuntimeDirFor("web-cursor") != "/home/ubuntu/runtime/web-cursor" {
+		t.Fatalf("Target(gpu-2) = %+v ok=%v, want an ssh channel with a per-service remote dir", t2, ok)
 	}
 }
 
 func TestMachineCatalogFallsBackWhenRegistryDown(t *testing.T) {
-	cfg := Config{DeployMachines: []string{"gpu-2"}}
+	cfg := Config{
+		DeployMachines: []string{"gpu-2"},
+		// 可部署性由通道决定：注册中心挂不挂，gpu-2 都还能被选中。
+		DeployMachineTargets: map[string]MachineTarget{
+			"local": {ID: "local", Kind: "local"},
+			"gpu-2": {ID: "gpu-2", Kind: "ssh", SSHHost: "10.0.0.8", RuntimeHome: "/home/ubuntu/runtime"},
+		},
+	}
 
-	// 注册中心一直不可达：退回本机 + DEPLOY_MACHINES，且说清原因；列表不会空。
+	// 注册中心一直不可达：机器列表仍由通道给出（不会空），note 说清原因。
 	down := NewMachineCatalog(cfg, fakeRegistry(t, "", false))
 	ids, source, note := down.List(t.Context())
-	if strings.Join(ids, ",") != "local,gpu-2" || source != "env" {
-		t.Fatalf("ids = %v source = %q, want [local gpu-2]/env", ids, source)
+	if strings.Join(ids, ",") != "local,gpu-2" || source != "targets" {
+		t.Fatalf("ids = %v source = %q, want [local gpu-2]/targets", ids, source)
 	}
 	if !strings.Contains(note, "注册中心不可达") {
 		t.Fatalf("note must explain the fallback, got %q", note)
 	}
 
-	// 先成功（缓存），随后注册中心挂掉：沿用上次的列表，并说明原因。
+	// 注册中心不可达时：可部署列表仍然只有本机（部署通道决定的），note 说明原因。
 	reg := fakeRegistry(t, snapshotWithHosts, true)
 	cat := NewMachineCatalog(cfg, reg)
-	if _, _, note := cat.List(t.Context()); note != "" {
-		t.Fatalf("healthy registry must not add a note, got %q", note)
+	if ids, _, note := cat.List(t.Context()); strings.Join(ids, ",") != "local,gpu-2" || note == "" {
+		t.Fatalf("healthy registry: ids=%v note=%q（gpu-2 是本地通道，应可选）", ids, note)
 	}
 	reg.baseURL = "http://127.0.0.1:1" // 不可达
-	cat.ttl = 0                        // 强制下次重新拉
+	cat.ttl = 0                        // 强制下次重算
 	ids, _, note = cat.List(t.Context())
-	if !strings.Contains(strings.Join(ids, ","), "10.0.0.7") {
-		t.Fatalf("cached registry machines must survive an outage, got %v", ids)
+	if strings.Join(ids, ",") != "local,gpu-2" {
+		t.Fatalf("an outage must not drop the machines that have a channel, got %v", ids)
 	}
-	if !strings.Contains(note, "沿用上次") {
-		t.Fatalf("note must say the list is the previous one, got %q", note)
+	if !strings.Contains(note, "注册中心不可达") {
+		t.Fatalf("note must explain the outage, got %q", note)
 	}
 }
 
 func TestMetaDeployMachinesComeFromRegistry(t *testing.T) {
 	srv, store := newTestIdentityServer(t, true)
 	srv.registry = fakeRegistry(t, snapshotWithHosts, true)
+	// 注册中心发现了 10.0.0.7；给它配一条 ssh 通道后它才可选、才会真的部署过去。
+	srv.cfg.DeployMachineTargets = map[string]MachineTarget{
+		"local":    {ID: "local", Kind: "local"},
+		"10.0.0.7": {ID: "10.0.0.7", Kind: "ssh", SSHUser: "ubuntu", SSHHost: "10.0.0.7", RuntimeHome: "/home/ubuntu/runtime"},
+	}
 	srv.machines = NewMachineCatalog(srv.cfg, srv.registry)
 
 	var meta map[string]any
@@ -122,11 +155,16 @@ func TestMetaDeployMachinesComeFromRegistry(t *testing.T) {
 	for _, id := range ids {
 		joined += id.(string) + ","
 	}
-	if !strings.Contains(joined, "10.0.0.7") || meta["deployMachineSource"] != "registry" {
-		t.Fatalf("deployMachines = %v source = %v, want the registry hosts", ids, meta["deployMachineSource"])
+	if !strings.Contains(joined, "10.0.0.7") || meta["deployMachineSource"] != "targets" {
+		t.Fatalf("deployMachines = %v source = %v, want the channelled machine", ids, meta["deployMachineSource"])
 	}
-	if hint, _ := meta["deployMachineHint"].(string); !strings.Contains(hint, "service-registry") {
-		t.Fatalf("hint must name the data source, got %q", hint)
+	// 注册中心里发现但没配通道的机器（gpu-2 有 metadata.machine 名字）进 discovered。
+	disc, _ := meta["deployMachineDiscovered"].([]any)
+	if len(disc) != 1 || disc[0] != "gpu-2" {
+		t.Fatalf("deployMachineDiscovered = %v, want [gpu-2]（发现但没通道）", meta["deployMachineDiscovered"])
+	}
+	if hint, _ := meta["deployMachineHint"].(string); !strings.Contains(hint, deployMachineTargetsEnv) {
+		t.Fatalf("hint must name the channel config, got %q", hint)
 	}
 
 	// 触发校验同样认注册中心里的机器。

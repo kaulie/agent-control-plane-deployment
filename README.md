@@ -140,7 +140,8 @@ curl -sS -X PUT http://127.0.0.1:4220/api/services/web-cursor \
 | `SERVICE_REGISTRY_URL` | `http://127.0.0.1:4240` | 服务目录来源；`off` / `disabled` / `none` = 关闭拉取 |
 | `SERVICE_REGISTRY_TOKEN` | 空 | 注册中心读令牌（`REGISTRY_READ_AUTH=token` 时用） |
 | `SERVICE_REGISTRY_TIMEOUT_SEC` | `5` | 单次拉取超时（秒） |
-| `DEPLOY_MACHINES` | 空（= `local`） | **补充**发起流水线时可选择的**部署机器**（逗号分隔 id）；机器真源是 service-registry 登记的实例主机，这里只补还没登记实例的机器（也可写在本机 `data/deploy-machines`） |
+| `DEPLOY_MACHINE_TARGETS` | 空（= `local`） | **部署通道**：`id=local` 或 `id=ssh [user@]host[:port] <remote-runtime-home>`（`;` 分隔）。有通道的机器才可选、才会真的部署过去（也可写在本机 `data/machine-targets`） |
+| `DEPLOY_MACHINES` | 空 | 机器**发现**补充（逗号分隔 id）：只登记、没通道的机器不可选，用于提示「还有哪些机器」（也可写在本机 `data/deploy-machines`） |
 | `DEPLOY_DEFAULT_MACHINE` | 空（= 列表第一台） | 未选择机器时用的默认机器 |
 | `PROXY_ENV_FILE` | `<home>/data/proxy.env` | 「打包走本机代理」读取的代理配置；`off` 关闭该选项 |
 
@@ -241,22 +242,29 @@ curl -sS http://127.0.0.1:4220/api/pipelines/<requestId>
 - **作用范围**：只作用于打包命令（`git fetch` + 服务自己的 `build.sh`）——它们按请求换 env 是安全的子进程。制品**下载**走进程内的 HTTP client，只认进程启动时的 env（`scripts/start.sh` 里加载 `data/proxy.env` 即可全局生效，服务重启后生效）。代理 URL 里的 `user:pass@` 会在事件里打码。
 - **默认行为不变**：不勾选时完全不注入代理 env，和以前一模一样。
 
-### 部署机器（可选，按次）
+### 部署机器（可选，按次，支持跨机部署）
 
-发起流水线时可**按次**选择本次部署落到哪台机器（目标主机 / agent）。已知机器由环境变量 `DEPLOY_MACHINES`（逗号分隔的 id，如 `local,gpu-2,build-server`）配置；不配置时只有单机 `local`：
+发起流水线时可**按次**选择本次部署落到哪台机器。**能不能被选中，取决于有没有「部署通道」**（怎么把部署送到那台机器）：
 
-- **数据源（从下往上，统一在 service-registry）**：面板 `#pipe-machine` 下拉 ← `refreshDeployMachineOption()` ← `GET /api/meta` 的 `deployMachines` / `defaultDeployMachine` ← 服务端 `MachineCatalog`（`src/machine_catalog.go`）← **注册中心 `GET /v1/snapshot` 的 `instances`**：每个服务实例跑在哪台机器（实例 `host`，或实例 `metadata.machine` 里登记的名字）就是一台可选的部署机器。控制面不再单独维护机器清单：
-  - `local` = **本机**（loopback / localhost / 本机 hostname 的实例都归并成它）—— 永远在列表里，且是不选时的默认；
-  - `DEPLOY_MACHINES`（或本机 `data/deploy-machines`）只作为**显式补充**：给还没登记实例的机器留一个入口；
-  - 注册中心不可达 → 用 30s 内的上一次结果（`deployMachineNote` 说明原因），缓存也没有就退回 `local` + `DEPLOY_MACHINES` —— **列表永远不会是空的**；
-  - `/api/meta` 另有 `deployMachineSource`（`registry` / `registry+env` / `env` / `local`）与 `deployMachineNote`，面板的说明文案直接用服务端给的 `deployMachineHint`（写明数据源）。
-  - 想让某台机器出现在下拉里：**在注册中心登记一个跑在那台机器上的服务实例**（`PUT /v1/namespaces/<ns>/services/<svc>/instances`，`{"host":"10.0.0.7","port":4300,"metadata":{"machine":"gpu-2"}}`；`metadata.machine` 可选，用来给友好名字，不写就用 host）。
-- **面板**：「部署流水线 → 发起」里的「部署机器」下拉（选项来自 `/api/meta` 的 `deployMachines`，默认选中 `defaultDeployMachine`）。选默认机器时请求体**不带** `targetMachine`。列表拉不到时（例如 ACP 自己正在升级、`/api/meta` 暂时不可用）下拉**退回默认机器**而不是空着，并在之后每次刷新自动重试补齐。
-- **API**：`POST /api/deploy-notify {"serviceId": ..., "ref": ..., "targetMachine": "gpu-2"}`；`POST /api/deploys {"serviceId": ..., "deployment": ..., "targetMachine": "gpu-2"}` 同样接受。非空机器必须是已知机器，否则 **400**（错误里附允许列表）。
-- **默认机器**：`DEPLOY_DEFAULT_MACHINE`；不配置则取 `DEPLOY_MACHINES` 第一台。请求不带 `targetMachine` 时按默认机器处理——**默认行为不变**。
-- **随任务转发**：机器记在流水线上（`GET /api/pipelines/:id` 的 `targetMachine`）并转发给部署任务（`GET /api/deploys/:id` 的 `targetMachine`）；部署时写入部署 `/events`（`开始部署：… 部署机器=<machine>`），并作为 `DEPLOY_MACHINE` 注入服务的 `restartCmd`，服务内可读到本次部署落到的机器。`DEPLOY_MACHINES` 变更后旧任务若指向已下线的机器，部署会告警并退回默认机器。
-- **面板不会被浏览器缓存**：面板静态文件（`/panel/*`）与所有 JSON API 都回 `Cache-Control: no-store`。面板文件名没有指纹、又是就地升级的，没有这条指令时浏览器可能留着旧的 `app.js` 配新的 `index.html`（半新半旧的页面：新控件在、但没人填充它），或者拿升级前的 `/api/meta` 渲染新面板。
-- **已经打开的页面会自己跟上升级**：`/api/meta` 还带 `panelVersion`（面板静态资源的指纹）。已经打开的标签页跑的是加载那一刻的 JS，轮询不会换掉它 —— 面板把指纹和自己加载时看到的值比，**一变就提示并自动刷新一次**（同一个版本只刷一次，避免抖动）。所以「升级后新控件在、填充它的代码不在」这类半新半旧页面不会再长期存在。
+- **数据源（从下往上）**：面板 `#pipe-machine` 下拉 ← `GET /api/meta` 的 `deployMachines` + `deployMachineTargets`（每台的通道）← 服务端 `MachineCatalog` ← **部署通道配置**（`DEPLOY_MACHINE_TARGETS`，或本机 `data/machine-targets`）。机器「发现」还看 service-registry 的实例主机（`GET /v1/snapshot`），但**只发现、不可选**（`deployMachineDiscovered`）——没通道就不给选，避免「选得中、却静默部署在本机」。
+- **通道写法**（`;` 或换行分隔，一条一个 `id=spec`）：
+  ```bash
+  # local=local                                                             # 本机（缺省自带，不用写）
+  # 43.162.117.240=ssh ubuntu@43.162.117.240 /home/ubuntu/runtime          # 远端 ssh
+  export DEPLOY_MACHINE_TARGETS='43.162.117.240=ssh ubuntu@43.162.117.240 /home/ubuntu/runtime'
+  ```
+  远端机器的服务 runtime 目录按约定 = `<remote-runtime-home>/<serviceId>`（上面的例子 → `/home/ubuntu/runtime/autonomy`）。也可以写在本机 `data/machine-targets`（`data/` 跨自升级保留，`scripts/start.sh` 会读）。
+- **远端部署做了什么**（选 `ssh` 通道的机器时）：
+  1. **预检**：能 `ssh` 登录、远端有 `curl`、目标 runtime 目录存在且像这个服务（没有 `scripts/restart.sh` 就拒绝 `rsync --delete`，不会误删别的东西；目录不存在则创建，首次部署不带 `--delete`）；
+  2. **传制品**：本机下载后 `rsync -a --delete -e ssh` 推到远端 runtime（`backend/.env`、`backend/data/`、`data/`、`logs/`、`packages/`、`*.pid` 等运行态豁免，与本地同一套规则）；
+  3. **graceful**：通知/轮询**在远端**发（契约里的 `restartNotifyUrl`/`restartPollUrl` 是 `127.0.0.1`，站在那台机器上问才对）；
+  4. **重启**：`ssh` 在远端 `cd` 到 runtime 跑契约的 `restartCmd`，注入 `SERVICE_PORT`/`PORT`/`APP_VERSION`/`DEPLOY_MACHINE`/`RUNTIME_DIR`；
+  5. **探活**：同样在远端 `curl` 契约的 `healthUrl`；失败即这次部署失败（**不会**静默退化成本机部署）。
+  时间线每一步都标「远端 `<dest>:<dir>`」，成功那句是「部署成功：version=…（远端 `<machine>`：`<dest>:<dir>`）」。前置要求：控制面这台机器能免密 `ssh` 到目标（`~/.ssh/config` 的别名可用），目标机器上有 `curl`。
+- **API**：`POST /api/deploy-notify {"serviceId": ..., "ref": ..., "targetMachine": "43.162.117.240"}`；`POST /api/deploys` 同样接受。非空机器必须是**有通道**的机器，否则 **400**（已知但没通道的机器会提示去配 `DEPLOY_MACHINE_TARGETS`）。
+- **默认机器**：`DEPLOY_DEFAULT_MACHINE`；不配置则是 `local`。请求不带 `targetMachine` 时按默认机器处理 —— **默认行为不变**（本机部署路径与以前完全一致）。
+- **随任务转发**：机器记在流水线上（`GET /api/pipelines/:id` 的 `targetMachine`）并转发给部署任务（`GET /api/deploys/:id`）；部署事件里带 `部署机器=<machine>`，并作为 `DEPLOY_MACHINE` 注入服务重启时的环境。
+- **面板不会被浏览器缓存 / 已打开页面会自己跟上升级**：静态资源与 API 都回 `Cache-Control: no-store`，`/api/meta` 还带 `panelVersion`（指纹），变了页面自动刷新一次。
 
 ### 手工发版 + 部署
 

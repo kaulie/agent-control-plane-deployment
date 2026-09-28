@@ -42,16 +42,25 @@ if [ -z "${ALIYUN_PACKAGES_USER:-}" ] && [ -f "${HOME_DIR}/data/aliyun-credentia
   export ALIYUN_PACKAGES_PASSWORD="$(sed -n '2p' "${HOME_DIR}/data/aliyun-credentials" | tr -d '\r\n')"
 fi
 
-# 部署机器：真源是 service-registry 登记的服务实例主机（控制面从 /v1/snapshot 取）。
-# 这里只做**补充**：给还没登记实例的机器一个本机入口 data/deploy-machines（data/ 跨
-# 自升级保留，见 selfDeployRsyncCmd）。文件里逗号/空白/换行分隔均可（例如一行
-# `local,gpu-2`）；继承来的 DEPLOY_MACHINES 优先。可选 data/deploy-default-machine
-# （一行一个 id）覆盖默认机器。
+# 部署机器「发现」列表（DEPLOY_MACHINES）：控制面的机器真源是 service-registry 的实例
+# 主机 + 部署通道 DEPLOY_MACHINE_TARGETS；这里只用来额外登记**还没登记实例**的机器名。
+# 本机可写 data/deploy-machines（data/ 跨自升级保留），逗号/空白/换行分隔。
+# 可选 data/deploy-default-machine（一行一个 id）覆盖默认机器。
 if [ -z "${DEPLOY_MACHINES:-}" ] && [ -f "${HOME_DIR}/data/deploy-machines" ]; then
   export DEPLOY_MACHINES="$(tr '\n' ',' < "${HOME_DIR}/data/deploy-machines")"
 fi
 if [ -z "${DEPLOY_DEFAULT_MACHINE:-}" ] && [ -f "${HOME_DIR}/data/deploy-default-machine" ]; then
   export DEPLOY_DEFAULT_MACHINE="$(tr -d '[:space:]' < "${HOME_DIR}/data/deploy-default-machine")"
+fi
+
+# 部署通道：机器能不能被选中/能不能真部署过去，取决于 DEPLOY_MACHINE_TARGETS。
+# 本机可以把它写进 data/machine-targets（data/ 跨自升级保留），一行一台：
+#   local=local
+#   43.162.117.240=ssh ubuntu@43.162.117.240 /home/ubuntu/runtime
+# 继承来的 DEPLOY_MACHINE_TARGETS 优先。注释行（#）会被跳过。
+if [ -z "${DEPLOY_MACHINE_TARGETS:-}" ] && [ -f "${HOME_DIR}/data/machine-targets" ]; then
+  export DEPLOY_MACHINE_TARGETS="$(grep -v '^[[:space:]]*#' "${HOME_DIR}/data/machine-targets" | tr '
+' ';')"
 fi
 
 # Default Go module/toolchain proxy to a reachable mirror. The build env

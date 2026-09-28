@@ -3,34 +3,34 @@ package main
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 )
 
-// MachineCatalog 是「部署机器」列表的唯一点：面板下拉、触发校验、部署执行都用它。
+// MachineCatalog 是「部署机器」的唯一入口：面板下拉、触发校验、部署执行都用它。
 //
-// 真源是 **service-registry**：它登记了每个服务实例跑在哪台机器上
-// （GET /v1/snapshot 的 instances）—— 机器不再需要在控制面单独配一遍。
+// **能不能被选中，取决于有没有部署通道**（MachineTarget，见 machine_target.go）：
 //
 //   - local：本机，永远在列表里、且是缺省默认（部署控制面自己就跑在这台机器上）；
-//   - 注册中心里的机器（实例 host，或实例 metadata.machine 给的名字）；
-//   - DEPLOY_MACHINES：显式补充（还没登记实例的机器），由运维显式给出。
+//   - 配了 DEPLOY_MACHINE_TARGETS 的机器（含 `ssh ...` 远端）—— 会真的部署到那台机器；
+//   - 只登记在 service-registry（实例主机）或 DEPLOY_MACHINES 里的机器：只是**发现**，
+//     没有通道就不能选（否则会出现「选得中、却静默部署在本机」）。
 //
-// 注册中心不可达时：用 TTL 内的缓存；缓存也没有就退回 local + DEPLOY_MACHINES，
-// 并把原因记在 note 里 —— **列表永远不会是空的**（面板的下拉因此永远可用）。
-//
-// source 取值：registry（全部来自注册中心）/ registry+env（注册中心 + 显式补充）/ env / local。
+// 注册中心不可达时：用 TTL 内的缓存；缓存也没有就退回本地配置 —— 可部署列表永远不会
+// 是空的（面板下拉永远可用），并把原因写进 note。
 type MachineCatalog struct {
 	registry *ServiceRegistry
 	cfg      Config
 	ttl      time.Duration
 
-	mu        sync.Mutex
-	ids       []string
-	source    string
-	note      string
-	fetchedAt time.Time
+	mu         sync.Mutex
+	deployable []string
+	discovered []string
+	source     string
+	note       string
+	fetchedAt  time.Time
 }
 
 // machineCacheTTL 是注册中心机器列表的缓存时长：面板与触发校验会频繁问，别每次都出网。
@@ -40,15 +40,44 @@ func NewMachineCatalog(cfg Config, registry *ServiceRegistry) *MachineCatalog {
 	return &MachineCatalog{registry: registry, cfg: cfg, ttl: machineCacheTTL}
 }
 
-// List 返回机器列表 + 来源 + 说明（note 非空 = 注册中心没答上来，为什么退回本地配置）。
+// List 返回**可部署**的机器（面板下拉的选项）+ 来源 + 说明。
 func (c *MachineCatalog) List(ctx context.Context) ([]string, string, string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.refresh(ctx)
-	return append([]string(nil), c.ids...), c.source, c.note
+	return append([]string(nil), c.deployable...), c.source, c.note
 }
 
-// Known 判断某台机器是否在列表里。
+// Discovered 返回「知道但没配通道」的机器（提示用，不可选）。
+func (c *MachineCatalog) Discovered(ctx context.Context) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.refresh(ctx)
+	return append([]string(nil), c.discovered...)
+}
+
+// Targets 返回可部署机器 → 通道（面板据此标注本机/远端 ssh）。
+func (c *MachineCatalog) Targets(ctx context.Context) map[string]MachineTarget {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.refresh(ctx)
+	out := map[string]MachineTarget{}
+	for _, id := range c.deployable {
+		if t, ok := c.cfg.DeployMachineTargets[id]; ok {
+			out[id] = t
+		}
+	}
+	return out
+}
+
+// Target 返回某台可部署机器的通道。
+func (c *MachineCatalog) Target(ctx context.Context, id string) (MachineTarget, bool) {
+	targets := c.Targets(ctx)
+	t, ok := targets[id]
+	return t, ok
+}
+
+// Known 判断某台机器当前是否可选（可部署）。
 func (c *MachineCatalog) Known(ctx context.Context, id string) bool {
 	ids, _, _ := c.List(ctx)
 	for _, m := range ids {
@@ -65,8 +94,8 @@ func (c *MachineCatalog) DefaultID(ctx context.Context) string {
 	return c.defaultFrom(ids)
 }
 
-// Validate 归一化「本次选择的部署机器」：空 = 默认机器；非空必须是已知机器，
-// 否则报错（附允许列表，供 API 回 400）。
+// Validate 归一化「本次选择的部署机器」：空 = 默认机器；非空必须是**有通道**的机器，
+// 否则报错：已知但没通道 → 告诉对方去配通道；完全不认识 → 附允许列表。
 func (c *MachineCatalog) Validate(ctx context.Context, sel string) (string, error) {
 	sel = strings.TrimSpace(sel)
 	ids, _, _ := c.List(ctx)
@@ -78,10 +107,24 @@ func (c *MachineCatalog) Validate(ctx context.Context, sel string) (string, erro
 			return sel, nil
 		}
 	}
+	if c.KnownDiscovered(ctx, sel) {
+		return "", fmt.Errorf("deploy machine %q 还没有部署通道：在 %s（或 data/machine-targets）里给它配 `ssh [user@]host[:port] <remote-runtime-home>`；可选：%s",
+			sel, deployMachineTargetsEnv, strings.Join(ids, ", "))
+	}
 	return "", fmt.Errorf("unknown deploy machine %q; allowed: %s", sel, strings.Join(ids, ", "))
 }
 
-// defaultFrom：显式配置的默认机器（且已知）优先，否则列表第一台，最后兜 local。
+// KnownDiscovered 判断某台机器是否「知道但没通道」。
+func (c *MachineCatalog) KnownDiscovered(ctx context.Context, id string) bool {
+	for _, m := range c.Discovered(ctx) {
+		if m == id {
+			return true
+		}
+	}
+	return false
+}
+
+// defaultFrom：显式配置的默认机器（且可选）优先，否则列表第一台，最后兜 local。
 func (c *MachineCatalog) defaultFrom(ids []string) string {
 	if want := strings.TrimSpace(c.cfg.DefaultDeployMachine); want != "" {
 		for _, m := range ids {
@@ -96,74 +139,82 @@ func (c *MachineCatalog) defaultFrom(ids []string) string {
 	return defaultDeployMachine
 }
 
-// refresh 在 TTL 过期时重新拉注册中心，并合并出最终列表（调用方持锁）。
+// refresh 在 TTL 过期时重算：可部署 = 通道（local 恒有）；发现 = 注册中心主机 ∪
+// DEPLOY_MACHINES，减掉已经有通道的（调用方持锁）。
 func (c *MachineCatalog) refresh(ctx context.Context) {
-	if len(c.ids) > 0 && time.Since(c.fetchedAt) < c.ttl {
+	if len(c.deployable) > 0 && time.Since(c.fetchedAt) < c.ttl {
 		return
 	}
-	base, baseSource := c.localIDs()
+	c.deployable, c.source = c.targetIDs()
 
-	var regMachines []string
+	// 发现：注册中心的实例主机（数据源统一在注册中心）+ DEPLOY_MACHINES 补充。
+	var fromRegistry []string
 	var regErr error
 	if c.registry.Enabled() {
-		regMachines, regErr = c.registry.DeployMachines(ctx)
+		fromRegistry, regErr = c.registry.DeployMachines(ctx)
 	} else {
 		regErr = fmt.Errorf("SERVICE_REGISTRY_URL 未配置")
 	}
-	if regErr != nil {
-		c.fetchedAt = time.Now()
-		if len(c.ids) > 0 {
-			// 上次注册中心给的机器还在缓存里：继续用，但把原因说清楚。
-			c.note = "注册中心不可达（" + regErr.Error() + "），沿用上次的机器列表"
+	known := map[string]bool{}
+	for _, id := range c.deployable {
+		known[id] = true
+	}
+	discovered := []string{}
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" || known[id] {
 			return
 		}
-		c.ids, c.source = base, baseSource
-		c.note = "注册中心不可达（" + regErr.Error() + "），已退回本机 + DEPLOY_MACHINES"
-		return
+		known[id] = true
+		discovered = append(discovered, id)
 	}
+	for _, id := range c.cfg.DeployMachines {
+		add(id)
+	}
+	for _, id := range fromRegistry {
+		add(id)
+	}
+	sort.Strings(discovered)
+	c.discovered = discovered
 
-	ids := append([]string(nil), base...)
-	seen := map[string]bool{}
-	for _, m := range ids {
-		seen[m] = true
+	switch {
+	case regErr != nil:
+		c.note = "注册中心不可达（" + regErr.Error() + "），机器列表只用本地通道 + DEPLOY_MACHINES"
+	case len(discovered) > 0:
+		c.note = "这些机器只有登记、没有部署通道，暂不可选：" + strings.Join(discovered, ", ") +
+			"（配 " + deployMachineTargetsEnv + " 后可部署）"
+	default:
+		c.note = ""
 	}
-	added := 0
-	for _, m := range regMachines {
-		if m == "" || seen[m] {
-			continue
+	if c.cfg.MachineTargetsError != "" {
+		if c.note != "" {
+			c.note += "；"
 		}
-		seen[m] = true
-		ids = append(ids, m)
-		added++
+		c.note += "部署通道配置有误：" + c.cfg.MachineTargetsError
 	}
-	source := baseSource
-	if added > 0 {
-		if len(base) > 1 { // local + 显式配置
-			source = "registry+env"
-		} else {
-			source = "registry"
-		}
-	}
-	c.ids, c.source, c.note, c.fetchedAt = ids, source, "", time.Now()
+	c.fetchedAt = time.Now()
 }
 
-// localIDs 是本地固定的那部分：本机 local 永远在最前，后面跟 DEPLOY_MACHINES
-// 里显式补充的机器（去重、保序）。
-func (c *MachineCatalog) localIDs() ([]string, string) {
+// targetIDs 是「有通道的机器」列表：本机 local 在最前，其余按 id 排序。
+func (c *MachineCatalog) targetIDs() ([]string, string) {
 	ids := []string{defaultDeployMachine}
 	seen := map[string]bool{defaultDeployMachine: true}
-	extra := 0
-	for _, m := range c.cfg.DeployMachineIDs() {
-		m = strings.TrimSpace(m)
-		if m == "" || seen[m] {
+	rest := []string{}
+	for id, t := range c.cfg.DeployMachineTargets {
+		if t.ID == "" {
+			t.ID = id
+		}
+		if id == defaultDeployMachine || seen[id] {
 			continue
 		}
-		seen[m] = true
-		ids = append(ids, m)
-		extra++
+		seen[id] = true
+		rest = append(rest, id)
 	}
-	if extra > 0 {
-		return ids, "env"
+	sort.Strings(rest)
+	ids = append(ids, rest...)
+	source := "local"
+	if len(rest) > 0 {
+		source = "targets"
 	}
-	return ids, "local"
+	return ids, source
 }

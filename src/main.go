@@ -43,16 +43,16 @@ func seedACPService(store *Store, cfg Config) {
 		return
 	}
 	_, err = store.UpsertService(ServiceContract{
-		ServiceID:         "agent-control-plane-deployment",
-		Name:               "Agent Control Plane Deployment",
-		RuntimeDir:         cfg.Home,
-		HealthURL:          fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Port),
-		Port:               cfg.Port,
-		StartCmd:           fmt.Sprintf("bash %q", filepath.Join(cfg.Home, "scripts", "start.sh")),
-		StopCmd:            fmt.Sprintf("bash %q", filepath.Join(cfg.Home, "scripts", "stop.sh")),
-		RestartCmd:         fmt.Sprintf("bash %q", filepath.Join(cfg.Home, "scripts", "restart.sh")),
-		RestartNotifyURL:   fmt.Sprintf("http://127.0.0.1:%d/restart/notify", cfg.Port),
-		RestartPollURL:     fmt.Sprintf("http://127.0.0.1:%d/restart/poll", cfg.Port),
+		ServiceID:        "agent-control-plane-deployment",
+		Name:             "Agent Control Plane Deployment",
+		RuntimeDir:       cfg.Home,
+		HealthURL:        fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Port),
+		Port:             cfg.Port,
+		StartCmd:         fmt.Sprintf("bash %q", filepath.Join(cfg.Home, "scripts", "start.sh")),
+		StopCmd:          fmt.Sprintf("bash %q", filepath.Join(cfg.Home, "scripts", "stop.sh")),
+		RestartCmd:       fmt.Sprintf("bash %q", filepath.Join(cfg.Home, "scripts", "restart.sh")),
+		RestartNotifyURL: fmt.Sprintf("http://127.0.0.1:%d/restart/notify", cfg.Port),
+		RestartPollURL:   fmt.Sprintf("http://127.0.0.1:%d/restart/poll", cfg.Port),
 	})
 	if err != nil {
 		log.Printf("[seed] acp service failed: %v", err)
@@ -129,7 +129,7 @@ func main() {
 	machines := NewMachineCatalog(cfg, registry)
 
 	drain := &GracefulDrain{}
-	worker := NewDeployWorker(store, cfg, storage, drain, machines)
+	worker := NewDeployWorker(store, cfg, storage, drain, machines, sshRemoteRunner{home: cfg.Home})
 	pipeline := NewPipelineWorker(store, cfg, storage, worker, drain)
 	pipeline.registry = registry
 	api := &apiServer{store: store, cfg: cfg, storage: storage, worker: worker, pipeline: pipeline,

@@ -1234,11 +1234,19 @@ func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
 	example, _ := normalizeDeploymentTag("abc12345")
 	machines, machineSource, machineNote := s.machineCatalog().List(r.Context())
 	defaultMachine := s.machineCatalog().DefaultID(r.Context())
-	machineHint := "发起流水线时可选择「部署机器」：本次部署落到哪台机器（目标主机/agent）。" +
-		"不选 = 默认机器（" + defaultMachine + "）；列表来自 service-registry 登记的实例主机"
-	switch machineSource {
-	case "env", "registry+env":
-		machineHint += " + DEPLOY_MACHINES"
+	targets := s.machineCatalog().Targets(r.Context())
+	machineKinds := map[string]any{}
+	for id, t := range targets {
+		kind := "local"
+		if t.Remote() {
+			kind = "ssh"
+		}
+		machineKinds[id] = map[string]any{"kind": kind, "host": t.SSHHost, "runtimeHome": t.RuntimeHome}
+	}
+	machineHint := "发起流水线时可选择「部署机器」：本次部署会**真的**落到那台机器（远端用 ssh：制品 rsync 过去、在那边重启并探活）。" +
+		"不选 = 默认机器（" + defaultMachine + "）；列表来自部署通道 " + deployMachineTargetsEnv
+	if machineSource != "local" {
+		machineHint += "，注册中心的实例主机只作发现（有通道才可选）"
 	}
 	machineHint += "。"
 	if machineNote != "" {
@@ -1263,7 +1271,11 @@ func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
 			s.cfg.ProxyEnvFile + " 里的 HTTP(S)_PROXY（直连 github 失败时用）",
 		"deployMachines":       machines,
 		"defaultDeployMachine": defaultMachine,
-		// 机器列表的来源与回退原因（registry / registry+env / env / local）。
+		// 每台可部署机器的通道（local / ssh）——面板据此标注「本机 / 远端」。
+		"deployMachineTargets": machineKinds,
+		// 只登记、没配通道的机器（不可选；配 DEPLOY_MACHINE_TARGETS 后自动可选）。
+		"deployMachineDiscovered": s.machineCatalog().Discovered(r.Context()),
+		// 列表来源（targets / local）与回退原因。
 		"deployMachineSource": machineSource,
 		"deployMachineNote":   machineNote,
 		// 面板静态资源的指纹：已经打开的标签页靠它发现自己跑的是升级前的 JS，自动刷一次。
