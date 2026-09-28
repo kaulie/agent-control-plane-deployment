@@ -298,6 +298,12 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 	if target.Remote() {
 		_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
 			"远端部署："+target.Describe()+" → runtime="+runtimeDir)
+		// 预检放在最前面：ssh 不通/没 curl/目录不对时立刻失败，别先下载几百 MB、
+		// 也别在 graceful 里等十分钟。
+		if code, out := remotePreflight(store, *job, target, remote, runtimeDir); code != 0 {
+			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{State: StateFailed, Error: out})
+			return
+		}
 	}
 	// Fetch the package from the configured storage backend into a temp dir;
 	// the storage is the single source of truth for the bytes (local disk or
@@ -412,10 +418,6 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 	}
 
 	if target.Remote() {
-		if code, out := remotePreflight(store, *job, target, remote, runtimeDir); code != 0 {
-			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{State: StateFailed, Error: out})
-			return
-		}
 		fmt.Printf("[deploy] %s rsync %s → %s:%s\n", job.RequestID, tag, target.SSHDest(), runtimeDir)
 		code, out := remote.PushDir(target, src, runtimeDir, true, cfg.DeployMaxSec)
 		if code != 0 {

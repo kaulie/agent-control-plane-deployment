@@ -175,6 +175,21 @@ func TestExecuteDeployToRemoteMachine(t *testing.T) {
 		t.Fatalf("a remote deploy must not touch the local runtime dir (%s), stat err=%v", localRuntimeDir, err)
 	}
 
+	eventsIdx := map[string]int{}
+	if all, err := store.ListDeployEvents("deploy-remote1"); err == nil {
+		for i, e := range all {
+			if _, ok := eventsIdx["preflight"]; !ok && strings.Contains(e.Message, "远端预检") {
+				eventsIdx["preflight"] = i
+			}
+			if _, ok := eventsIdx["download"]; !ok && strings.Contains(e.Message, "下载开始") {
+				eventsIdx["download"] = i
+			}
+		}
+	}
+	if p, ok := eventsIdx["preflight"]; !ok || p >= eventsIdx["download"] {
+		t.Fatalf("the preflight must come before the download, got %v", eventsIdx)
+	}
+
 	events, _ := store.ListDeployEvents("deploy-remote1")
 	joined := ""
 	for _, e := range events {
@@ -210,7 +225,56 @@ func TestExecuteDeployRemotePreflightFailureFailsFast(t *testing.T) {
 	if len(pushes) != 0 {
 		t.Fatalf("nothing may be pushed when the preflight fails, got %v", pushes)
 	}
+	// 预检在下载之前：事件里「远端预检」必须早于「下载开始」（否则会白下载几百 MB）。
+	events, _ := store.ListDeployEvents("deploy-remote2")
+	preflightAt, downloadAt := -1, -1
+	for i, e := range events {
+		if strings.Contains(e.Message, "远端预检") && preflightAt < 0 {
+			preflightAt = i
+		}
+		if strings.Contains(e.Message, "下载开始") && downloadAt < 0 {
+			downloadAt = i
+		}
+	}
+	if preflightAt < 0 {
+		t.Fatal("the remote preflight must be recorded on the timeline")
+	}
+	if downloadAt >= 0 && preflightAt > downloadAt {
+		t.Fatalf("the remote preflight must run before the download (preflight@%d download@%d)", preflightAt, downloadAt)
+	}
+	if downloadAt >= 0 {
+		t.Fatal("a failed preflight must not even start the download")
+	}
 	if _, err := os.Stat(localRuntimeDir); !os.IsNotExist(err) {
 		t.Fatalf("a remote deploy must not touch the local runtime dir, stat err=%v", err)
 	}
+}
+
+// ssh 认证失败（免密配在 ~/.ssh/config 别名上、却用字面 host 登录）要给可操作提示。
+func TestRemotePreflightAuthFailureHintsAliasForm(t *testing.T) {
+	store, _, _, _, _, _ := newRemoteDeployFixture(t)
+	target := MachineTarget{ID: "43.162.117.240", Kind: "ssh", SSHUser: "ubuntu", SSHHost: "43.162.117.240", RuntimeHome: "/home/ubuntu/runtime"}
+	job := DeployJob{RequestID: "deploy-auth1", TargetMachine: target.ID}
+	fake := &authFailRemote{}
+	code, out := remotePreflight(store, job, target, fake, "/home/ubuntu/runtime/web-cursor")
+	if code == 0 {
+		t.Fatal("an auth failure must fail the preflight")
+	}
+	if !strings.Contains(out, "~/.ssh/config") || !strings.Contains(out, "ssh <别名>") {
+		t.Fatalf("the failure must point at the alias form, got %q", out)
+	}
+}
+
+type authFailRemote struct{}
+
+func (authFailRemote) Run(target MachineTarget, script string, timeoutSec int) (int, string) {
+	return 255, "ubuntu@43.162.117.240: Permission denied (publickey)."
+}
+
+func (authFailRemote) PushDir(target MachineTarget, src, dst string, deleteExtra bool, timeoutSec int) (int, string) {
+	return 255, "Permission denied (publickey)."
+}
+
+func (authFailRemote) HTTP(target MachineTarget, method, rawURL, body string, timeoutSec int) (int, string) {
+	return 0, "Permission denied (publickey)."
 }
