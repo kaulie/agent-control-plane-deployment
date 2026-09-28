@@ -154,11 +154,10 @@ func TestMachineCatalogScopeIsPerService(t *testing.T) {
 	cat := NewMachineCatalog(cfg, fakeRegistry(t, snapshotWithHosts, true))
 
 	cases := []struct{ svc, want string }{
-		{"", "local,10.0.0.7,gpu-2,staging"},                // 没给服务 = 全局视图
-		{"web-cursor", "local,10.0.0.7,staging"},            // 127.0.0.1 + 10.0.0.7（+ 全局补充）
-		{"event-center", "local,staging"},                   // 只在本机跑
-		{"autonomy", "local,gpu-2,staging"},                 // metadata.machine=gpu-2（两台实例归并成一台）
-		{"unknown-service", "local,10.0.0.7,gpu-2,staging"}, // 注册中心不知道它 → 退回全局视图
+		{"", "local,10.0.0.7,gpu-2,staging"}, // 没给服务 = 全局视图（含 DEPLOY_MACHINES 补充）
+		{"web-cursor", "local,10.0.0.7"},     // 127.0.0.1 + 10.0.0.7
+		{"event-center", "local"},            // 只在本机跑
+		{"autonomy", "local,gpu-2"},          // metadata.machine=gpu-2（两台实例归并成一台）
 	}
 	for _, tc := range cases {
 		ids, _, _ := cat.For(t.Context(), tc.svc)
@@ -167,20 +166,35 @@ func TestMachineCatalogScopeIsPerService(t *testing.T) {
 		}
 	}
 
+	// 注册中心里没有这个服务 = **没绑定部署实例**：直接失败、指路注册中心，
+	// 不给一份「全部机器」的列表（那会让人以为现在也能发）。
+	ids, source, note := cat.For(t.Context(), "unknown-service")
+	if len(ids) != 0 || source != "unbound" {
+		t.Fatalf("未绑定的服务 → ids=%v source=%q, want 空列表 + unbound", ids, source)
+	}
+	if !strings.Contains(note, "没有绑定部署实例") || !strings.Contains(note, "service_registry") {
+		t.Fatalf("说明要指路注册中心，got %q", note)
+	}
+	if _, err := cat.ValidateForService(t.Context(), "unknown-service", ""); err == nil ||
+		!strings.Contains(err.Error(), "没有绑定部署实例") {
+		t.Fatalf("未绑定的服务即使不选机器也要被拒（默认机器也没有依据），got %v", err)
+	}
+
 	// 触发校验同样按服务：别的服务的机器被拒，并说清是「那台机器上没有这个服务的实例」。
 	_, err := cat.ValidateForService(t.Context(), "event-center", "gpu-2")
 	if err == nil || !strings.Contains(err.Error(), "event-center") || !strings.Contains(err.Error(), "实例登记") {
 		t.Fatalf("gpu-2 是 autonomy 的机器，event-center 选它必须被拒并说明原因，got %v", err)
 	}
-	if !strings.Contains(err.Error(), "event-center 可选：local, staging") {
+	if !strings.Contains(err.Error(), "event-center 可选：local") {
 		t.Fatalf("拒绝信息要附上本服务的允许列表，got %v", err)
 	}
 	if got, err := cat.ValidateForService(t.Context(), "autonomy", "gpu-2"); err != nil || got != "gpu-2" {
 		t.Fatalf("autonomy 选自己的 gpu-2 应通过，got %q, %v", got, err)
 	}
-	// 全局补充（DEPLOY_MACHINES）里的机器对所有服务可选。
-	if got, err := cat.ValidateForService(t.Context(), "event-center", "staging"); err != nil || got != "staging" {
-		t.Fatalf("显式补充的机器应对所有服务可选，got %q, %v", got, err)
+	// DEPLOY_MACHINES 是**全局视图**的补充，不再是「对所有服务都可选」：它不能绕开绑定。
+	if _, err := cat.ValidateForService(t.Context(), "event-center", "staging"); err == nil ||
+		!strings.Contains(err.Error(), "实例登记") {
+		t.Fatalf("DEPLOY_MACHINES 里的机器不能绕开「这个服务绑没绑」的校验，got %v", err)
 	}
 	// 不选 = 默认机器（本机恒在列表最前）。
 	if got, err := cat.ValidateForService(t.Context(), "event-center", ""); err != nil || got != "local" {
@@ -223,7 +237,8 @@ func TestMachineCatalogScopeNamesChannellessMachines(t *testing.T) {
 	}
 }
 
-// 注册中心不可达时，按服务收窄无从谈起（不知道服务跑在哪）：退回通道视图，并说明原因。
+// 注册中心不可达时，按服务收窄无从谈起（不知道服务绑了哪些机器）：退回通道视图并说明原因。
+// 注意这与「注册中心回答了、但没这个服务」不同 —— 后者是**没绑定**，直接挡住。
 func TestMachineCatalogScopeFallsBackWhenRegistryDown(t *testing.T) {
 	cfg := Config{DeployMachineTargets: map[string]MachineTarget{
 		"local":    {ID: "local", Kind: "local"},
@@ -231,26 +246,31 @@ func TestMachineCatalogScopeFallsBackWhenRegistryDown(t *testing.T) {
 	}}
 	cat := NewMachineCatalog(cfg, fakeRegistry(t, "", false))
 
-	ids, _, note := cat.For(t.Context(), "web-cursor")
-	if strings.Join(ids, ",") != "local,10.0.0.7" {
-		t.Fatalf("outage 时按服务收窄要退回通道列表，got %v", ids)
+	scope := cat.Scope(t.Context(), "web-cursor")
+	if strings.Join(scope.IDs, ",") != "local,10.0.0.7" || scope.Blocked != "" {
+		t.Fatalf("outage 时要退回通道列表且**不能**误判成未绑定，got %+v", scope)
 	}
-	if !strings.Contains(note, "注册中心不可达") {
-		t.Fatalf("note must explain the outage, got %q", note)
+	if !strings.Contains(scope.Note, "注册中心不可达") {
+		t.Fatalf("note must explain the outage, got %q", scope.Note)
 	}
-	// 注册中心里没有这个服务：同样退回，但说明是「没有实例登记」。
+	if got, err := cat.ValidateForService(t.Context(), "web-cursor", "10.0.0.7"); err != nil || got != "10.0.0.7" {
+		t.Fatalf("outage 时不该阻塞部署（注册中心抖动一次就让所有服务发不出去更糟），got %q, %v", got, err)
+	}
+
+	// 注册中心回答了、但没有这个服务 → 挡住（这是「没绑定」，不是「不知道」）。
 	cat2 := NewMachineCatalog(cfg, fakeRegistry(t, snapshotWithHosts, true))
-	ids2, _, note2 := cat2.For(t.Context(), "never-deployed")
-	if strings.Join(ids2, ",") != "local,10.0.0.7" || !strings.Contains(note2, "never-deployed") {
-		t.Fatalf("For(unknown service) = %v note = %q, want the channel list + a note naming it", ids2, note2)
+	scope2 := cat2.Scope(t.Context(), "never-deployed")
+	if len(scope2.IDs) != 0 || scope2.Blocked == "" || !strings.Contains(scope2.Blocked, "never-deployed") {
+		t.Fatalf("未绑定的服务要被挡住并点名，got %+v", scope2)
 	}
 }
 
 // /api/meta 的机器列表按 ?serviceId= 收窄：面板据此给每个服务列出自己的机器。
 func TestMetaDeployMachinesAreScopedToService(t *testing.T) {
 	srv, store := newTestIdentityServer(t, true)
-	// 触发校验要认这两条契约（store 里默认只有 web-cursor）。
-	for i, id := range []string{"event-center", "autonomy"} {
+	// 触发校验要认这几条契约（store 里默认只有 web-cursor）；unbound-svc 故意不在注册中心，
+	// 用来验证「没绑定部署实例 → 直接失败」。
+	for i, id := range []string{"event-center", "autonomy", "unbound-svc"} {
 		if _, err := store.UpsertService(ServiceContract{
 			ServiceID:  id,
 			Name:       id,
@@ -273,7 +293,7 @@ func TestMetaDeployMachinesAreScopedToService(t *testing.T) {
 	}
 	srv.machines = NewMachineCatalog(srv.cfg, srv.registry)
 
-	machinesFor := func(query string) ([]string, string, string) {
+	machinesFor := func(query string) ([]string, string, string, string) {
 		t.Helper()
 		var meta map[string]any
 		if err := json.Unmarshal(getJSON(t, srv, "/api/meta"+query).Body.Bytes(), &meta); err != nil {
@@ -284,35 +304,39 @@ func TestMetaDeployMachinesAreScopedToService(t *testing.T) {
 		for _, id := range raw {
 			ids = append(ids, id.(string))
 		}
-		if len(ids) == 0 {
-			t.Fatalf("/api/meta%s 的机器列表不能是空", query)
-		}
 		scope, _ := meta["deployMachineScope"].(string)
 		hint, _ := meta["deployMachineHint"].(string)
-		return ids, scope, hint
+		blocked, _ := meta["deployMachineBlocked"].(string)
+		return ids, scope, hint, blocked
 	}
 
 	// web-cursor 在 127.0.0.1 与 10.0.0.7 上有实例；event-center 只在本机；autonomy 在 gpu-2。
-	if ids, scope, hint := machinesFor("?serviceId=web-cursor"); strings.Join(ids, ",") != "local,10.0.0.7" || scope != "web-cursor" {
-		t.Fatalf("meta?serviceId=web-cursor → %v scope=%q, want [local 10.0.0.7]", ids, scope)
+	if ids, scope, hint, blocked := machinesFor("?serviceId=web-cursor"); strings.Join(ids, ",") != "local,10.0.0.7" ||
+		scope != "web-cursor" || blocked != "" {
+		t.Fatalf("meta?serviceId=web-cursor → %v scope=%q blocked=%q, want [local 10.0.0.7]", ids, scope, blocked)
 	} else if !strings.Contains(hint, "按**服务**取自 service_registry") {
 		t.Fatalf("hint 要写明列表按服务取，got %q", hint)
 	}
-	if ids, _, _ := machinesFor("?serviceId=event-center"); strings.Join(ids, ",") != "local" {
+	if ids, _, _, _ := machinesFor("?serviceId=event-center"); strings.Join(ids, ",") != "local" {
 		t.Fatalf("meta?serviceId=event-center → %v, want [local]（它只在本地跑）", ids)
 	}
-	if ids, _, _ := machinesFor("?serviceId=autonomy"); strings.Join(ids, ",") != "local,gpu-2" {
+	if ids, _, _, _ := machinesFor("?serviceId=autonomy"); strings.Join(ids, ",") != "local,gpu-2" {
 		t.Fatalf("meta?serviceId=autonomy → %v, want [local gpu-2]", ids)
 	}
 	// 不给 serviceId = 全局视图（兼容老调用方与元信息页）。
-	if ids, scope, _ := machinesFor(""); strings.Join(ids, ",") != "local,10.0.0.7,gpu-2" || scope != "" {
-		t.Fatalf("meta（全局）→ %v scope=%q, want all three", ids, scope)
+	if ids, scope, _, blocked := machinesFor(""); strings.Join(ids, ",") != "local,10.0.0.7,gpu-2" || scope != "" || blocked != "" {
+		t.Fatalf("meta（全局）→ %v scope=%q blocked=%q, want all three", ids, scope, blocked)
 	}
-	// 注册中心里没有这个服务 → 退回全局，但说明必须写在最前面（别让「全部机器」看起来
-	// 像「这个服务的机器」）。
-	if ids, _, hint := machinesFor("?serviceId=never-registered"); strings.Join(ids, ",") != "local,10.0.0.7,gpu-2" ||
-		!strings.Contains(hint, "没能按服务收窄") {
-		t.Fatalf("未知服务 → 退回全局并说明原因，got %v hint=%q", ids, hint)
+	// 没绑定部署实例的服务：列表空 + 明确挡住（面板据此禁用触发按钮），提示指路注册中心。
+	ids, source, hint, blocked := machinesFor("?serviceId=unbound-svc")
+	if len(ids) != 0 || source != "unbound-svc" {
+		t.Fatalf("未绑定的服务 → %v scope=%q, want 空列表", ids, source)
+	}
+	if !strings.Contains(blocked, "没有绑定部署实例") || !strings.Contains(blocked, "service_registry") {
+		t.Fatalf("deployMachineBlocked 要说清原因并指路注册中心，got %q", blocked)
+	}
+	if !strings.Contains(hint, "没有绑定部署实例") {
+		t.Fatalf("hint 要是同一句话（面板直接显示它），got %q", hint)
 	}
 
 	// 触发校验也按服务：event-center 选 autonomy 的机器 → 400（并说明那台机器上没有它）。
@@ -324,6 +348,13 @@ func TestMetaDeployMachinesAreScopedToService(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "event-center") {
 		t.Fatalf("400 要说清是哪个服务没有那台机器的实例，got %s", rec.Body.String())
+	}
+	// 未绑定的服务：不选机器也 400（「先去注册中心绑定」）。
+	rec = postJSON(t, srv, "/api/deploy-notify",
+		`{"serviceId":"unbound-svc"}`,
+		map[string]string{"identity_role": "user", "identity_id": "user_001"})
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "没有绑定部署实例") {
+		t.Fatalf("未绑定的服务必须 400 并提示去注册中心绑定，status = %d body=%s", rec.Code, rec.Body.String())
 	}
 	rec = postJSON(t, srv, "/api/deploy-notify",
 		`{"serviceId":"autonomy","targetMachine":"gpu-2"}`,

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -72,45 +73,62 @@ func (c *MachineCatalog) List(ctx context.Context) ([]string, string, string) {
 	return append([]string(nil), c.deployable...), c.source, c.note
 }
 
-// For 返回**某个服务**的可部署机器：本机 + 这个服务在注册中心登记在案的机器（且必须有通道）。
+// MachineScope 是「某个服务的可部署机器」视图。
 //
-// 收窄的理由：机器是服务的字段（服务在哪些机器上有实例，注册中心知道）。把别的服务的机器
-// 列进下拉毫无意义 —— 那不是跑这个服务的地方。
-//
-// 三种「问不出来」的情况都退回全局视图（并在 note 里说清），因为把它们当成「只有本机」
-// 会挡住合法部署（服务第一次上某台机器时，它在注册中心还没有那台机器的实例）：
-//   - serviceID 为空（调用方没给服务）；
-//   - 注册中心不可达 / 没配置；
-//   - 注册中心里没有这个服务的实例登记。
-func (c *MachineCatalog) For(ctx context.Context, serviceID string) ([]string, string, string) {
+// Blocked 非空 = **不能发起部署**：这台服务在 service_registry 上没有任何实例登记
+// （= 没绑定机器）。这时的选择是「明确失败并指路注册中心」，不是退回一份全局机器列表 ——
+// 后者会让人以为「现在也能发」，其实发到哪台机器都没有依据。
+type MachineScope struct {
+	ServiceID string
+	IDs       []string // 可选的机器（本机恒在最前；Blocked 时为空）
+	Default   string   // 不选机器时用哪台
+	Source    string   // registry / registry-local / targets / local / unbound
+	Note      string   // 给人看的补充说明（可为空）
+	Blocked   string   // 非空 = 不能发起部署，内容就是要给用户看的原因
+}
+
+// Scope 返回某个服务的机器视图（列表 / 默认 / 说明 / 是否被挡住）。
+func (c *MachineCatalog) Scope(ctx context.Context, serviceID string) MachineScope {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.refresh(ctx)
 
 	serviceID = strings.TrimSpace(serviceID)
+	out := MachineScope{
+		ServiceID: serviceID,
+		IDs:       append([]string(nil), c.deployable...),
+		Source:    c.source,
+		Note:      c.note,
+	}
+	out.Default = c.defaultFrom(out.IDs)
 	if serviceID == "" {
-		return append([]string(nil), c.deployable...), c.source, c.note
+		return out // 全局视图（没给服务）
+	}
+	if !c.registryOK {
+		// 注册中心这次没回答：**不能**把「查不到」当成「没绑定」而拒绝部署 ——
+		// 那会在注册中心抖一下的时候让所有服务都发不出去。退回通道列表并把原因写清楚。
+		out.Note = joinNotes("注册中心不可达：无法确认 "+serviceID+" 绑定了哪些机器，机器列表退回全部有通道的机器", c.note)
+		return out
 	}
 	svcMachines, known := c.byService[serviceID]
-	if !c.registryOK {
-		return append([]string(nil), c.deployable...), c.source, c.note
-	}
-	if !known {
-		return append([]string(nil), c.deployable...), c.source,
-			joinNotes("service_registry 里没有 "+serviceID+" 的实例登记，机器列表退回全部有通道的机器", c.note)
+	if !known || len(svcMachines) == 0 {
+		out.IDs = nil
+		out.Source = "unbound"
+		out.Default = defaultDeployMachine
+		out.Blocked = "服务 " + serviceID + " 没有绑定部署实例（机器）：先在 service_registry 登记它的实例" +
+			"（PUT /v1/namespaces/default/services/" + serviceID + "/instances，带上 host 与 metadata.platform），" +
+			"绑好机器再发起部署。"
+		out.Note = out.Blocked
+		return out
 	}
 
 	// 本机恒在（控制面自己就跑在这台机器上，也是不选机器时的默认），其余取交集：
-	// 既是这个服务的机器，又有部署通道。
+	// 既是这个服务的机器，又有部署通道 —— 「绑定」只说明这台机器上有这个服务，
+	// 「通道」说明控制面能把部署送过去。
 	inScope := map[string]bool{defaultDeployMachine: true}
 	registered := append([]string(nil), svcMachines...)
 	for _, id := range svcMachines {
 		inScope[id] = true
-	}
-	// DEPLOY_MACHINES 是**显式**的全局补充（服务第一次上某台机器、注册中心还没有它的实例
-	// 时用）：写进去的机器对所有服务可选。
-	for _, id := range c.cfg.DeployMachines {
-		inScope[strings.TrimSpace(id)] = true
 	}
 	ids := []string{}
 	for _, id := range c.deployable {
@@ -125,17 +143,26 @@ func (c *MachineCatalog) For(ctx context.Context, serviceID string) ([]string, s
 			channelLess = append(channelLess, id)
 		}
 	}
-	note := ""
 	if len(channelLess) > 0 {
 		sort.Strings(channelLess)
-		note = joinNotes("这些机器有 "+serviceID+" 的实例但没配部署通道，暂不可选："+
+		out.Note = joinNotes("这些机器有 "+serviceID+" 的实例但没配部署通道，暂不可选："+
 			strings.Join(channelLess, ", ")+"（配 "+deployMachineTargetsEnv+" 后可部署）", c.note)
+	} else {
+		out.Note = ""
 	}
-	source := "registry"
+	out.IDs = ids
+	out.Default = c.defaultFrom(ids)
+	out.Source = "registry"
 	if len(ids) <= 1 {
-		source = "registry-local"
+		out.Source = "registry-local"
 	}
-	return ids, source, note
+	return out
+}
+
+// For 是 Scope 的简写：只用 (ids, source, note) 的调用方（面板文案走 Scope）。
+func (c *MachineCatalog) For(ctx context.Context, serviceID string) ([]string, string, string) {
+	scope := c.Scope(ctx, serviceID)
+	return scope.IDs, scope.Source, scope.Note
 }
 
 // joinNotes 拼接说明文案，跳过空的那半。
@@ -209,10 +236,10 @@ func (c *MachineCatalog) DefaultID(ctx context.Context) string {
 }
 
 // DefaultFor 是某个服务「不选机器」时要用的机器：显式默认（且在这个服务的列表里）优先，
-// 否则列表第一台（本机恒在最前）。
+// 否则列表第一台（本机恒在最前）；被挡住（没绑定实例）时是 local（只为让调用方拿到一个
+// 非空值，实际不会被用来部署 —— 见 Scope.Blocked）。
 func (c *MachineCatalog) DefaultFor(ctx context.Context, serviceID string) string {
-	ids, _, _ := c.For(ctx, serviceID)
-	return c.defaultFrom(ids)
+	return c.Scope(ctx, serviceID).Default
 }
 
 // Validate 归一化「本次选择的部署机器」（全局视图；调用方不知道服务时用）。
@@ -221,30 +248,34 @@ func (c *MachineCatalog) Validate(ctx context.Context, sel string) (string, erro
 }
 
 // ValidateForService 归一化某个服务的「本次选择的部署机器」：空 = 默认机器；非空必须是
-// **这个服务**可选（有通道）的机器。三种拒绝各自给出可操作的下一步：
+// **这个服务**可选（有通道）的机器。拒绝时给出可操作的下一步：
 //
+//   - 服务在注册中心没绑定实例 → 直接失败，指路注册中心（不是退回一份全局机器列表）；
 //   - 有通道、但不是这个服务的机器 → 说清「那台机器上没有它的实例登记」；
 //   - 知道这台机器、但没配通道 → 指向 DEPLOY_MACHINE_TARGETS；
 //   - 完全不认识 → 附本服务允许列表。
 func (c *MachineCatalog) ValidateForService(ctx context.Context, serviceID, sel string) (string, error) {
-	sel = strings.TrimSpace(sel)
-	ids, _, _ := c.For(ctx, serviceID)
-	if sel == "" {
-		return c.defaultFrom(ids), nil
+	scope := c.Scope(ctx, serviceID)
+	if scope.Blocked != "" {
+		return "", errors.New(scope.Blocked)
 	}
-	if containsID(ids, sel) {
+	sel = strings.TrimSpace(sel)
+	if sel == "" {
+		return scope.Default, nil
+	}
+	if containsID(scope.IDs, sel) {
 		return sel, nil
 	}
 	if svc := strings.TrimSpace(serviceID); svc != "" && c.Known(ctx, sel) {
 		return "", fmt.Errorf("机器 %q 上没有服务 %q 的实例登记：机器列表按服务取自 service_registry"+
-			"（先在那台机器上登记它的实例；或把该机器写进 %s 作为全局补充）。%s 可选：%s",
-			sel, svc, deployMachinesEnv, svc, strings.Join(ids, ", "))
+			"（先在那台机器上登记它的实例）。%s 可选：%s",
+			sel, svc, svc, strings.Join(scope.IDs, ", "))
 	}
 	if c.KnownDiscovered(ctx, sel) {
 		return "", fmt.Errorf("deploy machine %q 还没有部署通道：在 %s（或 data/machine-targets）里给它配 `ssh [user@]host[:port] <remote-runtime-home>`；可选：%s",
-			sel, deployMachineTargetsEnv, strings.Join(ids, ", "))
+			sel, deployMachineTargetsEnv, strings.Join(scope.IDs, ", "))
 	}
-	return "", fmt.Errorf("unknown deploy machine %q; allowed: %s", sel, strings.Join(ids, ", "))
+	return "", fmt.Errorf("unknown deploy machine %q; allowed: %s", sel, strings.Join(scope.IDs, ", "))
 }
 
 // KnownDiscovered 判断某台机器是否「知道但没通道」。

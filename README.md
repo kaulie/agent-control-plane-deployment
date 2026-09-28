@@ -141,7 +141,7 @@ curl -sS -X PUT http://127.0.0.1:4220/api/services/web-cursor \
 | `SERVICE_REGISTRY_TOKEN` | 空 | 注册中心读令牌（`REGISTRY_READ_AUTH=token` 时用） |
 | `SERVICE_REGISTRY_TIMEOUT_SEC` | `5` | 单次拉取超时（秒） |
 | `DEPLOY_MACHINE_TARGETS` | 空（= `local`） | **部署通道**：`id=local` 或 `id=ssh [user@]host[:port] <remote-runtime-home>`（`;` 分隔）。有通道的机器才可选、才会真的部署过去（也可写在本机 `data/machine-targets`） |
-| `DEPLOY_MACHINES` | 空 | **显式全局补充**（逗号分隔 id）：写进来的机器对所有服务可选 —— 给「还没在 service-registry 登记实例」的机器用（服务第一次上某台机器）；仍须有通道才可选（也可写在本机 `data/deploy-machines`） |
+| `DEPLOY_MACHINES` | 空 | 机器**发现**提示（逗号分隔 id）：只出现在 `/api/meta` 的 `deployMachineDiscovered`（「知道这台机器、但它没有部署通道」），**不可选**；要让它可选必须配 `DEPLOY_MACHINE_TARGETS` 通道，且服务得在注册中心有实例（也可写在本机 `data/deploy-machines`） |
 | `DEPLOY_DEFAULT_MACHINE` | 空（= 列表第一台） | 未选择机器时用的默认机器 |
 | `PROXY_ENV_FILE` | `<home>/data/proxy.env` | 「打包走本机代理」读取的代理配置；`off` 关闭该选项 |
 
@@ -332,7 +332,11 @@ macOS 上打的包（Mach-O）在 Linux 远端起不来，所以**打包时就�
 2. **能不能被选中，取决于有没有「部署通道」**（怎么把部署送到那台机器）：注册中心只说明「这台机器上有这个服务」，通道说明「控制面能把部署送到它」。没通道就不给选，避免「选得中、却静默部署在本机」。
 
 - **数据源（从下往上）**：面板 `#pipe-machine` 下拉 ← `GET /api/meta?serviceId=<选中的服务>`（切服务就重拉）的 `deployMachines` + `deployMachineTargets`（每台的通道）← 服务端 `MachineCatalog.For(serviceID)` ← **service-registry 上这个服务的实例所在机器** ∩ **部署通道配置**（`DEPLOY_MACHINE_TARGETS`，或本机 `data/machine-targets`）。不传 `serviceId` 时是**全局视图**（本机 + 全部有通道的机器），只给元信息页/老调用方用。机器「发现」还看注册中心的所有实例主机，但**只发现、不可选**（`deployMachineDiscovered`）。
-- **问不出来时退回全局视图**（并在下拉说明里写明原因，不会假装成「这个服务的机器」）：① 没给 `serviceId`；② 注册中心不可达/未配置；③ 注册中心里没有这个服务的实例登记。第三种就是「服务第一次上某台机器」的情况 —— 这时把机器写进 `DEPLOY_MACHINES`（本机 `data/deploy-machines` 也行）作为**显式全局补充**，它对所有服务可选（`DEPLOY_MACHINES` 里的机器仍须有通道才可选）。
+- **没绑定就是不能发**（机器来自注册中心，所以「没绑定」= 没依据）：注册中心回答了、但这个服务**没有任何实例登记**时，不退回一份全局机器列表 ——
+  - `/api/meta?serviceId=X` 回 `deployMachines: []` + `deployMachineBlocked: "服务 X 没有绑定部署实例（机器）：先在 service_registry 登记它的实例…"`；
+  - 面板：机器下拉只剩一个占位项、**禁用「触发打包+部署」**（按钮 `title` 与红色提示行都写着同一句原因），并每 3s 重试 —— 运维在注册中心绑好之后自动放行；
+  - `POST /api/deploy-notify` / `POST /api/deploys` 一律 **400**（即使不选机器也一样：默认机器同样没有依据）。
+  注册中心**不可达**是另一回事（不知道 ≠ 没绑定）：那时退回通道列表并说明原因，不会因为注册中心抖一下就谁都发不出去。
 - **通道写法**（`;` 或换行分隔，一条一个 `id=spec`）：
   ```bash
   # local=local                                                             # 本机（缺省自带，不用写）
@@ -357,7 +361,7 @@ macOS 上打的包（Mach-O）在 Linux 远端起不来，所以**打包时就�
     ```
     执行前仍会 `cd` 到该服务的远端 runtime 并注入 `SERVICE_PORT`/`PORT`/`APP_VERSION`/`DEPLOY_MACHINE`/`RUNTIME_DIR`。
 - **跨平台产物**：打包时已知目标机器 → 取它的平台（① 注册中心登记的平台 `metadata.platform` ② 通道里显式 `platform=linux/amd64` ③ 远端 `uname -s -m` 探测兜底）→ 给服务 `build.sh` 注入 `GOOS`/`GOARCH`，制品 tag 带平台后缀（`deployment-<hash>-linux-amd64`；本机平台仍是老形式），部署前再比对包里二进制与远端平台。服务自己的 `build.sh` 要按 `GOOS/GOARCH` 产**所有**平台相关的产物（例如下载物也要按目标平台取；autonomy 的 cursor bridge 已按此修好）。
-- **API**：`POST /api/deploy-notify {"serviceId": ..., "ref": ..., "targetMachine": "43.162.117.240"}`；`POST /api/deploys` 同样接受。非空机器必须是**这个服务**可选的机器，否则 **400**：别的服务的机器 → 说明「那台机器上没有它的实例登记」（并附本服务允许列表）；已知但没通道 → 提示去配 `DEPLOY_MACHINE_TARGETS`。
+- **API**：`POST /api/deploy-notify {"serviceId": ..., "ref": ..., "targetMachine": "43.162.117.240"}`；`POST /api/deploys` 同样接受。非空机器必须是**这个服务**绑定的机器，否则 **400**：服务没绑定实例 → 「先在 service_registry 登记它的实例…」；别的服务的机器 → 「那台机器上没有它的实例登记」（附本服务允许列表）；已知但没通道 → 提示去配 `DEPLOY_MACHINE_TARGETS`。
 - **默认机器**：`DEPLOY_DEFAULT_MACHINE`；不配置则是 `local`。请求不带 `targetMachine` 时按默认机器处理 —— **默认行为不变**（本机部署路径与以前完全一致）。
 - **随任务转发**：机器记在流水线上（`GET /api/pipelines/:id` 的 `targetMachine`）并转发给部署任务（`GET /api/deploys/:id`）；部署事件里带 `部署机器=<machine>`，并作为 `DEPLOY_MACHINE` 注入服务重启时的环境。
 - **面板不会被浏览器缓存 / 已打开页面会自己跟上升级**：静态资源与 API 都回 `Cache-Control: no-store`，`/api/meta` 还带 `panelVersion`（指纹），变了页面自动刷新一次。

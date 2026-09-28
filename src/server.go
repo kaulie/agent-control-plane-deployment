@@ -1234,11 +1234,10 @@ func (s *apiServer) deployRunning(requestID string) bool {
 	return dep.State == StateRunning
 }
 
-// @Summary  元信息（路径 / 端口 / 制品后端 / 注册中心状态 / 部署机器）
+// @Summary  部署清单：每个服务在它各台机器上的部署版本
 // @Tags     meta
 // @Produce  json
-// @Param    serviceId  query  string  false  "按这个服务收窄「部署机器」列表（机器是服务的字段：本机 + 它在 service_registry 登记在案的机器）；不给 = 全局视图"
-// @Success  200  {object}  map[string]interface{}
+// @Success  200  {object}  map[string]interface{}  "DeploymentInventory"
 // @Router   /api/deployment-inventory [get]
 func (s *apiServer) handleDeploymentInventory(w http.ResponseWriter, r *http.Request) {
 	defaultMachine := s.machineCatalog().DefaultID(r.Context())
@@ -1250,13 +1249,19 @@ func (s *apiServer) handleDeploymentInventory(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, inv)
 }
 
+// @Summary  元信息（路径 / 端口 / 制品后端 / 注册中心状态 / 部署机器）
+// @Tags     meta
+// @Produce  json
+// @Param    serviceId  query  string  false  "按这个服务收窄「部署机器」列表（机器是服务的字段：本机 + 它在 service_registry 绑定在案的机器）；不给 = 全局视图"
+// @Success  200  {object}  map[string]interface{}
 // @Router   /api/meta [get]
 func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
 	example, _ := normalizeDeploymentTag("abc12345")
-	// 部署机器：`?serviceId=` 时按服务收窄（本机 + 这个服务登记在案的机器，见 MachineCatalog.For）。
+	// 部署机器：`?serviceId=` 时按服务收窄（本机 + 这个服务绑定在案的机器，见 MachineCatalog.Scope）。
 	scopeService := strings.TrimSpace(r.URL.Query().Get("serviceId"))
-	machines, machineSource, machineNote := s.machineCatalog().For(r.Context(), scopeService)
-	defaultMachine := s.machineCatalog().DefaultFor(r.Context(), scopeService)
+	scope := s.machineCatalog().Scope(r.Context(), scopeService)
+	machines, machineSource, machineNote := scope.IDs, scope.Source, scope.Note
+	defaultMachine := scope.Default
 	targets := s.machineCatalog().TargetsFor(r.Context(), scopeService)
 	machineKinds := map[string]any{}
 	for id, t := range targets {
@@ -1275,15 +1280,18 @@ func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
 	machineHint := "发起流水线时可选择「部署机器」：本次部署会**真的**落到那台机器（远端用 ssh：制品 rsync 过去、在那边重启并探活）。" +
 		"**打包按该机器的平台构建**（mac/linux 各自一份产物，tag 带平台后缀），" +
 		"不选 = 默认机器（" + defaultMachine + "）。"
-	// machineSource 以 registry 开头 = 真的按服务收窄了（For 的两种收窄结果）；
-	// 否则（带 serviceId 却还是通道列表）说明没问出来，就把原因顶到最前面 ——
-	// 别让一份「全部机器」的列表看起来像「这个服务的机器」。
+	// machineSource 以 registry 开头 = 真的按服务收窄了（Scope 的两种收窄结果）；
+	// unbound = 这个服务在注册中心没绑定实例 → 直接挡住并指路；其余（带 serviceId 却还是
+	// 通道列表）说明没问出来，把原因顶到最前面 —— 别让一份「全部机器」的列表看起来像
+	// 「这个服务的机器」。
 	switch {
+	case scope.Blocked != "":
+		machineHint = scope.Blocked
 	case scopeService == "":
 		machineHint += "列表来自部署通道 " + deployMachineTargetsEnv + "。"
 	case strings.HasPrefix(machineSource, "registry"):
 		machineHint = "「部署机器」按**服务**取自 service_registry：列出 " + scopeService +
-			" 登记在案的机器（有部署通道的才可选）+ 本机。" + machineHint
+			" 绑定在案的机器（有部署通道的才可选）+ 本机。" + machineHint
 	default:
 		machineHint = "「部署机器」没能按服务收窄：" + machineNote + "。这次列出的是全部有通道的机器。" + machineHint
 	}
@@ -1311,6 +1319,8 @@ func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
 		"defaultDeployMachine": defaultMachine,
 		// 这份列表是按哪个服务收窄的（空 = 全局视图）：面板据此判断手上的列表是否过期。
 		"deployMachineScope": scopeService,
+		// 非空 = 这个服务在注册中心没绑定部署实例 → 不能发起部署（面板禁用触发按钮并显示原因）。
+		"deployMachineBlocked": scope.Blocked,
 		// 每台可部署机器的通道（local / ssh）——面板据此标注「本机 / 远端」。
 		"deployMachineTargets": machineKinds,
 		// 只登记、没配通道的机器（不可选；配 DEPLOY_MACHINE_TARGETS 后自动可选）。
