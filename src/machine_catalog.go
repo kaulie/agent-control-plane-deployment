@@ -28,16 +28,28 @@ type MachineCatalog struct {
 	mu         sync.Mutex
 	deployable []string
 	discovered []string
-	source     string
-	note       string
-	fetchedAt  time.Time
+	// platforms 是注册中心登记的「机器 → 平台」（机器的字段，控制面只同步）。
+	platforms map[string]BuildPlatform
+	source    string
+	note      string
+	fetchedAt time.Time
 }
 
 // machineCacheTTL 是注册中心机器列表的缓存时长：面板与触发校验会频繁问，别每次都出网。
 const machineCacheTTL = 30 * time.Second
 
 func NewMachineCatalog(cfg Config, registry *ServiceRegistry) *MachineCatalog {
-	return &MachineCatalog{registry: registry, cfg: cfg, ttl: machineCacheTTL}
+	return &MachineCatalog{registry: registry, cfg: cfg, ttl: machineCacheTTL,
+		platforms: map[string]BuildPlatform{}}
+}
+
+// PlatformFor 返回注册中心给这台机器登记的平台（ok=false = 注册中心没登记/不知道这台机器）。
+func (c *MachineCatalog) PlatformFor(ctx context.Context, id string) (BuildPlatform, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.refresh(ctx)
+	p, ok := c.platforms[id]
+	return p, ok
 }
 
 // List 返回**可部署**的机器（面板下拉的选项）+ 来源 + 说明。
@@ -148,13 +160,23 @@ func (c *MachineCatalog) refresh(ctx context.Context) {
 	c.deployable, c.source = c.targetIDs()
 
 	// 发现：注册中心的实例主机（数据源统一在注册中心）+ DEPLOY_MACHINES 补充。
+	// 顺带同步每台机器登记的平台（实例 metadata.platform）——打包时按它构建。
 	var fromRegistry []string
 	var regErr error
+	platforms := map[string]BuildPlatform{}
 	if c.registry.Enabled() {
-		fromRegistry, regErr = c.registry.DeployMachines(ctx)
+		var machines []RegistryMachine
+		machines, regErr = c.registry.SnapshotMachines(ctx)
+		for _, m := range machines {
+			fromRegistry = append(fromRegistry, m.ID)
+			if !m.Platform.IsZero() {
+				platforms[m.ID] = m.Platform
+			}
+		}
 	} else {
 		regErr = fmt.Errorf("SERVICE_REGISTRY_URL 未配置")
 	}
+	c.platforms = platforms
 	known := map[string]bool{}
 	for _, id := range c.deployable {
 		known[id] = true

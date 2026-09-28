@@ -246,12 +246,23 @@ curl -sS http://127.0.0.1:4220/api/pipelines/<requestId>
 
 macOS 上打的包（Mach-O）在 Linux 远端起不来，所以**打包时就按目标机器的平台构建**，而不是把本机产物推过去：
 
-- **目标平台怎么定**：① 部署通道里显式写 `platform=linux/amd64` → 直接用它；② 远端机器 → ssh `uname -s -m` 探测（结果按机器缓存 5 分钟）；③ 本机 → 控制面自己的 `GOOS/GOARCH`。
+- **平台是机器的一个字段，真源在 service_registry**：机器（= 某个服务实例所在的主机）在注册中心登记时带上
+  `metadata.platform`（如 `linux/amd64`；也认 `metadata.os` + `metadata.arch`）。控制面只是**同步**它
+  （`/api/meta` 的 `deployMachineTargets[].platform`），不在部署通道里另配、也不需要触发时额外传字段 ——
+  触发时选中部署机器，平台就随之确定。
+  注册中心没登记时，才用 `ssh uname -s -m` 探测兜底（时间线里会写明「注册中心没登记平台，探测兜底」）。
+  本机机器则是控制面自己的平台。
 - **构建**：非本机平台时给服务的 `build.sh` 注入 `GOOS`/`GOARCH`（Go 项目天然支持；这也是约定 —— 服务若下载平台相关的工具，要按这两个变量取对应平台的版本）：
   ```bash
-  # 通道里可以显式声明平台（省掉一次 ssh 探测）
-  DEPLOY_MACHINE_TARGETS='43.162.117.240=ssh agent-oversea /home/ubuntu/runtime platform=linux/amd64 restart=sudo systemctl restart autonomyd'
+  # 在注册中心给这台机器登记平台（以及可选的友好名）：声明式整组对齐该服务的实例
+  curl -sS -X PUT http://127.0.0.1:4240/v1/namespaces/default/services/autonomy/instances \
+    -H 'content-type: application/json' \
+    -d '{"instances":[
+          {"host":"127.0.0.1","port":4300},
+          {"host":"43.162.117.240","port":4300,"metadata":{"platform":"linux/amd64"}}
+        ]}'
   ```
+  通道里**不再**需要（也不接受）`platform=`：那是机器的字段，不是部署配置。
 - **制品 tag 带平台维度**（同一个 commit 的两份产物不互相覆盖）：
   ```
   本机平台      deployment-<hash>                 （与历史一致：老制品/面板/历史都不受影响）

@@ -35,10 +35,10 @@ func newPlatformResolver(remote RemoteRunner) *platformResolver {
 }
 
 // Resolve 返回这台机器上产物应当构建的平台（+ 判定依据，写进时间线）。
+//
+// 平台是**机器的字段**，真源在 service_registry（实例 metadata.platform）：调用方先用
+// catalog.PlatformFor 拿注册中心登记的，拿不到才用这里的 ssh 探测兜底。
 func (r *platformResolver) Resolve(target MachineTarget) (BuildPlatform, string) {
-	if p := target.BuildPlatformFromTarget(); !p.IsZero() {
-		return p, "通道里声明 platform=" + p.String()
-	}
 	if !target.Remote() {
 		return LocalBuildPlatform(), "本机平台"
 	}
