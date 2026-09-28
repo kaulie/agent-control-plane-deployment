@@ -140,6 +140,41 @@ test('service edit page: 旧契约里的完整 loopback URL 归一后保存（�
   assert.equal(JSON.parse(put.body).healthUrl, 'http://127.0.0.1:4211/health', '原样提交，服务端归一成路径');
 });
 
+test('service edit page: runtimeDir 可按平台（mac/linux）分开配', async (t) => {
+  const { dom, flush, puts } = makePage('web-cursor', {
+    payload: {
+      registry: { url: 'http://127.0.0.1:4240', enabled: true, ok: true, services: 1 },
+      services: [{
+        serviceId: 'web-cursor', name: 'Web Cursor',
+        runtimeDir: '/Users/gaolei/runtime/web-cursor',
+        runtimeDirs: { linux: '/home/ubuntu/runtime/web-cursor' },
+        healthUrl: '/health', port: 4211,
+        startCmd: 'start', stopCmd: 'stop', restartCmd: 'restart',
+        defaultBranch: 'main', registered: true, configured: true,
+      }],
+    },
+  });
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+  await flush();
+
+  assert.equal(doc.querySelector('#svc-runtimeDir').value, '/Users/gaolei/runtime/web-cursor');
+  assert.equal(doc.querySelector('#svc-runtimeDir-darwin').value, '', 'macOS 没配就是空（用默认）');
+  assert.equal(doc.querySelector('#svc-runtimeDir-linux').value, '/home/ubuntu/runtime/web-cursor');
+  const hint = doc.querySelector('#svc-runtimeDir-hint').textContent;
+  assert.match(hint, /按平台分开配/, '要说明分平台怎么生效：' + hint);
+  assert.match(hint, /Linux 机器/, hint);
+
+  // 填上 macOS 专属路径并保存 → PUT 里带 runtimeDirs
+  doc.querySelector('#svc-runtimeDir-darwin').value = '/tmp/mac-cursor';
+  doc.querySelector('#svc-runtimeDir-darwin').dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  doc.querySelector('#svc-save').click();
+  await flush();
+  const body = JSON.parse(puts().at(-1).body);
+  assert.deepEqual(body.runtimeDirs, { darwin: '/tmp/mac-cursor', linux: '/home/ubuntu/runtime/web-cursor' });
+  assert.equal(body.runtimeDir, '/Users/gaolei/runtime/web-cursor', '默认仍随 runtimeDir 提交');
+});
+
 test('service edit page: loads the selected service and locks registry-owned fields', async (t) => {
   const { dom, flush, calls } = makePage('web-cursor');
   t.after(() => dom.window.close());

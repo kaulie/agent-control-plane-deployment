@@ -223,7 +223,7 @@ func TestServicePortPrecedence(t *testing.T) {
 		}
 	}
 
-	env := serviceCmdEnv(ServiceContract{Port: 4212, HealthURL: "http://127.0.0.1:4211/health", RuntimeDir: "/tmp/x"}, nil)
+	env := serviceCmdEnv(ServiceContract{Port: 4212, HealthURL: "http://127.0.0.1:4211/health", RuntimeDir: "/tmp/x"}, "/tmp/x", nil)
 	joined := "\n" + strings.Join(env, "\n") + "\n"
 	for _, want := range []string{"\nSERVICE_PORT=4212\n", "\nPORT=4212\n", "\nRUNTIME_DIR=/tmp/x\n"} {
 		if !strings.Contains(joined, want) {
@@ -232,7 +232,7 @@ func TestServicePortPrecedence(t *testing.T) {
 	}
 
 	// 老契约（未指定 port）也必须有 SERVICE_PORT（按 healthUrl 推导），不能漏注入。
-	legacy := "\n" + strings.Join(serviceCmdEnv(ServiceContract{HealthURL: "http://127.0.0.1:4211/health"}, nil), "\n") + "\n"
+	legacy := "\n" + strings.Join(serviceCmdEnv(ServiceContract{HealthURL: "http://127.0.0.1:4211/health"}, "", nil), "\n") + "\n"
 	if !strings.Contains(legacy, "\nSERVICE_PORT=4211\n") {
 		t.Fatalf("legacy contract must still get SERVICE_PORT:\n%s", legacy)
 	}

@@ -116,6 +116,10 @@ function fillForm(svc) {
   $('#svc-serviceId').disabled = true; // serviceId always comes from the list
   $('#svc-name').value = svc.name || reg.description || '';
   $('#svc-runtimeDir').value = svc.runtimeDir || '';
+  // 按平台（mac/linux）覆盖的路径：部署时按目标机器平台选。
+  const perOS = svc.runtimeDirs || {};
+  $('#svc-runtimeDir-darwin').value = perOS.darwin || '';
+  $('#svc-runtimeDir-linux').value = perOS.linux || '';
   $('#svc-healthUrl').value = svc.healthUrl || '';
   $('#svc-port').value = svc.port || '';
   $('#svc-startCmd').value = svc.startCmd || '';
@@ -131,6 +135,7 @@ function fillForm(svc) {
     ? ''
     : '⚠ service_registry 未返回该服务（未登记 / 注册中心不可用）：已配置的仍可编辑，新建会被拒绝。');
   renderURLHint();
+  renderRuntimeDirHint();
   setFormEnabled(true);
 }
 
@@ -157,6 +162,27 @@ async function loadService() {
 }
 
 
+// runtimeDir 分平台：默认（本机）+ macOS / Linux 各自的路径。部署时按**目标机器**的平台选，
+// 远端的优先级是「该平台的路径 > 部署通道约定的 <remote-home>/<serviceId> > 默认」。
+function runtimeDirForPlatform(os) {
+  const map = { darwin: '#svc-runtimeDir-darwin', linux: '#svc-runtimeDir-linux' };
+  const v = $(map[os]) ? $(map[os]).value.trim() : '';
+  if (!v) return '';
+  return { darwin: 'macOS', linux: 'Linux' }[os] + ' 机器：' + v;
+}
+
+function renderRuntimeDirHint() {
+  const hint = $('#svc-runtimeDir-hint');
+  if (!hint) return;
+  const parts = ['本机默认 ' + ($('#svc-runtimeDir').value.trim() || '—')];
+  for (const os of ['darwin', 'linux']) {
+    const v = runtimeDirForPlatform(os);
+    if (v) parts.push(v);
+  }
+  hint.textContent = 'runtimeDir 可按平台分开配（' + parts.join(' · ') +
+    '）：部署时按目标机器平台选 —— 远端优先用该平台的路径，没配才用部署通道里的 <远端家目录>/<serviceId>，最后才回落到默认。';
+}
+
 function serviceFormBody() {
   const serviceID = $('#svc-serviceId').value.trim();
   const name = $('#svc-name').value.trim();
@@ -179,17 +205,26 @@ function serviceFormBody() {
   if (holder) {
     return { error: `端口 ${port} 已被服务 ${holder.serviceId} 占用；服务端口必须唯一，请换一个` };
   }
+  const runtimeDirs = {};
+  if ($('#svc-runtimeDir-darwin').value.trim()) runtimeDirs.darwin = $('#svc-runtimeDir-darwin').value.trim();
+  if ($('#svc-runtimeDir-linux').value.trim()) runtimeDirs.linux = $('#svc-runtimeDir-linux').value.trim();
   return {
     serviceId: serviceID,
     body: {
       // gitRepoUrl 不在这里发送：它来自 service_registry，本机不能改（后端也会拒绝改）。
       name, runtimeDir, healthUrl, port, startCmd, stopCmd, restartCmd,
+      runtimeDirs,
       defaultBranch: $('#svc-defaultBranch').value.trim(),
       restartNotifyUrl: $('#svc-restartNotifyUrl').value.trim(),
       restartPollUrl: $('#svc-restartPollUrl').value.trim(),
       gracefulRestartMaxWaitMs: Number($('#svc-gracefulRestartMaxWaitMs').value) || 0,
     },
   };
+}
+
+for (const id of ['#svc-runtimeDir', '#svc-runtimeDir-darwin', '#svc-runtimeDir-linux']) {
+  const el = $(id);
+  if (el) el.addEventListener('input', renderRuntimeDirHint);
 }
 
 for (const id of ['#svc-healthUrl', '#svc-restartNotifyUrl', '#svc-restartPollUrl', '#svc-port']) {
