@@ -214,8 +214,9 @@ async function checkPanelVersion() {
 }
 
 // ---- 发起流水线：「部署机器」选项 ------------------------------------------
-// 本次部署落到哪台机器（目标主机/agent）。机器列表来自 /api/meta deployMachines；
-// 不选 / 选默认机器时请求体不带 targetMachine，服务端按默认机器处理。
+// 本次部署落到哪台机器（目标主机/agent）。机器是**服务的字段**：列表按选中的服务取自
+// GET /api/meta?serviceId=<服务>（= 本机 + 这个服务在 service_registry 登记在案的机器，
+// 见 MachineCatalog.For）；不选 / 选默认机器时请求体不带 targetMachine，服务端按默认机器处理。
 //
 // 列表拉不到时（升级/重启窗口、网络抖动）也必须给出一个能用的下拉：留空会让
 // 「部署机器」看起来是坏的，而且空着不会自己恢复（发起子页不在 3s 轮询里）。
@@ -223,34 +224,59 @@ async function checkPanelVersion() {
 const FALLBACK_DEPLOY_MACHINE = 'local'; // 与服务端 defaultDeployMachine 一致
 let deployMachines = [];
 let defaultDeployMachine = '';
-// 服务端给的机器说明（含数据源：来自 service-registry 的实例主机）。有就用它，
+// 服务端给的机器说明（含数据源：按服务取自 service-registry）。有就用它，
 // 免得面板自己再编一份容易过时的文案。
 let deployMachineHintText = '';
 // 每台机器的通道（local / ssh）——用来在下拉里标出「本机 / 远端」。
 let deployMachineTargets = {};
 let machineListLoaded = false;
 let machineFetchInFlight = false;
+// 手上这份列表是按哪个服务拉的（'' = 全局视图）：切换服务后要重拉。
+let deployMachineScope = null;
+// 最近一次**想要**的 scope：飞行期间用户又切了服务时，用它决定要不要再拉一轮。
+let machineScopeWanted = null;
+
+function currentTriggerService() {
+  const sel = $('#pipe-service');
+  return sel ? sel.value : '';
+}
+
+async function fetchDeployMachineOption(scope) {
+  const m = await apiGet('/api/meta' + (scope ? '?serviceId=' + encodeURIComponent(scope) : ''));
+  notePanelVersion(m);
+  deployMachineHintText = m.deployMachineHint || '';
+  deployMachineTargets = (m.deployMachineTargets && typeof m.deployMachineTargets === 'object') ? m.deployMachineTargets : {};
+  deployMachines = Array.isArray(m.deployMachines) ? m.deployMachines.filter((id) => id) : [];
+  defaultDeployMachine = m.defaultDeployMachine || (deployMachines[0] || '');
+  deployMachineScope = typeof m.deployMachineScope === 'string' ? m.deployMachineScope : scope;
+  machineListLoaded = deployMachines.length > 0;
+}
 
 async function refreshDeployMachineOption() {
-  // init 与自愈（healTriggerOptions）可能同时来一次，去重。
+  machineScopeWanted = currentTriggerService();
+  // 同一个 scope 且已经拉到过：不用再出网（3s 轮询会反复调到这里）。
+  if (machineListLoaded && deployMachineScope === machineScopeWanted) return;
+  // 已经在飞：它结束时会发现 scope 变了，按新服务再拉一轮，别把这次请求丢掉。
   if (machineFetchInFlight) return;
   machineFetchInFlight = true;
   try {
-    const m = await apiGet('/api/meta');
-    notePanelVersion(m);
-    deployMachineHintText = m.deployMachineHint || '';
-    deployMachineTargets = (m.deployMachineTargets && typeof m.deployMachineTargets === 'object') ? m.deployMachineTargets : {};
-    deployMachines = Array.isArray(m.deployMachines) ? m.deployMachines.filter((id) => id) : [];
-    defaultDeployMachine = m.defaultDeployMachine || (deployMachines[0] || '');
-    machineListLoaded = deployMachines.length > 0;
-  } catch {
-    deployMachines = [];
-    defaultDeployMachine = '';
-    machineListLoaded = false;
+    let scope = machineScopeWanted;
+    for (;;) {
+      try {
+        await fetchDeployMachineOption(scope);
+      } catch {
+        deployMachines = [];
+        defaultDeployMachine = '';
+        deployMachineScope = scope;
+        machineListLoaded = false;
+      }
+      renderDeployMachineOption();
+      if (machineScopeWanted === scope) break;
+      scope = machineScopeWanted;
+    }
   } finally {
     machineFetchInFlight = false;
   }
-  renderDeployMachineOption();
 }
 
 // machineChannelLabel：机器走哪条通道 —— 本机还是远端 ssh（远端 = 真的会把制品送过去
@@ -266,17 +292,20 @@ function machineChannelLabel(id) {
 function renderDeployMachineOption() {
   const sel = $('#pipe-machine');
   if (!sel) return;
+  const prev = sel.value;
   const known = deployMachines.length > 0;
   const list = known ? deployMachines : [defaultDeployMachine || FALLBACK_DEPLOY_MACHINE];
   const dflt = defaultDeployMachine || list[0];
   sel.innerHTML = list
     .map((id) => `<option value="${esc(id)}">${esc(id)}${machineChannelLabel(id)}${id === dflt ? '（默认）' : ''}</option>`)
     .join('');
-  sel.value = dflt;
+  // 切服务后如果原来那台机器还在这个服务的列表里就保持选中（换个服务不该悄悄改回默认机器），
+  // 否则回到默认机器。
+  sel.value = list.includes(prev) ? prev : dflt;
   const hint = $('#pipe-machine-hint');
   if (hint) {
     if (known && deployMachineHintText) {
-      hint.textContent = deployMachineHintText; // 服务端文案里带着数据源
+      hint.textContent = deployMachineHintText; // 服务端文案里带着数据源与作用域
     } else {
       hint.textContent = known
         ? '部署机器：本次部署落到哪台机器；不选/默认（' + dflt + '）即本机。'
@@ -352,6 +381,10 @@ function populateServiceSelects() {
       services.map((s) => `<option value="${esc(s.serviceId)}">${esc(s.serviceId)}</option>`).join('');
     artSel.value = prev && services.find((s) => s.serviceId === prev) ? prev : '';
   }
+  // 机器是服务的字段：服务列表（重）填好之后，机器下拉要按当前选中的服务重拉一次 ——
+  // 首次渲染时它还是「全局视图」或空。
+  const pipeSel = $('#pipe-service');
+  if (pipeSel && deployMachineScope !== pipeSel.value) refreshDeployMachineOption();
 }
 
 // ---- 服务契约 (service contracts) ------------------------------------------
@@ -1071,6 +1104,9 @@ async function refreshArtifacts() {
 
 $('#art-service').addEventListener('change', refreshArtifacts);
 $('#art-refresh').addEventListener('click', refreshArtifacts);
+
+// 机器是服务的字段：选中的服务一换，「部署机器」下拉就换成那个服务的机器。
+$('#pipe-service').addEventListener('change', () => refreshDeployMachineOption());
 
 $('#art-scan').addEventListener('click', async () => {
   const serviceId = $('#art-service').value;

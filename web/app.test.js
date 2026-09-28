@@ -50,9 +50,15 @@ function makePanel(options = {}) {
   // Test-visible knobs: metaError=true 让 /api/meta 一直失败，'first' 只失败第一次；
   // 测完可以让用例把它关掉（服务恢复）验证面板自愈。
   const state = { metaError: options.metaError || false, metaCalls: 0 };
-  const payload = (pathname) => {
+  // 机器是服务的字段：/api/meta?serviceId=<服务> 可以给每个服务一份不同的机器列表。
+  const metaByService = options.metaByService || {};
+  const payload = (pathname, search = '') => {
     if (pathname === '/api/services') return servicesPayload;
-    if (pathname === '/api/meta') return metaPayload;
+    if (pathname === '/api/meta') {
+      const id = new URLSearchParams(search).get('serviceId') || '';
+      if (id && metaByService[id]) return metaByService[id];
+      return metaPayload;
+    }
     if (pathname === '/api/deploys') return { deploys: [], total: 0, page: 1, pageSize: 20 };
     if (pathname === '/api/pipelines') return { pipelines: [], total: 0, page: 1, pageSize: 20 };
     if (pathname === '/health') return { ok: true };
@@ -91,7 +97,7 @@ function makePanel(options = {}) {
         };
       }
     }
-    const data = payload(u.pathname);
+    const data = payload(u.pathname, u.search);
     return {
       ok: true,
       status: 200,
@@ -575,6 +581,76 @@ test('pipeline trigger: 机器下拉标出本机/远端通道', async (t) => {
   await flush();
   const req = triggerRequest(requests);
   assert.equal(JSON.parse(req.body).targetMachine, '43.162.117.240', '远端机器随请求发出');
+});
+
+test('pipeline trigger: 机器列表按服务收窄，换服务就换列表', async (t) => {
+  // 这个 bug 的真实形态：所有服务的「部署机器」下拉都一样（全局列表），
+  // 但机器是**服务的字段** —— 应该只列这个服务在 service_registry 登记在案的机器 + 本机。
+  const machinesFor = (id, ids) => ({
+    deployMachines: ids,
+    defaultDeployMachine: 'local',
+    deployMachineScope: id,
+    deployMachineTargets: {
+      local: { kind: 'local' },
+      '43.162.117.240': { kind: 'ssh', host: '43.162.117.240', runtimeHome: '/home/ubuntu/runtime', platform: 'linux/amd64' },
+    },
+    deployMachineHint: '「部署机器」按**服务**取自 service_registry：列出 ' + id + ' 登记在案的机器…',
+  });
+  const { dom, flush, requests } = makePanel({
+    // 不带 serviceId 的全局视图：谎话般地把两台都列出来（面板不该用它）
+    meta: { deployMachines: ['local', '43.162.117.240'], defaultDeployMachine: 'local' },
+    metaByService: {
+      'web-cursor': machinesFor('web-cursor', ['local', '43.162.117.240']),
+      acp: machinesFor('acp', ['local']),
+    },
+  });
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+  await flush();
+
+  const metaCalls = () => requests.filter((r) => r.pathname === '/api/meta');
+  const serviceSel = doc.querySelector('#pipe-service');
+  const machineSel = doc.querySelector('#pipe-machine');
+  assert.equal(serviceSel.value, 'web-cursor', '发起卡片默认选第一个已配置服务');
+  // 首次渲染就按服务拉（不能停在全局列表上）
+  assert.ok(metaCalls().some((r) => r.search.includes('serviceId=web-cursor')),
+    '要按选中的服务拉机器列表：' + JSON.stringify(metaCalls().map((r) => r.search)));
+  assert.deepEqual(Array.from(machineSel.options).map((o) => o.value), ['local', '43.162.117.240'],
+    'web-cursor 的机器 = 它登记在案的机器 + 本机');
+  assert.match(doc.querySelector('#pipe-machine-hint').textContent, /按\*\*服务\*\*取自 service_registry/,
+    '说明里写明列表是按服务取的');
+
+  // 换成别的服务 → 机器列表跟着变（这台机器上没有它的实例，就不该出现在下拉里）
+  serviceSel.value = 'acp';
+  serviceSel.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  await flush();
+  await flush();
+  assert.deepEqual(Array.from(machineSel.options).map((o) => o.value), ['local'],
+    'acp 只在本地跑 → 下拉里只有 local');
+  assert.ok(metaCalls().some((r) => r.search.includes('serviceId=acp')),
+    '切服务要重拉那个服务的机器列表');
+
+  // 换服务不该把「这次部署去哪台机器」悄悄改掉：这台机器还在新服务列表里时保持选中。
+  serviceSel.value = 'web-cursor';
+  serviceSel.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  await flush();
+  await flush();
+  machineSel.value = '43.162.117.240';
+  serviceSel.value = 'acp';
+  serviceSel.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  await flush();
+  await flush();
+  assert.equal(machineSel.value, 'local', '新服务的列表里没有那台机器 → 回到默认机器');
+
+  // 3s 轮询反复调到这里时，同一个服务的列表不该反复出网（checkPanelVersion 的
+  // 无服务 /api/meta 不算：那是面板版本指纹，不参与机器列表）。
+  const scopedCalls = () => metaCalls().filter((r) => r.search.includes('serviceId=')).length;
+  const before = scopedCalls();
+  doc.querySelector('[data-tab="pipelines"]').click();
+  doc.querySelector('[data-tab="pipelines"]').click();
+  await flush();
+  assert.equal(scopedCalls(), before,
+    '同一个服务的列表已拉到就不再拉（轮询里不能每次都出网）');
 });
 
 test('pipeline trigger: 机器列表的说明用服务端文案（写明数据源）', async (t) => {
