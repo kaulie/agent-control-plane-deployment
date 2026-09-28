@@ -242,6 +242,26 @@ curl -sS http://127.0.0.1:4220/api/pipelines/<requestId>
 - **作用范围**：只作用于打包命令（`git fetch` + 服务自己的 `build.sh`）——它们按请求换 env 是安全的子进程。制品**下载**走进程内的 HTTP client，只认进程启动时的 env（`scripts/start.sh` 里加载 `data/proxy.env` 即可全局生效，服务重启后生效）。代理 URL 里的 `user:pass@` 会在事件里打码。
 - **默认行为不变**：不勾选时完全不注入代理 env，和以前一模一样。
 
+### runtimeDir 按平台（mac / linux）配置
+
+同一个服务在本机（macOS）和 Linux 机器上常常落在**不同目录**（`/Users/gaolei/runtime/x` vs `/home/ubuntu/runtime/x`），所以契约支持分平台：
+
+```jsonc
+{
+  "runtimeDir": "/Users/gaolei/runtime/web-cursor",        // 默认（本机平台用；老契约就是它）
+  "runtimeDirs": { "darwin": "…", "linux": "/home/ubuntu/runtime/web-cursor" }
+}
+```
+
+- **部署时按目标机器的平台选**：本机 = 控制面自己的 `GOOS`；远端 = 预检 probe 出来的 `uname -s`（键名归一：`macOS`/`mac` → `darwin`）。
+- **远端优先级**（有意如此）：
+  1. 契约里该平台的显式路径（`runtimeDirs.linux`）；
+  2. 部署通道约定的 `<remote-runtime-home>/<serviceId>`（那台机器自己的布局）；
+  3. 契约默认 `runtimeDir` —— 最后兜底（默认是「本机」语义的路径，直接拿去远端几乎一定是错的，所以排在最后）。
+- 选定后的目录会用于：制品 rsync 落点、`VERSION`/`DEPLOYMENT` 标记、`restartCmd` 的工作目录、注入的 `RUNTIME_DIR`/`SERVICE_PORT`、watchdog 暂停标记（本机），以及部署并发单元（同一目录不并发）。
+- **面板**：配置页有三个字段 —— `runtimeDir（默认：本机平台用）`、`runtimeDir（macOS 机器，可选）`、`runtimeDir（Linux 机器，可选）`，下面一行说明当前生效的组合。
+- **老库**：`services` 表自动补 `runtime_dirs` 列（`{}`），老契约按默认路径跑，行为不变。
+
 ### 服务契约里的 URL：只填路径（host+port 部署时拼）
 
 契约里的 `healthUrl` / `restartNotifyUrl` / `restartPollUrl` **只存路径**（例如 `/health`、`/api/ops/restart-notify`），端口只存一处（`port`，必填、全局唯一）。**真正请求的地址在部署时按目标机器拼**：

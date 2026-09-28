@@ -1359,6 +1359,13 @@
                 "runtimeDir": {
                     "type": "string"
                 },
+                "runtimeDirs": {
+                    "description": "RuntimeDirs 按平台覆盖 runtimeDir（键归一成 darwin / linux）。部署时按**目标机器**\n的平台选（本机 = 控制面 GOOS，远端 = 预检 probe 的 uname）；没配的平台回落 RuntimeDir。",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
                 "serviceId": {
                     "type": "string"
                 },
@@ -1413,6 +1420,13 @@
                 },
                 "runtimeDir": {
                     "type": "string"
+                },
+                "runtimeDirs": {
+                    "description": "RuntimeDirs 按平台覆盖 runtimeDir（键归一成 darwin / linux）。部署时按**目标机器**\n的平台选（本机 = 控制面 GOOS，远端 = 预检 probe 的 uname）；没配的平台回落 RuntimeDir。",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
                 },
                 "serviceId": {
                     "type": "string"
@@ -1516,6 +1530,13 @@
                 },
                 "runtimeDir": {
                     "type": "string"
+                },
+                "runtimeDirs": {
+                    "description": "RuntimeDirs 按平台覆盖 runtimeDir（darwin / linux）。",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
                 },
                 "startCmd": {
                     "type": "string"

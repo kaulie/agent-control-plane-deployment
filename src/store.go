@@ -26,7 +26,10 @@ type ServiceContract struct {
 	ServiceID  string `json:"serviceId"`
 	Name       string `json:"name"`
 	RuntimeDir string `json:"runtimeDir"`
-	HealthURL  string `json:"healthUrl"`
+	// RuntimeDirs 按平台覆盖 runtimeDir（键归一成 darwin / linux）。部署时按**目标机器**
+	// 的平台选（本机 = 控制面 GOOS，远端 = 预检 probe 的 uname）；没配的平台回落 RuntimeDir。
+	RuntimeDirs map[string]string `json:"runtimeDirs,omitempty"`
+	HealthURL   string            `json:"healthUrl"`
 	// Port 是部署契约里显式声明的服务端口（本地运行端口，1..65535）。
 	// 0 = 未设置 → 仍按 HealthURL 里的端口推导（老契约行为不变）。它只用于给
 	// start/stop/restart 脚本传 PORT；探活仍然走 HealthURL。
@@ -119,6 +122,7 @@ func (s *Store) migrate() error {
         service_id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         runtime_dir TEXT NOT NULL,
+        runtime_dirs TEXT NOT NULL DEFAULT '{}',
         health_url TEXT NOT NULL,
         port INTEGER NOT NULL DEFAULT 0,
         start_cmd TEXT NOT NULL,
@@ -192,7 +196,7 @@ func (s *Store) ServiceByPort(port int, excludeServiceID string) (*ServiceContra
 		return nil, nil
 	}
 	row := s.db.QueryRow(`
-		SELECT service_id, name, runtime_dir, health_url, port,
+		SELECT service_id, name, runtime_dir, runtime_dirs, health_url, port,
 		       start_cmd, stop_cmd, restart_cmd, watchdog_enabled,
 		       restart_notify_url, restart_poll_url, graceful_max_wait_ms,
 		       git_repo_url, default_branch,
@@ -214,6 +218,8 @@ func (s *Store) ensureServiceExtraColumns() error {
 		"git_repo_url":         `ALTER TABLE services ADD COLUMN git_repo_url TEXT NOT NULL DEFAULT ''`,
 		"default_branch":       `ALTER TABLE services ADD COLUMN default_branch TEXT NOT NULL DEFAULT 'main'`,
 		"port":                 `ALTER TABLE services ADD COLUMN port INTEGER NOT NULL DEFAULT 0`,
+		// 老库补列：按平台（darwin/linux）覆盖 runtimeDir。
+		"runtime_dirs": `ALTER TABLE services ADD COLUMN runtime_dirs TEXT NOT NULL DEFAULT '{}'`,
 	})
 }
 
@@ -287,15 +293,16 @@ func (s *Store) UpsertService(input ServiceContract) (ServiceContract, error) {
 
 	_, err := s.db.Exec(`
 		INSERT INTO services (
-		  service_id, name, runtime_dir, health_url, port,
+		  service_id, name, runtime_dir, runtime_dirs, health_url, port,
 		  start_cmd, stop_cmd, restart_cmd, watchdog_enabled,
 		  restart_notify_url, restart_poll_url, graceful_max_wait_ms,
 		  git_repo_url, default_branch,
 		  created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(service_id) DO UPDATE SET
 		  name = excluded.name,
 		  runtime_dir = excluded.runtime_dir,
+		  runtime_dirs = excluded.runtime_dirs,
 		  health_url = excluded.health_url,
 		  port = excluded.port,
 		  start_cmd = excluded.start_cmd,
@@ -308,7 +315,8 @@ func (s *Store) UpsertService(input ServiceContract) (ServiceContract, error) {
 		  git_repo_url = excluded.git_repo_url,
 		  default_branch = excluded.default_branch,
 		  updated_at = excluded.updated_at`,
-		row.ServiceID, row.Name, row.RuntimeDir, row.HealthURL, normalizePort(row.Port),
+		row.ServiceID, row.Name, row.RuntimeDir, encodeRuntimeDirs(row.RuntimeDirs),
+		row.HealthURL, normalizePort(row.Port),
 		row.StartCmd, row.StopCmd, row.RestartCmd, 0,
 		row.RestartNotifyURL, row.RestartPollURL, row.GracefulMaxWaitMs,
 		row.GitRepoURL, defaultBranchOrMain(row.DefaultBranch),
@@ -327,7 +335,7 @@ func normalizePort(p int) int {
 
 func (s *Store) GetService(serviceID string) (*ServiceContract, error) {
 	row := s.db.QueryRow(`
-		SELECT service_id, name, runtime_dir, health_url, port,
+		SELECT service_id, name, runtime_dir, runtime_dirs, health_url, port,
 		       start_cmd, stop_cmd, restart_cmd, watchdog_enabled,
 		       restart_notify_url, restart_poll_url, graceful_max_wait_ms,
 		       git_repo_url, default_branch,
@@ -371,7 +379,7 @@ func (s *Store) NormalizeServiceURLs() (int, error) {
 
 func (s *Store) ListServices() ([]ServiceContract, error) {
 	rows, err := s.db.Query(`
-		SELECT service_id, name, runtime_dir, health_url, port,
+		SELECT service_id, name, runtime_dir, runtime_dirs, health_url, port,
 		       start_cmd, stop_cmd, restart_cmd, watchdog_enabled,
 		       restart_notify_url, restart_poll_url, graceful_max_wait_ms,
 		       git_repo_url, default_branch,
@@ -566,8 +574,9 @@ type scannable interface {
 func scanService(row scannable) (*ServiceContract, error) {
 	var svc ServiceContract
 	var watchdog int
+	var runtimeDirs string
 	err := row.Scan(
-		&svc.ServiceID, &svc.Name, &svc.RuntimeDir, &svc.HealthURL, &svc.Port,
+		&svc.ServiceID, &svc.Name, &svc.RuntimeDir, &runtimeDirs, &svc.HealthURL, &svc.Port,
 		&svc.StartCmd, &svc.StopCmd, &svc.RestartCmd, &watchdog,
 		&svc.RestartNotifyURL, &svc.RestartPollURL, &svc.GracefulMaxWaitMs,
 		&svc.GitRepoURL, &svc.DefaultBranch,
@@ -577,6 +586,7 @@ func scanService(row scannable) (*ServiceContract, error) {
 		return nil, err
 	}
 	svc.DefaultBranch = defaultBranchOrMain(svc.DefaultBranch)
+	svc.RuntimeDirs = decodeRuntimeDirs(runtimeDirs)
 	return &svc, nil
 }
 

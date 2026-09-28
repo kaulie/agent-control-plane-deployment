@@ -162,7 +162,7 @@ func servicePort(service ServiceContract) string {
 	return portFromHealthURL(service.HealthURL)
 }
 
-func serviceCmdEnv(service ServiceContract, extra map[string]string) []string {
+func serviceCmdEnv(service ServiceContract, runtimeDir string, extra map[string]string) []string {
 	base := os.Environ()
 	envMap := make(map[string]string, len(base)+8)
 	for _, e := range base {
@@ -174,7 +174,11 @@ func serviceCmdEnv(service ServiceContract, extra map[string]string) []string {
 		envMap[k] = v
 	}
 	port := servicePort(service)
-	envMap["RUNTIME_DIR"] = service.RuntimeDir
+	// RUNTIME_DIR 是**这次部署**用的目录（按目标机器平台选的，不一定是契约默认值）。
+	if strings.TrimSpace(runtimeDir) == "" {
+		runtimeDir = service.LocalRuntimeDir()
+	}
+	envMap["RUNTIME_DIR"] = runtimeDir
 	envMap["SERVICE_PORT"] = port // 约定的正式字段名
 	envMap["PORT"] = port         // 兼容：老脚本读 PORT
 	delete(envMap, "HOST")
@@ -277,15 +281,33 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		})
 		return
 	}
-	// 远端机器的 runtime 目录按约定 = <remote-runtime-home>/<serviceId>。
+	// runtime 目录按**目标机器**的平台选：本机 = 控制面自己的 GOOS；远端 = 预检 probe 的
+	// uname。契约里 runtimeDirs{darwin,linux} 优先，没配这个平台就回落默认 runtimeDir；
+	// 远端再兜通道约定的 <remote-runtime-home>/<serviceId>。
 	remotePlatform := ""
-	runtimeDir := service.RuntimeDir
+	runtimeDir := ""
 	if target.Remote() {
-		runtimeDir = target.RuntimeDirFor(job.ServiceID)
+		probe, perr := remoteProbe(store, *job, target, remote)
+		if perr != nil {
+			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{State: StateFailed, Error: perr.Error()})
+			return
+		}
+		remotePlatform = probe.platform
+		runtimeDir = service.RuntimeDirForRemote(probe.OS, job.ServiceID, target)
 		if runtimeDir == "" {
 			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 				State: StateFailed,
-				Error: "deploy machine " + machine + " has an ssh channel without a remote runtime home",
+				Error: "no runtime dir for machine " + machine +
+					": set runtimeDir/runtimeDirs on the contract or a remote runtime home in the deploy channel",
+			})
+			return
+		}
+	} else {
+		runtimeDir = service.LocalRuntimeDir()
+		if runtimeDir == "" {
+			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
+				State: StateFailed,
+				Error: "service contract has no runtimeDir",
 			})
 			return
 		}
@@ -298,15 +320,12 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 	_ = store.AddDeployEvent(job.RequestID, eventlevel.Info, startMsg)
 	if target.Remote() {
 		_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
-			"远端部署："+target.Describe()+" → runtime="+runtimeDir)
-		// 预检放在最前面：ssh 不通/没 curl/目录不对时立刻失败，别先下载几百 MB、
-		// 也别在 graceful 里等十分钟。预检顺带把远端平台带回来（产物平台检查要用）。
-		code, out, platform := remotePreflight(store, *job, target, remote, runtimeDir)
-		if code != 0 {
+			"远端部署："+target.Describe()+" → runtime="+runtimeDir+"（平台 "+remotePlatform+"）")
+		// 目录预检：不像这个服务的 runtime 就拒绝 rsync --delete；不存在则建（首次部署）。
+		if code, out := remoteDirCheck(store, *job, target, remote, runtimeDir); code != 0 {
 			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{State: StateFailed, Error: out})
 			return
 		}
-		remotePlatform = platform
 	}
 	// Fetch the package from the configured storage backend into a temp dir;
 	// the storage is the single source of truth for the bytes (local disk or
@@ -389,7 +408,7 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 
 	// 本机部署才需要本地 runtime 目录；远端部署落到远端目录（runtimeDir 指向那边）。
 	if !target.Remote() {
-		_ = os.MkdirAll(service.RuntimeDir, 0o755)
+		_ = os.MkdirAll(runtimeDir, 0o755)
 	}
 
 	if service.SupportsGracefulRestart() {
@@ -409,7 +428,7 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 
 	var rsyncCmd string
 	if self {
-		rsyncCmd = selfDeployRsyncCmd(src, service.RuntimeDir)
+		rsyncCmd = selfDeployRsyncCmd(src, runtimeDir)
 	} else {
 		rsyncCmd = strings.Join([]string{
 			"rsync", "-a", "--delete",
@@ -425,7 +444,7 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 			"--exclude='backend/.watchdog-paused'",
 			"--exclude='.git/'",
 			fmt.Sprintf("%q", src+"/"),
-			fmt.Sprintf("%q", service.RuntimeDir+"/"),
+			fmt.Sprintf("%q", runtimeDir+"/"),
 		}, " ")
 	}
 
@@ -456,7 +475,7 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 			return
 		}
 	} else {
-		fmt.Printf("[deploy] %s rsync %s → %s\n", job.RequestID, tag, service.RuntimeDir)
+		fmt.Printf("[deploy] %s rsync %s → %s\n", job.RequestID, tag, runtimeDir)
 		rsync := runShell(rsyncCmd, cfg.Home, os.Environ(), cfg.DeployMaxSec)
 		if rsync.Code != 0 {
 			out := rsync.Output
@@ -471,10 +490,10 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 			return
 		}
 		_ = store.AddDeployEvent(job.RequestID, eventlevel.Success,
-			"制品已 rsync 到 runtime："+service.RuntimeDir)
+			"制品已 rsync 到 runtime："+runtimeDir)
 
-		_ = os.WriteFile(filepath.Join(service.RuntimeDir, "VERSION"), []byte(hash+"\n"), 0o644)
-		_ = os.WriteFile(filepath.Join(service.RuntimeDir, "DEPLOYMENT"), []byte(tag+"\n"), 0o644)
+		_ = os.WriteFile(filepath.Join(runtimeDir, "VERSION"), []byte(hash+"\n"), 0o644)
+		_ = os.WriteFile(filepath.Join(runtimeDir, "DEPLOYMENT"), []byte(tag+"\n"), 0o644)
 	}
 
 	if self {
@@ -506,7 +525,7 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 
 	restartCmd := strings.TrimSpace(service.RestartCmd)
 	if restartCmd == "" {
-		restartCmd = fmt.Sprintf("bash %q", filepath.Join(service.RuntimeDir, "scripts", "restart.sh"))
+		restartCmd = fmt.Sprintf("bash %q", filepath.Join(runtimeDir, "scripts", "restart.sh"))
 	}
 	// 服务端口是必填项；老契约（没说）先按 healthUrl 推导，但在时间线上明确标出来。
 	if normalizePort(service.Port) == 0 {
@@ -524,8 +543,8 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
 			"远端部署：跳过本机 watchdog 暂停标记（本机机制）")
 	} else {
-		setExternalWatchdogPause(service.RuntimeDir, pauseSec)
-		defer clearExternalWatchdogPause(service.RuntimeDir)
+		setExternalWatchdogPause(runtimeDir, pauseSec)
+		defer clearExternalWatchdogPause(runtimeDir)
 	}
 
 	fmt.Printf("[deploy] %s restart via contract (SERVICE_PORT=%s): %s\n",
@@ -535,7 +554,7 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 	var restartCode int
 	var restartOut string
 	if target.Remote() {
-		override := target.ExpandRestartCmd(job.ServiceID, hash, service.RuntimeDir, runtimeDir, machine)
+		override := target.ExpandRestartCmd(job.ServiceID, hash, runtimeDir, runtimeDir, machine)
 		remoteCmd := remoteRestartCmd(restartCmd, *service, map[string]string{
 			"APP_VERSION": hash, "DEPLOY_MACHINE": machine, "RUNTIME_DIR": runtimeDir,
 		})
@@ -554,8 +573,8 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 	} else {
 		restart := runShell(
 			restartCmd,
-			service.RuntimeDir,
-			serviceCmdEnv(*service, map[string]string{"APP_VERSION": hash, "DEPLOY_MACHINE": machine}),
+			runtimeDir,
+			serviceCmdEnv(*service, runtimeDir, map[string]string{"APP_VERSION": hash, "DEPLOY_MACHINE": machine}),
 			cfg.DeployMaxSec,
 		)
 		restartCode, restartOut = restart.Code, restart.Output
@@ -630,7 +649,7 @@ func reconcileOrphanDeploys(store *Store) int {
 		tag, _ := normalizeDeploymentTag(job.Deployment)
 		hash := strings.TrimPrefix(tag, "deployment-")
 		versionOnDisk := ""
-		if b, err := os.ReadFile(filepath.Join(service.RuntimeDir, "VERSION")); err == nil {
+		if b, err := os.ReadFile(filepath.Join(service.LocalRuntimeDir(), "VERSION")); err == nil {
 			versionOnDisk = strings.TrimSpace(string(b))
 		}
 		ok := healthOK(service.HealthURL)
@@ -804,7 +823,7 @@ func (w *DeployWorker) tick() {
 // dir, so two contracts pointing at the same runtime never deploy at once.
 func (w *DeployWorker) deployUnit(serviceID string) string {
 	if svc, err := w.store.GetService(serviceID); err == nil && svc != nil {
-		if dir := strings.TrimSpace(svc.RuntimeDir); dir != "" {
+		if dir := svc.LocalRuntimeDir(); dir != "" {
 			return filepath.Clean(dir)
 		}
 	}

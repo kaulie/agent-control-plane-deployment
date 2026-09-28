@@ -230,6 +230,47 @@ func TestExecuteDeployToRemoteMachine(t *testing.T) {
 	}
 }
 
+// 契约里按平台配了路径（runtimeDirs.linux）时，远端部署用**它**，而不是通道约定的
+// <remote-home>/<serviceId> —— 这就是「runtimeDir 按 mac/linux 两套路径」的落地。
+func TestExecuteDeployUsesPlatformRuntimeDir(t *testing.T) {
+	store, cfg, storage, machines, tag, _ := newRemoteDeployFixture(t)
+	svc, err := store.GetService("web-cursor")
+	if err != nil || svc == nil {
+		t.Fatalf("GetService: %v %v", svc, err)
+	}
+	svc.RuntimeDirs = map[string]string{"linux": "/opt/web-cursor"}
+	if _, err := store.UpsertService(*svc); err != nil {
+		t.Fatalf("UpsertService: %v", err)
+	}
+	if _, err := store.CreateDeploy("deploy-remote3", "web-cursor", tag, Identity{}, "queued", "10.0.0.7"); err != nil {
+		t.Fatalf("CreateDeploy: %v", err)
+	}
+	if _, err := store.ClaimNextQueued(); err != nil {
+		t.Fatalf("ClaimNextQueued: %v", err)
+	}
+
+	fake := &fakeRemote{remoteOS: unameOS(), remoteArch: unameArch()}
+	// 让假远端报 linux（这样才会选 runtimeDirs.linux）。
+	if runtime.GOOS == "darwin" {
+		fake.remoteOS, fake.remoteArch = "Linux", "x86_64"
+	}
+	executeDeploy(store, cfg, storage, &GracefulDrain{}, machines, fake, "deploy-remote3")
+
+	job, _ := store.GetDeploy("deploy-remote3")
+	if job == nil || job.State != StateSucceeded {
+		t.Fatalf("deploy = %+v, want succeeded", job)
+	}
+	_, pushes, _ := fake.calls()
+	if len(pushes) != 1 || !strings.Contains(pushes[0], ":/opt/web-cursor") {
+		t.Fatalf("rsync must target the contract's linux runtimeDir, got %v", pushes)
+	}
+	runs, _, _ := fake.calls()
+	joined := strings.Join(runs, "\n")
+	if !strings.Contains(joined, "'/opt/web-cursor'") {
+		t.Fatalf("the remote restart must run in the platform runtimeDir, got:\n%s", joined)
+	}
+}
+
 func TestExecuteDeployRemotePreflightFailureFailsFast(t *testing.T) {
 	store, cfg, storage, machines, tag, localRuntimeDir := newRemoteDeployFixture(t)
 	if _, err := store.CreateDeploy("deploy-remote2", "web-cursor", tag, Identity{}, "queued", "10.0.0.7"); err != nil {
@@ -284,12 +325,12 @@ func TestRemotePreflightAuthFailureHintsAliasForm(t *testing.T) {
 	target := MachineTarget{ID: "43.162.117.240", Kind: "ssh", SSHUser: "ubuntu", SSHHost: "43.162.117.240", RuntimeHome: "/home/ubuntu/runtime"}
 	job := DeployJob{RequestID: "deploy-auth1", TargetMachine: target.ID}
 	fake := &authFailRemote{}
-	code, out, _ := remotePreflight(store, job, target, fake, "/home/ubuntu/runtime/web-cursor")
-	if code == 0 {
-		t.Fatal("an auth failure must fail the preflight")
+	_, err := remoteProbe(store, job, target, fake)
+	if err == nil {
+		t.Fatal("an auth failure must fail the probe")
 	}
-	if !strings.Contains(out, "~/.ssh/config") || !strings.Contains(out, "ssh <别名>") {
-		t.Fatalf("the failure must point at the alias form, got %q", out)
+	if !strings.Contains(err.Error(), "~/.ssh/config") || !strings.Contains(err.Error(), "ssh <别名>") {
+		t.Fatalf("the failure must point at the alias form, got %v", err)
 	}
 }
 

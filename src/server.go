@@ -188,18 +188,20 @@ func (s *apiServer) handleGetService(w http.ResponseWriter, r *http.Request) {
 }
 
 type putServiceBody struct {
-	Name              string  `json:"name"`
-	RuntimeDir        string  `json:"runtimeDir"`
-	HealthURL         string  `json:"healthUrl"`
-	Port              *int    `json:"port"`
-	StartCmd          string  `json:"startCmd"`
-	StopCmd           string  `json:"stopCmd"`
-	RestartCmd        string  `json:"restartCmd"`
-	GitRepoURL        *string `json:"gitRepoUrl"`
-	DefaultBranch     *string `json:"defaultBranch"`
-	RestartNotifyURL  *string `json:"restartNotifyUrl"`
-	RestartPollURL    *string `json:"restartPollUrl"`
-	GracefulMaxWaitMs *int    `json:"gracefulRestartMaxWaitMs"`
+	Name       string `json:"name"`
+	RuntimeDir string `json:"runtimeDir"`
+	// RuntimeDirs 按平台覆盖 runtimeDir（darwin / linux）。
+	RuntimeDirs       map[string]string `json:"runtimeDirs"`
+	HealthURL         string            `json:"healthUrl"`
+	Port              *int              `json:"port"`
+	StartCmd          string            `json:"startCmd"`
+	StopCmd           string            `json:"stopCmd"`
+	RestartCmd        string            `json:"restartCmd"`
+	GitRepoURL        *string           `json:"gitRepoUrl"`
+	DefaultBranch     *string           `json:"defaultBranch"`
+	RestartNotifyURL  *string           `json:"restartNotifyUrl"`
+	RestartPollURL    *string           `json:"restartPollUrl"`
+	GracefulMaxWaitMs *int              `json:"gracefulRestartMaxWaitMs"`
 }
 
 // handlePutService 配置/更新一个服务的**本机部署参数**。服务是否存在由
@@ -265,6 +267,8 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 
 	name := strings.TrimSpace(body.Name)
 	runtimeDir := strings.TrimSpace(body.RuntimeDir)
+	// 按平台（mac/linux）覆盖的 runtime 目录：键归一成 darwin / linux，空值丢掉。
+	runtimeDirs := NormalizeRuntimeDirs(body.RuntimeDirs)
 	healthURL := strings.TrimSpace(body.HealthURL)
 	port := 0
 	startCmd := strings.TrimSpace(body.StartCmd)
@@ -281,6 +285,9 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 		}
 		if runtimeDir == "" {
 			runtimeDir = existing.RuntimeDir
+		}
+		if runtimeDirs == nil {
+			runtimeDirs = existing.RuntimeDirs
 		}
 		if healthURL == "" {
 			healthURL = existing.HealthURL
@@ -387,6 +394,7 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 		ServiceID:         serviceID,
 		Name:              name,
 		RuntimeDir:        runtimeDir,
+		RuntimeDirs:       runtimeDirs,
 		HealthURL:         healthURL,
 		Port:              port,
 		StartCmd:          startCmd,
