@@ -89,6 +89,7 @@ func (s *apiServer) routes() http.Handler {
 	mux.HandleFunc("POST /restart/notify", s.handleRestartNotify)
 	mux.HandleFunc("GET /restart/poll", s.handleRestartPoll)
 	mux.HandleFunc("GET /api/meta", s.handleMeta)
+	mux.HandleFunc("GET /api/deployment-inventory", s.handleDeploymentInventory)
 	s.registerPanel(mux)
 	return withCORS(mux)
 }
@@ -1237,6 +1238,17 @@ func (s *apiServer) deployRunning(requestID string) bool {
 // @Tags     meta
 // @Produce  json
 // @Success  200  {object}  map[string]interface{}
+// @Router   /api/deployment-inventory [get]
+func (s *apiServer) handleDeploymentInventory(w http.ResponseWriter, r *http.Request) {
+	defaultMachine := s.machineCatalog().DefaultID(r.Context())
+	inv, err := buildDeploymentInventory(r.Context(), s.store, s.registry, defaultMachine)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, inv)
+}
+
 // @Router   /api/meta [get]
 func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
 	example, _ := normalizeDeploymentTag("abc12345")

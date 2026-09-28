@@ -36,6 +36,7 @@
   <nav class="tabs" id="tabs">
     <button class="tab tab--active" data-tab="pipelines">部署流水线</button>
     <button class="tab" data-tab="services">服务契约</button>
+    <button class="tab" data-tab="inventory">机器版本</button>
     <button class="tab" data-tab="deploys">部署任务</button>
     <button class="tab" data-tab="artifacts">制品</button>
     <button class="tab" data-tab="meta">元信息</button>
@@ -198,6 +199,19 @@
           <tbody></tbody>
         </table>
       </div>
+    </section>
+
+    <!-- Per-service machine deployed versions -->
+    <section id="tab-inventory" class="tabpanel">
+      <p class="hint">
+        按服务汇总每台部署机器上<strong>最近一次成功部署</strong>的版本（来自本机 deploy / pipeline 历史；
+        实例列表来自 service_registry）。版本与多数机器不一致时会高亮。
+      </p>
+      <div class="actions">
+        <button class="btn" id="inv-refresh">刷新</button>
+        <span id="inv-status" class="muted">…</span>
+      </div>
+      <div id="inv-root" class="inventory-root"></div>
     </section>
 
     <!-- Deploys -->

@@ -47,12 +47,26 @@ function makePanel(options = {}) {
   };
   const historyPayloads = options.history || {};
   const metaPayload = options.meta || {};
+  const inventoryPayload = options.inventory || {
+    defaultDeployMachine: 'local',
+    registry: { enabled: true, ok: true, services: 1 },
+    services: [{
+      serviceId: 'web-cursor',
+      name: 'Web Cursor',
+      referenceVersion: 'v100',
+      machines: [
+        { machineId: 'local', host: '127.0.0.1', port: 4211, version: 'v100', state: 'succeeded' },
+        { machineId: 'gpu-2', host: '10.0.0.8', port: 4211, version: 'v99', versionDrift: true, state: 'succeeded' },
+      ],
+    }],
+  };
   // Test-visible knobs: metaError=true 让 /api/meta 一直失败，'first' 只失败第一次；
   // 测完可以让用例把它关掉（服务恢复）验证面板自愈。
   const state = { metaError: options.metaError || false, metaCalls: 0 };
   const payload = (pathname) => {
     if (pathname === '/api/services') return servicesPayload;
     if (pathname === '/api/meta') return metaPayload;
+    if (pathname === '/api/deployment-inventory') return inventoryPayload;
     if (pathname === '/api/deploys') return { deploys: [], total: 0, page: 1, pageSize: 20 };
     if (pathname === '/api/pipelines') return { pipelines: [], total: 0, page: 1, pageSize: 20 };
     if (pathname === '/health') return { ok: true };
@@ -614,6 +628,20 @@ test('pipeline trigger: /api/meta 拉失败时下拉仍可用，并在刷新里�
   await flush();
   assert.ok(metaCalls() > before, '失败后必须重试，不能一直空着');
   assert.deepEqual(Array.from(sel.options).map((o) => o.value), ['local', 'gpu-2'], '重试成功后列出真实机器');
+});
+
+test('inventory tab: loads deployment-inventory and renders machine rows', async (t) => {
+  const { dom, flush, calls } = makePanel({});
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+  await flush();
+  doc.querySelector('[data-tab="inventory"]').click();
+  await flush();
+  assert.ok(calls.some((c) => c.startsWith('/api/deployment-inventory')), '切到机器版本 tab 应拉 inventory');
+  const root = doc.querySelector('#inv-root');
+  assert.match(root.textContent, /web-cursor/, '应渲染服务 id');
+  assert.match(root.textContent, /v99/, '应渲染机器上的版本');
+  assert.match(root.textContent, /不一致/, '版本漂移应高亮');
 });
 
 
