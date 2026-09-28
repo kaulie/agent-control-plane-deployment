@@ -56,6 +56,12 @@ func TestDeployNotifyPersistsTargetMachine(t *testing.T) {
 	srv, store := newTestIdentityServer(t, true)
 	srv.cfg.DeployMachines = []string{"local", "gpu-2"}
 	srv.cfg.DefaultDeployMachine = "local"
+	// 机器要被选中，得有部署通道（怎么把部署送到那台机器）。
+	srv.cfg.DeployMachineTargets = map[string]MachineTarget{
+		"local": {ID: "local", Kind: "local"},
+		"gpu-2": {ID: "gpu-2", Kind: "ssh", SSHUser: "ubuntu", SSHHost: "10.0.0.8", RuntimeHome: "/home/ubuntu/runtime"},
+	}
+	srv.machines = NewMachineCatalog(srv.cfg, nil)
 	hdr := map[string]string{"identity_role": "user", "identity_id": "user_001"}
 
 	// 显式选择 → 落库并在响应里回显。
@@ -115,6 +121,11 @@ func TestMetaReportsDeployMachines(t *testing.T) {
 	srv, _ := newTestIdentityServer(t, true)
 	srv.cfg.DeployMachines = []string{"local", "gpu-2"}
 	srv.cfg.DefaultDeployMachine = "gpu-2"
+	srv.cfg.DeployMachineTargets = map[string]MachineTarget{
+		"local": {ID: "local", Kind: "local"},
+		"gpu-2": {ID: "gpu-2", Kind: "ssh", SSHUser: "ubuntu", SSHHost: "10.0.0.8", RuntimeHome: "/home/ubuntu/runtime"},
+	}
+	srv.machines = NewMachineCatalog(srv.cfg, nil)
 
 	var meta map[string]any
 	if err := json.Unmarshal(getJSON(t, srv, "/api/meta").Body.Bytes(), &meta); err != nil {
@@ -126,6 +137,13 @@ func TestMetaReportsDeployMachines(t *testing.T) {
 	}
 	if meta["defaultDeployMachine"] != "gpu-2" {
 		t.Fatalf("defaultDeployMachine = %v, want gpu-2", meta["defaultDeployMachine"])
+	}
+	targets, _ := meta["deployMachineTargets"].(map[string]any)
+	if got := targets["gpu-2"].(map[string]any)["kind"]; got != "ssh" {
+		t.Fatalf("deployMachineTargets[gpu-2].kind = %v, want ssh（面板据此标注远端）", got)
+	}
+	if got := targets["local"].(map[string]any)["kind"]; got != "local" {
+		t.Fatalf("deployMachineTargets[local].kind = %v, want local", got)
 	}
 }
 

@@ -549,6 +549,34 @@ test('pipeline trigger: 面板被重新部署后，已经打开的页面自动�
   assert.equal(navAttempts(), 1, '同一个版本不能反复重载');
 });
 
+test('pipeline trigger: 机器下拉标出本机/远端通道', async (t) => {
+  const { dom, flush, requests } = makePanel({
+    meta: {
+      deployMachines: ['local', '43.162.117.240'],
+      defaultDeployMachine: 'local',
+      deployMachineTargets: {
+        local: { kind: 'local' },
+        '43.162.117.240': { kind: 'ssh', host: '43.162.117.240', runtimeHome: '/home/ubuntu/runtime' },
+      },
+    },
+  });
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+  await flush();
+
+  const labels = Array.from(doc.querySelectorAll('#pipe-machine option')).map((o) => o.textContent);
+  assert.match(labels[0], /local（本机）/, '本机标成「本机」');
+  assert.match(labels[1], /（远端 43\.162\.117\.240）/, '远端机器标出主机');
+
+  // 选远端机器 → 请求体带 targetMachine（服务端会真的部署过去）。
+  const sel = doc.querySelector('#pipe-machine');
+  sel.value = '43.162.117.240';
+  doc.querySelector('#pipe-trigger').click();
+  await flush();
+  const req = triggerRequest(requests);
+  assert.equal(JSON.parse(req.body).targetMachine, '43.162.117.240', '远端机器随请求发出');
+});
+
 test('pipeline trigger: 机器列表的说明用服务端文案（写明数据源）', async (t) => {
   const { dom, flush } = makePanel({
     meta: {

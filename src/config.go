@@ -63,10 +63,15 @@ type Config struct {
 	// use). "off" disables the option entirely; a missing file falls back to
 	// the service process' own HTTP(S)_PROXY.
 	ProxyEnvFile string
-	// Known deployment machines (DEPLOY_MACHINES, comma-separated ids) that a
-	// triggered pipeline may deploy to. Empty = the single machine "local"
-	// (behaviour identical to not selecting one).
+	// Known deployment machines (DEPLOY_MACHINES, comma-separated ids): **发现**用，
+	// 让面板/事件知道还有哪些机器（例如注册中心实例主机）。真正能不能被选中取决于
+	// 有没有 DeployMachineTargets（部署通道）。
 	DeployMachines []string
+	// DeployMachineTargets 是「怎么把部署送到某台机器」（DEPLOY_MACHINE_TARGETS，
+	// 或本机 data/machine-targets）：有通道的机器才可选、才会真的部署到那台机器。
+	DeployMachineTargets map[string]MachineTarget
+	// 通道配置解析失败的原因（进 /api/meta 提示，不静默忽略）。
+	MachineTargetsError string
 	// Machine used when a trigger does not pick one (DEPLOY_DEFAULT_MACHINE).
 	// Empty = the first configured machine.
 	DefaultDeployMachine string
@@ -190,6 +195,15 @@ func loadConfig() Config {
 
 	// 本机代理（发起流水线时可勾选「走本机代理」）。默认读运维脚本同一份文件
 	// data/proxy.env；PROXY_ENV_FILE=off 关掉这个选项。
+	// 部署机器通道（DEPLOY_MACHINE_TARGETS）：解析失败不致命（服务照常起），
+	// 但原因要带到 /api/meta 的提示里。
+	machineTargets, machineTargetsErr := ParseMachineTargets(os.Getenv(deployMachineTargetsEnv))
+	machineTargetsError := ""
+	if machineTargetsErr != nil {
+		machineTargetsError = machineTargetsErr.Error()
+		machineTargets = map[string]MachineTarget{defaultDeployMachine: {ID: defaultDeployMachine, Kind: "local"}}
+	}
+
 	proxyEnvFile := strings.TrimSpace(os.Getenv("PROXY_ENV_FILE"))
 	if proxyEnvFile == "" {
 		proxyEnvFile = filepath.Join(dataDir, "proxy.env")
@@ -232,5 +246,7 @@ func loadConfig() Config {
 		ProxyEnvFile:           proxyEnvFile,
 		DeployMachines:         deployMachines,
 		DefaultDeployMachine:   defaultDeployMachine,
+		DeployMachineTargets:   machineTargets,
+		MachineTargetsError:    machineTargetsError,
 	}
 }

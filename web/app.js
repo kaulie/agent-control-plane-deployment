@@ -226,6 +226,8 @@ let defaultDeployMachine = '';
 // 服务端给的机器说明（含数据源：来自 service-registry 的实例主机）。有就用它，
 // 免得面板自己再编一份容易过时的文案。
 let deployMachineHintText = '';
+// 每台机器的通道（local / ssh）——用来在下拉里标出「本机 / 远端」。
+let deployMachineTargets = {};
 let machineListLoaded = false;
 let machineFetchInFlight = false;
 
@@ -237,6 +239,7 @@ async function refreshDeployMachineOption() {
     const m = await apiGet('/api/meta');
     notePanelVersion(m);
     deployMachineHintText = m.deployMachineHint || '';
+    deployMachineTargets = (m.deployMachineTargets && typeof m.deployMachineTargets === 'object') ? m.deployMachineTargets : {};
     deployMachines = Array.isArray(m.deployMachines) ? m.deployMachines.filter((id) => id) : [];
     defaultDeployMachine = m.defaultDeployMachine || (deployMachines[0] || '');
     machineListLoaded = deployMachines.length > 0;
@@ -250,6 +253,15 @@ async function refreshDeployMachineOption() {
   renderDeployMachineOption();
 }
 
+// machineChannelLabel：机器走哪条通道 —— 本机还是远端 ssh（远端 = 真的会把制品送过去
+// 并在那台机器上重启/探活）。
+function machineChannelLabel(id) {
+  const t = deployMachineTargets[id];
+  if (!t || !t.kind) return '';
+  if (t.kind === 'ssh') return t.host ? '（远端 ' + t.host + '）' : '（远端 ssh）';
+  return '（本机）';
+}
+
 function renderDeployMachineOption() {
   const sel = $('#pipe-machine');
   if (!sel) return;
@@ -257,7 +269,7 @@ function renderDeployMachineOption() {
   const list = known ? deployMachines : [defaultDeployMachine || FALLBACK_DEPLOY_MACHINE];
   const dflt = defaultDeployMachine || list[0];
   sel.innerHTML = list
-    .map((id) => `<option value="${esc(id)}">${esc(id)}${id === dflt ? '（默认）' : ''}</option>`)
+    .map((id) => `<option value="${esc(id)}">${esc(id)}${machineChannelLabel(id)}${id === dflt ? '（默认）' : ''}</option>`)
     .join('');
   sel.value = dflt;
   const hint = $('#pipe-machine-hint');

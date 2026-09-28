@@ -87,6 +87,54 @@ func postRestartNotify(notifyURL string, body restartNotifyBody) error {
 	return nil
 }
 
+// gracefulTransport 负责把「通知」与「轮询」发出去：本机直接 HTTP（localTransport），
+// 远端部署则在**远端**跑 curl（restartNotifyUrl/restartPollUrl 是 127.0.0.1，只有站在
+// 那台机器上问才对）。
+type gracefulTransport interface {
+	notify(notifyURL string, body restartNotifyBody) error
+	poll(pollURL string) (restartPollStatus, error)
+}
+
+type localTransport struct{}
+
+func (localTransport) notify(notifyURL string, body restartNotifyBody) error {
+	return postRestartNotify(notifyURL, body)
+}
+
+func (localTransport) poll(pollURL string) (restartPollStatus, error) {
+	return getRestartPollStatus(pollURL)
+}
+
+// remoteTransport 在远端机器上发同样的两个请求（用远端自己的 127.0.0.1 地址）。
+type remoteTransport struct {
+	target MachineTarget
+	runner RemoteRunner
+}
+
+func (t remoteTransport) notify(notifyURL string, body restartNotifyBody) error {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	code, out := t.runner.HTTP(t.target, http.MethodPost, notifyURL, string(payload), 10)
+	if code < 200 || code >= 300 {
+		return fmt.Errorf("远端 notify 返回 %d %s", code, strings.TrimSpace(out))
+	}
+	return nil
+}
+
+func (t remoteTransport) poll(pollURL string) (restartPollStatus, error) {
+	var st restartPollStatus
+	code, out := t.runner.HTTP(t.target, http.MethodGet, pollURL, "", 10)
+	if code < 200 || code >= 300 {
+		return st, fmt.Errorf("远端 poll 返回 %d %s", code, strings.TrimSpace(out))
+	}
+	if err := json.Unmarshal([]byte(out), &st); err != nil {
+		return st, fmt.Errorf("远端 poll JSON: %w", err)
+	}
+	return st, nil
+}
+
 func getRestartPollStatus(pollURL string) (restartPollStatus, error) {
 	var st restartPollStatus
 	client := gracefulHTTPClient
@@ -118,12 +166,20 @@ func getRestartPollStatus(pollURL string) (restartPollStatus, error) {
 // the project reports deploy is allowed, or maxWait elapses (force).
 // Returns whether the wait ended by force timeout. Deploy events are recorded
 // for the notify + each poll attempt + the outcome.
-func waitForGracefulRestart(
+// waitForGracefulRestart 是本机部署的入口（本机 HTTP 通知+轮询）。
+func waitForGracefulRestart(store *Store, service ServiceContract, cfg Config, job DeployJob, version string) bool {
+	return waitForGracefulRestartVia(store, service, cfg, job, version, localTransport{})
+}
+
+// waitForGracefulRestartVia：通知 + 轮询等对方就绪；transport 决定这些请求从这里发还是
+// 在远端机器上发。
+func waitForGracefulRestartVia(
 	store *Store,
 	service ServiceContract,
 	cfg Config,
 	job DeployJob,
 	version string,
+	transport gracefulTransport,
 ) (forced bool) {
 	notifyURL := strings.TrimSpace(service.RestartNotifyURL)
 	pollURL := strings.TrimSpace(service.RestartPollURL)
@@ -134,7 +190,7 @@ func waitForGracefulRestart(
 		fmt.Sprintf("graceful：已启用通知+轮询（最长 %s）", maxWait))
 	fmt.Printf("[deploy] %s graceful: POST notify %s\n", job.RequestID, notifyURL)
 	recordDeployEvent(store, job.RequestID, eventlevel.Info, "graceful：发送通知 POST "+notifyURL)
-	if err := postRestartNotify(notifyURL, restartNotifyBody{
+	if err := transport.notify(notifyURL, restartNotifyBody{
 		ServiceID:  service.ServiceID,
 		RequestID:  job.RequestID,
 		Deployment: job.Deployment,
@@ -151,7 +207,7 @@ func waitForGracefulRestart(
 	attempt := 0
 	for {
 		attempt++
-		st, err := getRestartPollStatus(pollURL)
+		st, err := transport.poll(pollURL)
 		if err != nil {
 			fmt.Printf("[deploy] %s graceful poll #%d failed: %v\n", job.RequestID, attempt, err)
 			recordDeployEvent(store, job.RequestID, eventlevel.Warn,

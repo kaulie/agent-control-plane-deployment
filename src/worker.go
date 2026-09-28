@@ -229,7 +229,7 @@ func clearStaleDeployPauses(store *Store) int {
 }
 
 func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *GracefulDrain,
-	machines *MachineCatalog, requestID string) {
+	machines *MachineCatalog, remote RemoteRunner, requestID string) {
 	job, err := store.GetDeploy(requestID)
 	if err != nil || job == nil || job.State != StateRunning {
 		return
@@ -266,7 +266,28 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 	if mErr != nil {
 		machine = machines.DefaultID(context.Background())
 		_ = store.AddDeployEvent(job.RequestID, eventlevel.Warn,
-			"部署机器未知（"+mErr.Error()+"），退回默认机器="+machine)
+			"部署机器不可用（"+mErr.Error()+"），退回默认机器="+machine)
+	}
+	target, hasTarget := machines.Target(context.Background(), machine)
+	if !hasTarget {
+		// 校验层已经保证有通道；这里是兜底（例如通道配置在任务排队期间被改掉）。
+		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
+			State: StateFailed,
+			Error: "deploy machine " + machine + " has no deploy channel (" + deployMachineTargetsEnv + ")",
+		})
+		return
+	}
+	// 远端机器的 runtime 目录按约定 = <remote-runtime-home>/<serviceId>。
+	runtimeDir := service.RuntimeDir
+	if target.Remote() {
+		runtimeDir = target.RuntimeDirFor(job.ServiceID)
+		if runtimeDir == "" {
+			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
+				State: StateFailed,
+				Error: "deploy machine " + machine + " has an ssh channel without a remote runtime home",
+			})
+			return
+		}
 	}
 	startMsg := "开始部署：service=" + job.ServiceID + " deployment=" + tag + " version=" + hash +
 		" 部署机器=" + machine
@@ -274,6 +295,10 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		startMsg += " 触发者=" + by
 	}
 	_ = store.AddDeployEvent(job.RequestID, eventlevel.Info, startMsg)
+	if target.Remote() {
+		_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
+			"远端部署："+target.Describe()+" → runtime="+runtimeDir)
+	}
 	// Fetch the package from the configured storage backend into a temp dir;
 	// the storage is the single source of truth for the bytes (local disk or
 	// GitHub Releases, etc.). Prefer the access path stored in the local
@@ -344,11 +369,20 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		return
 	}
 
-	_ = os.MkdirAll(service.RuntimeDir, 0o755)
+	// 本机部署才需要本地 runtime 目录；远端部署落到远端目录（runtimeDir 指向那边）。
+	if !target.Remote() {
+		_ = os.MkdirAll(service.RuntimeDir, 0o755)
+	}
 
 	if service.SupportsGracefulRestart() {
 		fmt.Printf("[deploy] %s graceful restart enabled (notify+poll)\n", job.RequestID)
-		if waitForGracefulRestart(store, *service, cfg, *job, hash) {
+		var gracefulTransport gracefulTransport = localTransport{}
+		if target.Remote() {
+			gracefulTransport = remoteTransport{target: target, runner: remote}
+			_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
+				"graceful：在远端 "+target.SSHHost+" 上发通知/轮询（用远端自己的 127.0.0.1 地址）")
+		}
+		if waitForGracefulRestartVia(store, *service, cfg, *job, hash, gracefulTransport) {
 			fmt.Printf("[deploy] %s proceeding after graceful force timeout\n", job.RequestID)
 		}
 	} else {
@@ -377,25 +411,57 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		}, " ")
 	}
 
-	fmt.Printf("[deploy] %s rsync %s → %s\n", job.RequestID, tag, service.RuntimeDir)
-	rsync := runShell(rsyncCmd, cfg.Home, os.Environ(), cfg.DeployMaxSec)
-	if rsync.Code != 0 {
-		out := rsync.Output
-		if len(out) > 2000 {
-			out = out[len(out)-2000:]
+	if target.Remote() {
+		if code, out := remotePreflight(store, *job, target, remote, runtimeDir); code != 0 {
+			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{State: StateFailed, Error: out})
+			return
 		}
-		_ = store.AddDeployEvent(job.RequestID, eventlevel.Error, "rsync 失败："+out)
-		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
-			State: StateFailed,
-			Error: "rsync failed: " + out,
-		})
-		return
-	}
-	_ = store.AddDeployEvent(job.RequestID, eventlevel.Success,
-		"制品已 rsync 到 runtime："+service.RuntimeDir)
+		fmt.Printf("[deploy] %s rsync %s → %s:%s\n", job.RequestID, tag, target.SSHDest(), runtimeDir)
+		code, out := remote.PushDir(target, src, runtimeDir, true, cfg.DeployMaxSec)
+		if code != 0 {
+			if len(out) > 2000 {
+				out = out[len(out)-2000:]
+			}
+			_ = store.AddDeployEvent(job.RequestID, eventlevel.Error, "远端 rsync 失败："+out)
+			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
+				State: StateFailed,
+				Error: "remote rsync failed: " + out,
+			})
+			return
+		}
+		_ = store.AddDeployEvent(job.RequestID, eventlevel.Success,
+			"制品已 rsync 到远端 runtime："+target.SSHDest()+":"+runtimeDir)
+		stamp := "printf '%s\n' " + shellQuote(hash) + " > " + shellQuote(runtimeDir+"/VERSION") +
+			" && printf '%s\n' " + shellQuote(tag) + " > " + shellQuote(runtimeDir+"/DEPLOYMENT")
+		if code, out := remote.Run(target, stamp, 30); code != 0 {
+			_ = store.AddDeployEvent(job.RequestID, eventlevel.Error, "远端写入 VERSION/DEPLOYMENT 失败："+out)
+			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
+				State: StateFailed,
+				Error: "remote stamp failed: " + out,
+			})
+			return
+		}
+	} else {
+		fmt.Printf("[deploy] %s rsync %s → %s\n", job.RequestID, tag, service.RuntimeDir)
+		rsync := runShell(rsyncCmd, cfg.Home, os.Environ(), cfg.DeployMaxSec)
+		if rsync.Code != 0 {
+			out := rsync.Output
+			if len(out) > 2000 {
+				out = out[len(out)-2000:]
+			}
+			_ = store.AddDeployEvent(job.RequestID, eventlevel.Error, "rsync 失败："+out)
+			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
+				State: StateFailed,
+				Error: "rsync failed: " + out,
+			})
+			return
+		}
+		_ = store.AddDeployEvent(job.RequestID, eventlevel.Success,
+			"制品已 rsync 到 runtime："+service.RuntimeDir)
 
-	_ = os.WriteFile(filepath.Join(service.RuntimeDir, "VERSION"), []byte(hash+"\n"), 0o644)
-	_ = os.WriteFile(filepath.Join(service.RuntimeDir, "DEPLOYMENT"), []byte(tag+"\n"), 0o644)
+		_ = os.WriteFile(filepath.Join(service.RuntimeDir, "VERSION"), []byte(hash+"\n"), 0o644)
+		_ = os.WriteFile(filepath.Join(service.RuntimeDir, "DEPLOYMENT"), []byte(tag+"\n"), 0o644)
+	}
 
 	if self {
 		if !upgraderRunning(cfg.Home) {
@@ -438,21 +504,40 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 	if pauseSec > 90 {
 		pauseSec = 90
 	}
-	setExternalWatchdogPause(service.RuntimeDir, pauseSec)
-	defer clearExternalWatchdogPause(service.RuntimeDir)
+	if target.Remote() {
+		// 外部 watchdog 的暂停标记是本机文件的机制；远端部署不适用（远端服务自己的
+		// 看门狗按它自己的规矩来）。
+		_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
+			"远端部署：跳过本机 watchdog 暂停标记（本机机制）")
+	} else {
+		setExternalWatchdogPause(service.RuntimeDir, pauseSec)
+		defer clearExternalWatchdogPause(service.RuntimeDir)
+	}
 
 	fmt.Printf("[deploy] %s restart via contract (SERVICE_PORT=%s): %s\n",
 		job.RequestID, servicePort(*service), restartCmd)
 	_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
 		"执行 restartCmd（SERVICE_PORT="+servicePort(*service)+"，同时注入 PORT）："+restartCmd)
-	restart := runShell(
-		restartCmd,
-		service.RuntimeDir,
-		serviceCmdEnv(*service, map[string]string{"APP_VERSION": hash, "DEPLOY_MACHINE": machine}),
-		cfg.DeployMaxSec,
-	)
-	if restart.Code != 0 {
-		out := restart.Output
+	var restartCode int
+	var restartOut string
+	if target.Remote() {
+		remoteCmd := remoteRestartCmd(restartCmd, *service, map[string]string{
+			"APP_VERSION": hash, "DEPLOY_MACHINE": machine, "RUNTIME_DIR": runtimeDir,
+		})
+		_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
+			"远端执行（"+target.SSHDest()+"）："+remoteCmd)
+		restartCode, restartOut = remote.Run(target, remoteCmd, cfg.DeployMaxSec)
+	} else {
+		restart := runShell(
+			restartCmd,
+			service.RuntimeDir,
+			serviceCmdEnv(*service, map[string]string{"APP_VERSION": hash, "DEPLOY_MACHINE": machine}),
+			cfg.DeployMaxSec,
+		)
+		restartCode, restartOut = restart.Code, restart.Output
+	}
+	if restartCode != 0 {
+		out := restartOut
 		if len(out) > 2000 {
 			out = out[len(out)-2000:]
 		}
@@ -465,8 +550,17 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		return
 	}
 
-	if !waitForHealth(service.HealthURL, cfg.HealthCheckTimeout) {
-		_ = store.AddDeployEvent(job.RequestID, eventlevel.Error, "健康检查失败："+service.HealthURL)
+	healthOK := waitForHealth(service.HealthURL, cfg.HealthCheckTimeout)
+	if target.Remote() {
+		healthOK = waitForRemoteHealth(remote, target, service.HealthURL, cfg.HealthCheckTimeout)
+	}
+	if !healthOK {
+		if target.Remote() {
+			_ = store.AddDeployEvent(job.RequestID, eventlevel.Error,
+				"远端健康检查失败："+target.SSHHost+" 上的 "+service.HealthURL)
+		} else {
+			_ = store.AddDeployEvent(job.RequestID, eventlevel.Error, "健康检查失败："+service.HealthURL)
+		}
 		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 			State:   StateFailed,
 			Version: hash,
@@ -482,7 +576,11 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		Version: hash,
 		Message: "deploy succeeded",
 	})
-	_ = store.AddDeployEvent(job.RequestID, eventlevel.Success, "部署成功：version="+hash)
+	successMsg := "部署成功：version=" + hash
+	if target.Remote() {
+		successMsg += "（远端 " + machine + "：" + target.SSHDest() + ":" + runtimeDir + "）"
+	}
+	_ = store.AddDeployEvent(job.RequestID, eventlevel.Success, successMsg)
 	fmt.Printf("[deploy] %s ok version=%s\n", job.RequestID, hash)
 }
 
@@ -541,6 +639,7 @@ type DeployWorker struct {
 	storage  ArtifactStorage
 	drain    *GracefulDrain
 	machines *MachineCatalog
+	remote   RemoteRunner
 	mu       sync.Mutex
 	ticking  bool
 	// active maps a deployment unit (a runtime dir) to the requestID currently
@@ -556,10 +655,13 @@ type DeployWorker struct {
 }
 
 func NewDeployWorker(store *Store, cfg Config, storage ArtifactStorage, drain *GracefulDrain,
-	machines *MachineCatalog) *DeployWorker {
+	machines *MachineCatalog, remote RemoteRunner) *DeployWorker {
 	if machines == nil {
 		// 没给机器目录（测试/未注入）：按本地配置兜一个，本机永远是已知机器。
 		machines = NewMachineCatalog(cfg, nil)
+	}
+	if remote == nil {
+		remote = sshRemoteRunner{home: cfg.Home}
 	}
 	return &DeployWorker{
 		store:    store,
@@ -567,10 +669,11 @@ func NewDeployWorker(store *Store, cfg Config, storage ArtifactStorage, drain *G
 		storage:  storage,
 		drain:    drain,
 		machines: machines,
+		remote:   remote,
 		active:   map[string]string{},
 		stopCh:   make(chan struct{}),
 		run: func(requestID string) {
-			executeDeploy(store, cfg, storage, drain, machines, requestID)
+			executeDeploy(store, cfg, storage, drain, machines, remote, requestID)
 		},
 	}
 }
