@@ -23,59 +23,90 @@
         <h2 id="svc-edit-title">配置服务</h2>
         <a class="btn btn--ghost" href="index.html">取消编辑</a>
       </div>
-      <div class="form-grid">
-        <label>serviceId（来自 service_registry）
-          <input type="text" id="svc-serviceId" readonly />
-        </label>
-        <label>name（本机显示名）
-          <input type="text" id="svc-name" placeholder="可留空，默认等于 serviceId" />
-        </label>
-        <label>runtimeDir（默认：本机平台用）
-          <input type="text" id="svc-runtimeDir" placeholder="/Users/gaolei/runtime/web-cursor" />
-        </label>
-        <label>runtimeDir（macOS 机器，可选）
-          <input type="text" id="svc-runtimeDir-darwin" placeholder="/Users/gaolei/runtime/web-cursor" />
-        </label>
-        <label>runtimeDir（Linux 机器，可选）
-          <input type="text" id="svc-runtimeDir-linux" placeholder="/home/ubuntu/runtime/web-cursor" />
-        </label>
-        <label>健康检查路径（healthUrl）
-          <input type="text" id="svc-healthUrl" placeholder="/health" />
-        </label>
-        <label>服务端口 PORT（必填，注入 SERVICE_PORT）
-          <input type="number" id="svc-port" min="1" max="65535" step="1" required placeholder="例如 4211" />
-        </label>
-        <label>startCmd
-          <input type="text" id="svc-startCmd" placeholder="bash scripts/start.sh" />
-        </label>
-        <label>stopCmd
-          <input type="text" id="svc-stopCmd" placeholder="bash scripts/stop.sh" />
-        </label>
-        <label>restartCmd
-          <input type="text" id="svc-restartCmd" placeholder="bash scripts/restart.sh" />
-        </label>
-        <label>gitRepoUrl（来自 service_registry，不可改）
-          <input type="text" id="svc-gitRepoUrl" placeholder="注册中心登记后自动同步" readonly />
-        </label>
-        <label>defaultBranch
-          <input type="text" id="svc-defaultBranch" placeholder="main" />
-        </label>
-        <label>graceful 通知路径（restartNotifyUrl）
-          <input type="text" id="svc-restartNotifyUrl" placeholder="可选，例如 /api/ops/restart-notify" />
-        </label>
-        <label>graceful 轮询路径（restartPollUrl）
-          <input type="text" id="svc-restartPollUrl" placeholder="可选，例如 /api/ops/restart-status" />
-        </label>
-        <label>gracefulRestartMaxWaitMs
-          <input type="number" id="svc-gracefulRestartMaxWaitMs" min="0" step="1" placeholder="0 = 服务端默认" />
-        </label>
-        <p class="hint" id="svc-runtimeDir-hint"></p>
-        <p class="hint" id="svc-url-hint"></p>
-        <div class="form-actions">
-          <button class="btn btn--primary" id="svc-save">保存部署配置</button>
-          <a class="btn" href="index.html">返回服务列表</a>
-          <span id="svc-msg" class="muted"></span>
+
+      <!-- ① 服务标识：以 service_registry 为准，这里只读或只是本机显示名 -->
+      <section class="cfg" id="cfg-identity">
+        <h3 class="cfg__title">服务标识<span class="cfg__note">来自 service_registry</span></h3>
+        <p class="cfg__desc">服务是谁、代码在哪。以注册中心登记为准，本机不能改。</p>
+        <div class="form-grid">
+          <label>serviceId
+            <input type="text" id="svc-serviceId" readonly />
+          </label>
+          <label>name（本机显示名）
+            <input type="text" id="svc-name" placeholder="可留空，默认等于 serviceId" />
+          </label>
+          <label>gitRepoUrl（不可改）
+            <input type="text" id="svc-gitRepoUrl" placeholder="注册中心登记后自动同步" readonly />
+          </label>
+          <label>defaultBranch（打包/部署默认分支）
+            <input type="text" id="svc-defaultBranch" placeholder="main" />
+          </label>
         </div>
+      </section>
+
+      <!-- ② 运行目录：部署落到哪台机器、哪个目录（按平台） -->
+      <section class="cfg" id="cfg-runtimedir">
+        <h3 class="cfg__title">运行目录<span class="cfg__note">按目标机器平台选</span></h3>
+        <p class="cfg__desc">部署把制品 rsync 到这里、在这里跑 restartCmd。默认给本机平台用；macOS / Linux 机器可以各配一份。</p>
+        <div class="form-grid">
+          <label>runtimeDir（默认：本机平台用）
+            <input type="text" id="svc-runtimeDir" placeholder="/Users/gaolei/runtime/web-cursor" />
+          </label>
+          <label>runtimeDir（macOS 机器，可选）
+            <input type="text" id="svc-runtimeDir-darwin" placeholder="/Users/gaolei/runtime/web-cursor" />
+          </label>
+          <label>runtimeDir（Linux 机器，可选）
+            <input type="text" id="svc-runtimeDir-linux" placeholder="/home/ubuntu/runtime/web-cursor" />
+          </label>
+          <p class="hint cfg__hint" id="svc-runtimeDir-hint"></p>
+        </div>
+      </section>
+
+      <!-- ③ 服务接口：端口 + 探活/graceful 路径（只存路径，host:port 部署时拼） -->
+      <section class="cfg" id="cfg-endpoints">
+        <h3 class="cfg__title">服务接口<span class="cfg__note">URL 只填路径</span></h3>
+        <p class="cfg__desc">端口必填（启动时注入 SERVICE_PORT）；探活与 graceful 只填路径，host:port 在部署时按目标机器拼。</p>
+        <div class="form-grid">
+          <label>服务端口 PORT（必填）
+            <input type="number" id="svc-port" min="1" max="65535" step="1" required placeholder="例如 4211" />
+          </label>
+          <label>健康检查路径（healthUrl）
+            <input type="text" id="svc-healthUrl" placeholder="/health" />
+          </label>
+          <label>graceful 通知路径（restartNotifyUrl）
+            <input type="text" id="svc-restartNotifyUrl" placeholder="可选，例如 /api/ops/restart-notify" />
+          </label>
+          <label>graceful 轮询路径（restartPollUrl）
+            <input type="text" id="svc-restartPollUrl" placeholder="可选，例如 /api/ops/restart-status" />
+          </label>
+          <label>graceful 最长等待 ms（gracefulRestartMaxWaitMs）
+            <input type="number" id="svc-gracefulRestartMaxWaitMs" min="0" step="1" placeholder="0 = 服务端默认" />
+          </label>
+          <p class="hint cfg__hint" id="svc-url-hint"></p>
+        </div>
+      </section>
+
+      <!-- ④ 启停命令：部署时执行的命令（SERVICE_PORT / APP_VERSION / DEPLOY_MACHINE / RUNTIME_DIR 会注入） -->
+      <section class="cfg" id="cfg-commands">
+        <h3 class="cfg__title">启停命令<span class="cfg__note">在目标机器上执行</span></h3>
+        <p class="cfg__desc">部署时在运行目录里执行 restartCmd，并注入 SERVICE_PORT / APP_VERSION / DEPLOY_MACHINE / RUNTIME_DIR。</p>
+        <div class="form-grid">
+          <label>startCmd
+            <input type="text" id="svc-startCmd" placeholder="bash scripts/start.sh" />
+          </label>
+          <label>stopCmd
+            <input type="text" id="svc-stopCmd" placeholder="bash scripts/stop.sh" />
+          </label>
+          <label>restartCmd
+            <input type="text" id="svc-restartCmd" placeholder="bash scripts/restart.sh" />
+          </label>
+        </div>
+      </section>
+
+      <div class="form-actions">
+        <button class="btn btn--primary" id="svc-save">保存部署配置</button>
+        <a class="btn" href="index.html">返回服务列表</a>
+        <span id="svc-msg" class="muted"></span>
       </div>
     </div>
   </main>

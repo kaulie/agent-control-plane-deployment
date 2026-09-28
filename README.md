@@ -291,8 +291,21 @@ macOS 上打的包（Mach-O）在 Linux 远端起不来，所以**打包时就�
   2. 部署通道约定的 `<remote-runtime-home>/<serviceId>`（那台机器自己的布局）；
   3. 契约默认 `runtimeDir` —— 最后兜底（默认是「本机」语义的路径，直接拿去远端几乎一定是错的，所以排在最后）。
 - 选定后的目录会用于：制品 rsync 落点、`VERSION`/`DEPLOYMENT` 标记、`restartCmd` 的工作目录、注入的 `RUNTIME_DIR`/`SERVICE_PORT`、watchdog 暂停标记（本机），以及部署并发单元（同一目录不并发）。
-- **面板**：配置页有三个字段 —— `runtimeDir（默认：本机平台用）`、`runtimeDir（macOS 机器，可选）`、`runtimeDir（Linux 机器，可选）`，下面一行说明当前生效的组合。
+- **面板**：配置页「运行目录」区里有三个字段 —— `runtimeDir（默认：本机平台用）`、`runtimeDir（macOS 机器，可选）`、`runtimeDir（Linux 机器，可选）`，下面一行说明当前生效的组合。
 - **老库**：`services` 表自动补 `runtime_dirs` 列（`{}`），老契约按默认路径跑，行为不变。
+
+### 配置服务页：字段按含义分区
+
+`/panel/service-edit.html?serviceId=…`（服务列表的「配置」按钮）不再是十几个字段平铺，而是按**字段含义**分成四个区（每区「小标题 + 一行说明 + 字段网格」，提示紧挨着它解释的字段）：
+
+| 分区 | 字段 | 含义 |
+|---|---|---|
+| ① 服务标识（来自 service_registry） | `serviceId`、`name`、`gitRepoUrl`、`defaultBranch` | 服务是谁、代码在哪；前两个与注册中心相关的字段只读 |
+| ② 运行目录（按目标机器平台选） | `runtimeDir` 默认 / macOS / Linux | 制品落到哪、`restartCmd` 在哪跑 |
+| ③ 服务接口（URL 只填路径） | `port`、健康检查路径、graceful 通知/轮询路径、最长等待 ms | 端口 + 探活/graceful 端点；host:port 部署时按目标机器拼 |
+| ④ 启停命令（在目标机器上执行） | `startCmd`、`stopCmd`、`restartCmd` | 部署时注入 `SERVICE_PORT` / `APP_VERSION` / `DEPLOY_MACHINE` / `RUNTIME_DIR` |
+
+「保存部署配置 / 返回服务列表」在所有分区之外（全页只有一组操作按钮）。控件 id 未变（`#svc-*`），分区容器是 `section.cfg#cfg-identity|cfg-runtimedir|cfg-endpoints|cfg-commands`；面板测试断言每个字段落在与含义相符的分区里、且全页只有一个控件（分组不是靠复制控件）。
 
 ### 服务契约里的 URL：只填路径（host+port 部署时拼）
 
@@ -308,7 +321,7 @@ macOS 上打的包（Mach-O）在 Linux 远端起不来，所以**打包时就�
 - **域名/端口不写进契约**：写完整 URL 也可以，但 loopback 的 `http://127.0.0.1:4211/health` 在保存时会被**归一成** `/health`，端口落进 `port`（老契约在服务启动时自动迁移，幂等；迁移后拼出来的地址与原配置完全一致）。
 - **例外：显式外部端点原样保留** —— `https://…`（自己终结 TLS）或指向**非本机**主机的 URL 视为外部地址，不参与拼接。
 - **迁移日志**：启动时 `[store] normalized N service contract(s) to path-only URLs`。
-- **面板**：配置页的字段是「健康检查路径 / graceful 通知路径 / graceful 轮询路径」，下方实时预览拼出来的真地址（`http://127.0.0.1:4211/health`）；契约列表仍显示端口与「未指定」标记。
+- **面板**：配置页「服务接口」区的字段是「健康检查路径 / graceful 通知路径 / graceful 轮询路径」，下方实时预览拼出来的真地址（`http://127.0.0.1:4211/health`）；契约列表仍显示端口与「未指定」标记。
 - **注册中心**：契约没填健康路径时，用注册中心登记的 `healthPath`（API 面在注册中心，同样是路径）。
 
 ### 部署机器（可选，按次，支持跨机部署）

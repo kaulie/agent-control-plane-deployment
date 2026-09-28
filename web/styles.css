@@ -166,6 +166,23 @@ a.btn:hover { color: var(--text); }
 }
 .form-grid .form-actions { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; margin-top: 4px; }
 
+/* 服务配置分区：按字段含义分组，每区「小标题 + 一行说明 + 字段网格」，
+   避免十几个字段平铺成一坨。 */
+.cfg { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 16px; }
+.cfg:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
+.cfg__title {
+  margin: 0; font-size: 13px; font-weight: 600;
+  display: flex; align-items: baseline; gap: 8px;
+}
+.cfg__note {
+  font-size: 11px; font-weight: 400; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px;
+}
+.cfg__desc { margin: 4px 0 10px; font-size: 12px; color: var(--muted); line-height: 1.5; }
+/* 分区里的提示要横跨整行，不要被挤进某一列 */
+.form-grid .hint { grid-column: 1 / -1; }
+.form-card > .form-actions { display: flex; align-items: center; gap: 10px; margin-top: 18px; }
+
 /* JSON pre */
 .jsonpre {
   background: var(--panel);
