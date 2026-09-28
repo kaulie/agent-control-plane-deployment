@@ -262,6 +262,15 @@ curl -sS http://127.0.0.1:4220/api/pipelines/<requestId>
   4. **重启**：`ssh` 在远端 `cd` 到 runtime 跑契约的 `restartCmd`，注入 `SERVICE_PORT`/`PORT`/`APP_VERSION`/`DEPLOY_MACHINE`/`RUNTIME_DIR`；
   5. **探活**：同样在远端 `curl` 契约的 `healthUrl`；失败即这次部署失败（**不会**静默退化成本机部署）。
   时间线每一步都标「远端 `<dest>:<dir>`」，成功那句是「部署成功：version=…（远端 `<machine>`：`<dest>:<dir>`）」。前置要求：控制面这台机器能免密 `ssh` 到目标（`~/.ssh/config` 的别名可用），目标机器上有 `curl`。
+- **远端安全网（实测踩过，都已补上）**：
+  - **不覆盖远端的运行态**：推送用与本地同一套豁免，且**每条豁免都同时有 `P`（防删）与 `--exclude`（防覆盖）** —— 只写 `P` 是挡不住覆盖的（会把本机的 `backend/.env`、`backend/data/`、`data/`、`logs/`、`*.pid`、`server.log` 推过去，远端服务会因此起不来）；
+  - **产物平台检查**：推送**之前**比对包里二进制（`bin/*` 的 ELF/Mach-O 头）与远端 `uname -s/-m`。不一致直接失败：`产物平台与远端不符：bin/autonomyd 是 darwin/amd64，远端是 linux/amd64 —— 跨平台部署需要在目标平台构建（或交叉编译）后打包`。**不会**先把产物推过去再让远端起不来；
+  - **每台机器可以覆盖 restart 命令**（远端常有自己的一套，例如 systemd 管理）：在通道条目末尾加 `restart=<命令>`，支持占位符 `{serviceId}` `{version}` `{runtimeDir}` `{remoteDir}` `{machine}`。例：
+    ```bash
+    43.162.117.240=ssh agent-oversea /home/ubuntu/runtime restart=sudo systemctl restart autonomyd
+    ```
+    执行前仍会 `cd` 到该服务的远端 runtime 并注入 `SERVICE_PORT`/`PORT`/`APP_VERSION`/`DEPLOY_MACHINE`/`RUNTIME_DIR`。
+- **跨平台产物是另一件事（尚未做）**：`build.sh` 在**本机**跑，所以 macOS 上打的包只能部署到 macOS。要部署到 Linux 远端，需要在目标平台构建（或用 `GOOS/GOARCH` 交叉编译）后打包；在那之前，平台检查会把这种部署拦在推送之前（远端不受影响）。
 - **API**：`POST /api/deploy-notify {"serviceId": ..., "ref": ..., "targetMachine": "43.162.117.240"}`；`POST /api/deploys` 同样接受。非空机器必须是**有通道**的机器，否则 **400**（已知但没通道的机器会提示去配 `DEPLOY_MACHINE_TARGETS`）。
 - **默认机器**：`DEPLOY_DEFAULT_MACHINE`；不配置则是 `local`。请求不带 `targetMachine` 时按默认机器处理 —— **默认行为不变**（本机部署路径与以前完全一致）。
 - **随任务转发**：机器记在流水线上（`GET /api/pipelines/:id` 的 `targetMachine`）并转发给部署任务（`GET /api/deploys/:id`）；部署事件里带 `部署机器=<machine>`，并作为 `DEPLOY_MACHINE` 注入服务重启时的环境。

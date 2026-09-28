@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -12,12 +13,30 @@ import (
 // 远端部署（B）：制品 rsync 过去、在那边 graceful/重启/探活，本机 runtime 不动。
 
 // fakeRemote 记录远端调用并按 URL 给出应答（真实实现走 ssh/rsync/ssh+curl）。
+// unameOS/unameArch：模拟测试机自己的 uname 口径（远端平台检查用）。
+func unameOS() string {
+	if runtime.GOOS == "darwin" {
+		return "Darwin"
+	}
+	return "Linux"
+}
+
+func unameArch() string {
+	if runtime.GOARCH == "amd64" {
+		return "x86_64"
+	}
+	return runtime.GOARCH
+}
+
 type fakeRemote struct {
 	mu     sync.Mutex
 	runs   []string
 	pushes []string
 	http   []string
 	fail   string // 非空 = 该关键字的调用返回失败（用于失败路径）
+	// 预检里 uname 的回答（默认 linux/amd64，与测试包里的二进制平台一致）。
+	remoteOS   string
+	remoteArch string
 }
 
 func (f *fakeRemote) record(dst *[]string, v string) {
@@ -30,6 +49,10 @@ func (f *fakeRemote) Run(target MachineTarget, script string, timeoutSec int) (i
 	f.record(&f.runs, script)
 	if f.fail != "" && strings.Contains(script, f.fail) {
 		return 3, "boom: " + f.fail
+	}
+	// 预检脚本尾部会问平台；其余命令回 ok。
+	if strings.Contains(script, "uname -s") {
+		return 0, "ok\n" + f.remoteOS + "\n" + f.remoteArch
 	}
 	return 0, "ok"
 }
@@ -96,8 +119,10 @@ func newRemoteDeployFixture(t *testing.T) (*Store, Config, ArtifactStorage, *Mac
 		ReleaseMaxSec:       30,
 		HealthCheckTimeout:  3 * time.Second,
 		DeployMachineTargets: map[string]MachineTarget{
-			"local":    {ID: "local", Kind: "local"},
-			"10.0.0.7": {ID: "10.0.0.7", Kind: "ssh", SSHUser: "ubuntu", SSHHost: "10.0.0.7", RuntimeHome: "/home/ubuntu/runtime"},
+			"local": {ID: "local", Kind: "local"},
+			"10.0.0.7": {ID: "10.0.0.7", Kind: "ssh", SSHUser: "ubuntu", SSHHost: "10.0.0.7", RuntimeHome: "/home/ubuntu/runtime",
+				// 这台机器自己有 restart 通道（例如 systemd 管理的服务）。
+				RestartCmd: "sudo systemctl restart web-cursor-{machine}"},
 		},
 	}
 	storage, err := NewArtifactStorage(cfg)
@@ -131,7 +156,7 @@ func TestExecuteDeployToRemoteMachine(t *testing.T) {
 		t.Fatalf("ClaimNextQueued: %v", err)
 	}
 
-	fake := &fakeRemote{}
+	fake := &fakeRemote{remoteOS: unameOS(), remoteArch: unameArch()}
 	executeDeploy(store, cfg, storage, &GracefulDrain{}, machines, fake, "deploy-remote1")
 
 	job, err := store.GetDeploy("deploy-remote1")
@@ -158,9 +183,12 @@ func TestExecuteDeployToRemoteMachine(t *testing.T) {
 	// ③ 远端重启：cd 到远端目录 + 注入 SERVICE_PORT/DEPLOY_MACHINE + 跑契约的 restartCmd。
 	if !strings.Contains(joinedRuns, "cd '/home/ubuntu/runtime/web-cursor'") ||
 		!strings.Contains(joinedRuns, "DEPLOY_MACHINE='10.0.0.7'") ||
-		!strings.Contains(joinedRuns, "SERVICE_PORT='4211'") ||
-		!strings.Contains(joinedRuns, "bash scripts/restart.sh") {
+		!strings.Contains(joinedRuns, "SERVICE_PORT='4211'") {
 		t.Fatalf("the restart must run on the remote host with the service env, got:\n%s", joinedRuns)
+	}
+	// 这台机器配了 restart= → 用它的命令（而不是契约里的 restartCmd）。
+	if !strings.Contains(joinedRuns, "sudo systemctl restart web-cursor-10.0.0.7") {
+		t.Fatalf("the per-machine restart= override must be used, got:\n%s", joinedRuns)
 	}
 	// ④ graceful 与健康检查都问到远端（用远端自己的 127.0.0.1 地址）。
 	joinedHTTP := strings.Join(http, "\n")
@@ -256,7 +284,7 @@ func TestRemotePreflightAuthFailureHintsAliasForm(t *testing.T) {
 	target := MachineTarget{ID: "43.162.117.240", Kind: "ssh", SSHUser: "ubuntu", SSHHost: "43.162.117.240", RuntimeHome: "/home/ubuntu/runtime"}
 	job := DeployJob{RequestID: "deploy-auth1", TargetMachine: target.ID}
 	fake := &authFailRemote{}
-	code, out := remotePreflight(store, job, target, fake, "/home/ubuntu/runtime/web-cursor")
+	code, out, _ := remotePreflight(store, job, target, fake, "/home/ubuntu/runtime/web-cursor")
 	if code == 0 {
 		t.Fatal("an auth failure must fail the preflight")
 	}

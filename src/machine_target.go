@@ -30,6 +30,11 @@ type MachineTarget struct {
 	SSHHost     string
 	SSHPort     int
 	RuntimeHome string // 远端：服务 runtime 目录的父目录（服务目录 = <home>/<serviceId>）
+	// RestartCmd 覆盖契约里的 restartCmd（对这台机器专用）。远端经常有自己的一套：
+	// 例如 systemd 管理的服务要 `sudo systemctl restart autonomyd`，还要顺手更新 unit 里的
+	// APP_VERSION。支持占位符：{serviceId} {version} {runtimeDir} {remoteDir} {machine}。
+	// 形如 `id=ssh user@host /remote/home restart=<命令到条目结尾>`。
+	RestartCmd string
 }
 
 func (t MachineTarget) Remote() bool { return t.Kind == "ssh" }
@@ -48,6 +53,21 @@ func (t MachineTarget) RuntimeDirFor(serviceID string) string {
 		return ""
 	}
 	return path.Join(strings.TrimSuffix(t.RuntimeHome, "/"), serviceID)
+}
+
+// ExpandRestartCmd 展开 restart= 命令里的占位符。
+func (t MachineTarget) ExpandRestartCmd(serviceID, version, runtimeDir, remoteDir, machine string) string {
+	out := t.RestartCmd
+	for k, v := range map[string]string{
+		"{serviceId}":  serviceID,
+		"{version}":    version,
+		"{runtimeDir}": runtimeDir,
+		"{remoteDir}":  remoteDir,
+		"{machine}":    machine,
+	} {
+		out = strings.ReplaceAll(out, k, v)
+	}
+	return strings.TrimSpace(out)
 }
 
 // Describe 给事件/日志用的一句话。
@@ -98,8 +118,22 @@ func parseMachineTargetSpec(id, spec string) (MachineTarget, error) {
 	if len(fields) == 0 {
 		return target, fmt.Errorf("%s 的 %q 没有目标（要 `local` 或 `ssh [user@]host[:port] <remote-home>`）", deployMachineTargetsEnv, id)
 	}
+	// 可选尾巴：restart=<命令…>（命令里可以有空格，一直吃到条目结尾）。
+	restartCmd := ""
+	if i := strings.Index(spec, "restart="); i >= 0 {
+		restartCmd = strings.TrimSpace(spec[i+len("restart="):])
+		spec = strings.TrimSpace(spec[:i])
+		fields = strings.Fields(spec)
+		if len(fields) == 0 {
+			return target, fmt.Errorf("%s 的 %q 只写了 restart= 没有目标", deployMachineTargetsEnv, id)
+		}
+	}
+	target.RestartCmd = restartCmd
 	switch strings.ToLower(fields[0]) {
 	case "local":
+		if len(fields) != 1 {
+			return target, fmt.Errorf("%s 的 %q：local 只接受 `local`（可选 restart=…）", deployMachineTargetsEnv, id)
+		}
 		target.Kind = "local"
 		return target, nil
 	case "ssh":
