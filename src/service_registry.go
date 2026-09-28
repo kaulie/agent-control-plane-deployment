@@ -345,6 +345,13 @@ func buildServiceCatalog(ctx context.Context, store *Store, reg *ServiceRegistry
 				if local, ok := localByID[rs.Name]; ok {
 					entry.ServiceContract = local
 					entry.Configured = true
+					// 本机还没填健康检查路径时，用注册中心登记的 healthPath（API 面在注册中心，
+					// 路径同样与机器无关）。保存时它会落到契约里。
+					if strings.TrimSpace(entry.HealthURL) == "" {
+						if hp := strings.TrimSpace(rs.HealthPath); hp != "" {
+							entry.HealthURL = ensureLeadingSlash(hp)
+						}
+					}
 				}
 				entries = append(entries, entry)
 				seen[rs.Name] = true

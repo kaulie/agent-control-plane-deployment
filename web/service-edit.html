@@ -33,8 +33,8 @@
         <label>runtimeDir
           <input type="text" id="svc-runtimeDir" placeholder="/Users/gaolei/runtime/web-cursor" />
         </label>
-        <label>healthUrl
-          <input type="text" id="svc-healthUrl" placeholder="http://127.0.0.1:4211/health" />
+        <label>健康检查路径（healthUrl）
+          <input type="text" id="svc-healthUrl" placeholder="/health" />
         </label>
         <label>服务端口 PORT（必填，注入 SERVICE_PORT）
           <input type="number" id="svc-port" min="1" max="65535" step="1" required placeholder="例如 4211" />
@@ -54,15 +54,16 @@
         <label>defaultBranch
           <input type="text" id="svc-defaultBranch" placeholder="main" />
         </label>
-        <label>restartNotifyUrl
-          <input type="text" id="svc-restartNotifyUrl" placeholder="可选，graceful 通知" />
+        <label>graceful 通知路径（restartNotifyUrl）
+          <input type="text" id="svc-restartNotifyUrl" placeholder="可选，例如 /api/ops/restart-notify" />
         </label>
-        <label>restartPollUrl
-          <input type="text" id="svc-restartPollUrl" placeholder="可选，graceful 轮询" />
+        <label>graceful 轮询路径（restartPollUrl）
+          <input type="text" id="svc-restartPollUrl" placeholder="可选，例如 /api/ops/restart-status" />
         </label>
         <label>gracefulRestartMaxWaitMs
           <input type="number" id="svc-gracefulRestartMaxWaitMs" min="0" step="1" placeholder="0 = 服务端默认" />
         </label>
+        <p class="hint" id="svc-url-hint"></p>
         <div class="form-actions">
           <button class="btn btn--primary" id="svc-save">保存部署配置</button>
           <a class="btn" href="index.html">返回服务列表</a>

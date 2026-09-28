@@ -574,16 +574,18 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		return
 	}
 
-	healthOK := waitForHealth(service.HealthURL, cfg.HealthCheckTimeout)
+	// 契约里只存路径（/health），这里按端口拼出真地址：本机直接请求，远端在那台机器上 curl。
+	healthURL := serviceHealthURL(*service)
+	healthOK := waitForHealth(healthURL, cfg.HealthCheckTimeout)
 	if target.Remote() {
-		healthOK = waitForRemoteHealth(remote, target, service.HealthURL, cfg.HealthCheckTimeout)
+		healthOK = waitForRemoteHealth(remote, target, healthURL, cfg.HealthCheckTimeout)
 	}
 	if !healthOK {
 		if target.Remote() {
 			_ = store.AddDeployEvent(job.RequestID, eventlevel.Error,
-				"远端健康检查失败："+target.SSHHost+" 上的 "+service.HealthURL)
+				"远端健康检查失败："+target.SSHHost+" 上的 "+healthURL)
 		} else {
-			_ = store.AddDeployEvent(job.RequestID, eventlevel.Error, "健康检查失败："+service.HealthURL)
+			_ = store.AddDeployEvent(job.RequestID, eventlevel.Error, "健康检查失败："+healthURL)
 		}
 		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 			State:   StateFailed,

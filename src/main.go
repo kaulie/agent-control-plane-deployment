@@ -23,7 +23,8 @@ func seedDefaultService(store *Store) {
 		ServiceID:  "web-cursor",
 		Name:       "Web Cursor Agent Gateway",
 		RuntimeDir: runtimeDir,
-		HealthURL:  "http://127.0.0.1:4211/health",
+		// URL 只存路径（部署时按目标机器拼 host:port）。
+		HealthURL:  "/health",
 		Port:       4211,
 		StartCmd:   fmt.Sprintf("bash %q", filepath.Join(runtimeDir, "scripts", "start.sh")),
 		StopCmd:    fmt.Sprintf("bash %q", filepath.Join(runtimeDir, "scripts", "stop.sh")),
@@ -46,13 +47,13 @@ func seedACPService(store *Store, cfg Config) {
 		ServiceID:        "agent-control-plane-deployment",
 		Name:             "Agent Control Plane Deployment",
 		RuntimeDir:       cfg.Home,
-		HealthURL:        fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Port),
+		HealthURL:        "/health",
 		Port:             cfg.Port,
 		StartCmd:         fmt.Sprintf("bash %q", filepath.Join(cfg.Home, "scripts", "start.sh")),
 		StopCmd:          fmt.Sprintf("bash %q", filepath.Join(cfg.Home, "scripts", "stop.sh")),
 		RestartCmd:       fmt.Sprintf("bash %q", filepath.Join(cfg.Home, "scripts", "restart.sh")),
-		RestartNotifyURL: fmt.Sprintf("http://127.0.0.1:%d/restart/notify", cfg.Port),
-		RestartPollURL:   fmt.Sprintf("http://127.0.0.1:%d/restart/poll", cfg.Port),
+		RestartNotifyURL: "/restart/notify",
+		RestartPollURL:   "/restart/poll",
 	})
 	if err != nil {
 		log.Printf("[seed] acp service failed: %v", err)
@@ -116,6 +117,13 @@ func main() {
 
 	seedDefaultService(store)
 	seedACPService(store, cfg)
+	// 老库里的完整 URL（http://127.0.0.1:4211/health）归一成路径（/health）+ 端口：
+	// contract 与机器无关，部署时再按目标机器拼。幂等。
+	if n, err := store.NormalizeServiceURLs(); err != nil {
+		log.Printf("[store] warn: normalize service urls: %v", err)
+	} else if n > 0 {
+		log.Printf("[store] normalized %d service contract(s) to path-only URLs", n)
+	}
 
 	registry := NewServiceRegistry(cfg)
 	if registry.Enabled() {

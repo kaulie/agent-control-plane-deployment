@@ -181,8 +181,10 @@ func waitForGracefulRestartVia(
 	version string,
 	transport gracefulTransport,
 ) (forced bool) {
-	notifyURL := strings.TrimSpace(service.RestartNotifyURL)
-	pollURL := strings.TrimSpace(service.RestartPollURL)
+	// 契约里只存路径，这里按目标机器的端口拼出真地址（本机 → 127.0.0.1:port；
+	// 远端 → 同一个字符串，但由 remoteTransport 在那台机器上执行）。
+	notifyURL := serviceNotifyURL(service)
+	pollURL := servicePollURL(service)
 	maxWait := service.gracefulMaxWait(cfg)
 	deadline := time.Now().Add(maxWait)
 

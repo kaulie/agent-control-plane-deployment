@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -273,6 +274,10 @@ func (s *Store) UpsertService(input ServiceContract) (ServiceContract, error) {
 	existing, _ := s.GetService(input.ServiceID)
 	ts := nowISO()
 	row := input
+	// 契约里的 URL 只存路径（host+port 部署时按目标机器拼）：写入前先归一。
+	// 注意：这里**不**从 URL 推导端口 —— 新写入要求显式 port（API 层校验）；
+	// 老契约的端口由启动迁移 NormalizeServiceURLs 补齐。
+	NormalizeServiceContract(&row)
 	if existing != nil {
 		row.CreatedAt = existing.CreatedAt
 	} else if row.CreatedAt == "" {
@@ -333,6 +338,35 @@ func (s *Store) GetService(serviceID string) (*ServiceContract, error) {
 		return nil, nil
 	}
 	return svc, err
+}
+
+// NormalizeServiceURLs 把库里所有契约的 URL 归一成「路径」形态（幂等）：老库里存的是
+// http://127.0.0.1:4211/health，现在只存 /health，端口落进 port 列。返回改动条数。
+// 外部端点（非 loopback / https）原样保留。
+func (s *Store) NormalizeServiceURLs() (int, error) {
+	svcs, err := s.ListServices()
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, svc := range svcs {
+		row := svc
+		// 先补端口（老契约的端口只在 URL 里），再拆 URL —— 顺序不能反。
+		changed := adoptURLPorts(&row)
+		if NormalizeServiceContract(&row) {
+			changed = true
+		}
+		if !changed {
+			continue
+		}
+		row.CreatedAt = svc.CreatedAt
+		if _, err := s.UpsertService(row); err != nil {
+			return n, fmt.Errorf("normalize service urls %s: %w", svc.ServiceID, err)
+		}
+		n++
+		fmt.Printf("[store] normalized service urls: %s health=%q port=%d\n", svc.ServiceID, row.HealthURL, row.Port)
+	}
+	return n, nil
 }
 
 func (s *Store) ListServices() ([]ServiceContract, error) {

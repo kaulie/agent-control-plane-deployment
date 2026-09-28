@@ -81,6 +81,65 @@ function makePage(serviceId = 'web-cursor', options = {}) {
   return { dom, flush, calls, requests, puts };
 }
 
+// 契约里的 URL 只存路径（host+port 在部署时按目标机器拼）：页面要显示拼出来的真地址。
+test('service edit page: URL 只填路径，页面显示部署时拼出来的地址', async (t) => {
+  const { dom, flush } = makePage('web-cursor', {
+    payload: {
+      registry: { url: 'http://127.0.0.1:4240', enabled: true, ok: true, services: 1 },
+      services: [{
+        serviceId: 'web-cursor', name: 'Web Cursor', runtimeDir: '/tmp/web-cursor',
+        healthUrl: '/health', port: 4211,
+        restartNotifyUrl: '/api/ops/restart-notify', restartPollUrl: '/api/ops/restart-status',
+        startCmd: 'start', stopCmd: 'stop', restartCmd: 'restart',
+        defaultBranch: 'main', registered: true, configured: true,
+      }],
+    },
+  });
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+  await flush();
+
+  // 表单里存的就是路径本身
+  assert.equal(doc.querySelector('#svc-healthUrl').value, '/health');
+  // 提示里给出拼好的地址（本机 / 远端都是这个地址，只是执行位置不同）
+  const hint = doc.querySelector('#svc-url-hint').textContent;
+  assert.match(hint, /http:\/\/127\.0\.0\.1:4211\/health/, '要显示拼出来的健康检查地址：' + hint);
+  assert.match(hint, /http:\/\/127\.0\.0\.1:4211\/api\/ops\/restart-notify/, 'graceful 通知也一样：' + hint);
+  assert.match(hint, /只填路径/, '要说明只填路径：' + hint);
+});
+
+test('service edit page: 旧契约里的完整 loopback URL 归一后保存（存路径）', async (t) => {
+  const { dom, flush, puts } = makePage('web-cursor', {
+    payload: {
+      registry: { url: 'http://127.0.0.1:4240', enabled: true, ok: true, services: 1 },
+      services: [{
+        serviceId: 'web-cursor', name: 'Web Cursor', runtimeDir: '/tmp/web-cursor',
+        healthUrl: 'http://127.0.0.1:4211/health', port: 4211,
+        startCmd: 'start', stopCmd: 'stop', restartCmd: 'restart',
+        defaultBranch: 'main', registered: true, configured: true,
+      }],
+    },
+  });
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+  await flush();
+
+  // 预览按「保存后会被归一成的样子」显示：/health + 端口
+  const hint = doc.querySelector('#svc-url-hint').textContent;
+  assert.match(hint, /http:\/\/127\.0\.0\.1:4211\/health/, hint);
+
+  // 用户把字段改成路径后保存 → PUT 里就是路径（服务端也会再归一一次）
+  const health = doc.querySelector('#svc-healthUrl');
+  health.value = 'http://127.0.0.1:4211/health';
+  health.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  assert.match(doc.querySelector('#svc-url-hint').textContent, /http:\/\/127\.0\.0\.1:4211\/health/);
+  doc.querySelector('#svc-save').click();
+  await flush();
+  const put = puts().at(-1);
+  assert.ok(put, '保存要发 PUT');
+  assert.equal(JSON.parse(put.body).healthUrl, 'http://127.0.0.1:4211/health', '原样提交，服务端归一成路径');
+});
+
 test('service edit page: loads the selected service and locks registry-owned fields', async (t) => {
   const { dom, flush, calls } = makePage('web-cursor');
   t.after(() => dom.window.close());
