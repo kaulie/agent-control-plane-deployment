@@ -254,6 +254,7 @@ curl -sS http://127.0.0.1:4220/api/pipelines/<requestId>
   export DEPLOY_MACHINE_TARGETS='43.162.117.240=ssh ubuntu@43.162.117.240 /home/ubuntu/runtime'
   ```
   远端机器的服务 runtime 目录按约定 = `<remote-runtime-home>/<serviceId>`（上面的例子 → `/home/ubuntu/runtime/autonomy`）。也可以写在本机 `data/machine-targets`（`data/` 跨自升级保留，`scripts/start.sh` 会读）。
+  **免密登录配在 `~/.ssh/config` 的别名上时，host 写别名**（`ssh` 只按名字匹配 Host 段，写字面 IP 不会用上那段的 `IdentityFile`）：`43.162.117.240=ssh agent-oversea /home/ubuntu/runtime`。认证失败时部署事件会直接提示这一条。
 - **远端部署做了什么**（选 `ssh` 通道的机器时）：
   1. **预检**：能 `ssh` 登录、远端有 `curl`、目标 runtime 目录存在且像这个服务（没有 `scripts/restart.sh` 就拒绝 `rsync --delete`，不会误删别的东西；目录不存在则创建，首次部署不带 `--delete`）；
   2. **传制品**：本机下载后 `rsync -a --delete -e ssh` 推到远端 runtime（`backend/.env`、`backend/data/`、`data/`、`logs/`、`packages/`、`*.pid` 等运行态豁免，与本地同一套规则）；

@@ -31,6 +31,12 @@ func remotePreflight(store *Store, job DeployJob, target MachineTarget, remote R
 	code, out := remote.Run(target, check, 60)
 	out = strings.TrimSpace(out)
 	if code != 0 {
+		if strings.Contains(out, "Permission denied") || strings.Contains(out, "publickey") {
+			// 免密通常配在 ~/.ssh/config 的别名上（Host <alias> → HostName/User/IdentityFile）：
+			// 用字面 host 登录时别名不生效，密钥就找不到。
+			out += "\n提示：ssh 免密若配在 ~/.ssh/config 的别名上，请把通道写成 `ssh <别名> <remote-home>`" +
+				"（例如 `" + target.ID + "=ssh agent-oversea /home/ubuntu/runtime`）"
+		}
 		_ = store.AddDeployEvent(job.RequestID, eventlevel.Error, "远端预检失败："+out)
 		return code, "remote preflight failed: " + out
 	}
