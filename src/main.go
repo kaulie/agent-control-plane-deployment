@@ -133,13 +133,18 @@ func main() {
 	}
 
 	// 部署机器目录：真源是 service-registry 登记的实例主机（+ 本机 + DEPLOY_MACHINES），
-	// 面板下拉、触发校验、部署执行都从这里取。
+	// 面板下拉、触发校验、部署执行都从这里取。平台探测（打包用）挂在它上面。
+	ssh := sshRemoteRunner{home: cfg.Home}
+	machinesPlatformResolver := newPlatformResolver(ssh)
 	machines := NewMachineCatalog(cfg, registry)
 
 	drain := &GracefulDrain{}
-	worker := NewDeployWorker(store, cfg, storage, drain, machines, sshRemoteRunner{home: cfg.Home})
+	worker := NewDeployWorker(store, cfg, storage, drain, machines, ssh)
 	pipeline := NewPipelineWorker(store, cfg, storage, worker, drain)
 	pipeline.registry = registry
+	// 打包要按目标机器的平台构建（mac/linux 两套产物）：接上机器目录与平台探测。
+	pipeline.machines = machines
+	pipeline.platforms = machinesPlatformResolver
 	api := &apiServer{store: store, cfg: cfg, storage: storage, worker: worker, pipeline: pipeline,
 		drain: drain, registry: registry, machines: machines}
 

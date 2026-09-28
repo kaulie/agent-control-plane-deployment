@@ -122,3 +122,28 @@ func assertPackageMatchesRemote(dir string, remoteOS, remoteArch string) error {
 			"例如 `GOOS=%s GOARCH=%s ./build.sh`；本次未推送任何文件",
 		strings.Join(bad, ", "), strings.SplitN(bad[0], "=", 2)[1], remoteOS, remoteArch, remoteOS, remoteArch)
 }
+
+// assertPackageMatchesPlatform 校验**打包出来的包**里的可执行文件与目标平台一致。
+//
+// 典型场景：服务的 build.sh 在构建机（macOS）上按 uname 下载了平台相关的工具，于是
+// Linux 包里混进 Mach-O —— 这类包推到远端根本起不来。这里点名是哪个文件，并指出
+// 服务的 build.sh 应当按 GOOS/GOARCH 产对应平台的产物（打包阶段失败 = 不上传、不下载）。
+func assertPackageMatchesPlatform(dir string, platform BuildPlatform) error {
+	if platform.IsZero() {
+		return nil
+	}
+	bins := packageBinaries(dir)
+	want := platform.String()
+	bad := []string{}
+	for name, plat := range bins {
+		if plat != want {
+			bad = append(bad, name+"="+plat)
+		}
+	}
+	if len(bad) == 0 {
+		return nil
+	}
+	sort.Strings(bad)
+	return fmt.Errorf("产物里有非 %s 的二进制：%s —— 服务的 build.sh 需要按 GOOS/GOARCH 产对应平台的产物"+
+		"（例如平台相关的下载物也要按目标平台取）；本次未上传制品", want, strings.Join(bad, ", "))
+}

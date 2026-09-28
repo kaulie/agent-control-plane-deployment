@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,16 +13,19 @@ import (
 
 // PipelineWorker: package from git, then enqueue deploy (graceful notify/poll happens in DeployWorker).
 type PipelineWorker struct {
-	store    *Store
-	cfg      Config
-	storage  ArtifactStorage
-	deploy   *DeployWorker
-	drain    *GracefulDrain
-	registry *ServiceRegistry
-	mu       sync.Mutex
-	busy     bool
-	stopCh   chan struct{}
-	wg       sync.WaitGroup
+	store *Store
+	// machines / platforms：打包时要按**目标机器**的平台构建（mac/linux 两套产物）。
+	machines  *MachineCatalog
+	platforms *platformResolver
+	cfg       Config
+	storage   ArtifactStorage
+	deploy    *DeployWorker
+	drain     *GracefulDrain
+	registry  *ServiceRegistry
+	mu        sync.Mutex
+	busy      bool
+	stopCh    chan struct{}
+	wg        sync.WaitGroup
 }
 
 func NewPipelineWorker(store *Store, cfg Config, storage ArtifactStorage, deploy *DeployWorker, drain *GracefulDrain) *PipelineWorker {
@@ -72,12 +76,47 @@ func (w *PipelineWorker) Kick() {
 // together with where that proxy is configured.
 func (w *PipelineWorker) packageOptions(job *PipelineJob, events PackageEventFunc) PackageOptions {
 	return PackageOptions{
-		MaxSec:       w.cfg.ReleaseMaxSec,
-		Storage:      w.storage,
-		UseProxy:     job.UseProxy,
-		ProxyEnvFile: w.cfg.ProxyEnvFile,
-		Events:       events,
+		MaxSec:        w.cfg.ReleaseMaxSec,
+		Storage:       w.storage,
+		UseProxy:      job.UseProxy,
+		ProxyEnvFile:  w.cfg.ProxyEnvFile,
+		BuildPlatform: w.platformFor(job),
+		Events:        events,
 	}
+}
+
+// platformFor 决定这次打包按哪个平台构建：目标机器的平台（通道声明或 ssh 探测），
+// 本机机器就是控制面自己的平台（tag 保持 deployment-<hash>，与历史一致）。找不到通道
+// 时退回本机平台 —— 部署前的平台校验会拦住发错的产物。
+func (w *PipelineWorker) platformFor(job *PipelineJob) BuildPlatform {
+	machine := strings.TrimSpace(job.TargetMachine)
+	if machine == "" {
+		machine = w.machinesDefault()
+	}
+	target, ok := w.machineTarget(machine)
+	if !ok {
+		return LocalBuildPlatform()
+	}
+	p, why := w.platforms.Resolve(target)
+	if strings.TrimSpace(why) != "" {
+		_ = w.store.AddPipelineEvent(job.RequestID, eventlevel.Info,
+			"构建平台="+p.String()+"（部署机器="+machine+"；"+why+"）")
+	}
+	return p
+}
+
+func (w *PipelineWorker) machineTarget(machine string) (MachineTarget, bool) {
+	if w.machines == nil {
+		return MachineTarget{}, false
+	}
+	return w.machines.Target(context.Background(), machine)
+}
+
+func (w *PipelineWorker) machinesDefault() string {
+	if w.machines == nil {
+		return defaultDeployMachine
+	}
+	return w.machines.DefaultID(context.Background())
 }
 
 func (w *PipelineWorker) tick() {

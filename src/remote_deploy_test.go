@@ -94,7 +94,8 @@ func newRemoteDeployFixture(t *testing.T) (*Store, Config, ArtifactStorage, *Mac
 
 	pkgs := filepath.Join(dir, "packages")
 	hash := "abc12345"
-	tag := "deployment-" + hash
+	// 远端部署 = 另一台机器（Linux）的产物：tag 带平台维度，与打包侧一致。
+	tag := deploymentTagFor(hash, BuildPlatform{OS: "linux", Arch: "amd64"})
 	snap := filepath.Join(pkgs, "web-cursor", tag)
 	if err := os.MkdirAll(filepath.Join(snap, "scripts"), 0o755); err != nil {
 		t.Fatalf("mkdir package: %v", err)
@@ -156,7 +157,7 @@ func TestExecuteDeployToRemoteMachine(t *testing.T) {
 		t.Fatalf("ClaimNextQueued: %v", err)
 	}
 
-	fake := &fakeRemote{remoteOS: unameOS(), remoteArch: unameArch()}
+	fake := &fakeRemote{remoteOS: "Linux", remoteArch: "x86_64"}
 	executeDeploy(store, cfg, storage, &GracefulDrain{}, machines, fake, "deploy-remote1")
 
 	job, err := store.GetDeploy("deploy-remote1")
@@ -249,11 +250,8 @@ func TestExecuteDeployUsesPlatformRuntimeDir(t *testing.T) {
 		t.Fatalf("ClaimNextQueued: %v", err)
 	}
 
-	fake := &fakeRemote{remoteOS: unameOS(), remoteArch: unameArch()}
-	// 让假远端报 linux（这样才会选 runtimeDirs.linux）。
-	if runtime.GOOS == "darwin" {
-		fake.remoteOS, fake.remoteArch = "Linux", "x86_64"
-	}
+	// 假远端就是 Linux：会选 runtimeDirs.linux、且 tag 的平台与它一致。
+	fake := &fakeRemote{remoteOS: "Linux", remoteArch: "x86_64"}
 	executeDeploy(store, cfg, storage, &GracefulDrain{}, machines, fake, "deploy-remote3")
 
 	job, _ := store.GetDeploy("deploy-remote3")
@@ -269,6 +267,63 @@ func TestExecuteDeployUsesPlatformRuntimeDir(t *testing.T) {
 	if !strings.Contains(joined, "'/opt/web-cursor'") {
 		t.Fatalf("the remote restart must run in the platform runtimeDir, got:\n%s", joined)
 	}
+}
+
+// 本机平台的产物（老 tag，没有平台后缀）发到 Linux 远端：**在下载之前**就失败，
+// 不下载、不推送（这正是「macOS 包发到 Linux 远端」那次的教训）。
+func TestExecuteDeployRejectsForeignPlatformTagBeforeDownload(t *testing.T) {
+	store, cfg, storage, machines, _, localRuntimeDir := newRemoteDeployFixture(t)
+	svc, err := store.GetService("web-cursor")
+	if err != nil || svc == nil {
+		t.Fatalf("GetService: %v %v", svc, err)
+	}
+	_ = svc
+	// 故意用「本机平台」的 tag（没有平台后缀）。
+	hostTag := deploymentTagFor("abc12345", LocalBuildPlatform())
+	if hostTag != "deployment-abc12345" {
+		t.Fatalf("host tag = %q, want the legacy unqualified form", hostTag)
+	}
+	if _, err := store.CreateDeploy("deploy-remote4", "web-cursor", hostTag, Identity{}, "queued", "10.0.0.7"); err != nil {
+		t.Fatalf("CreateDeploy: %v", err)
+	}
+	if _, err := store.ClaimNextQueued(); err != nil {
+		t.Fatalf("ClaimNextQueued: %v", err)
+	}
+
+	fake := &fakeRemote{remoteOS: "Linux", remoteArch: "x86_64"}
+	executeDeploy(store, cfg, storage, &GracefulDrain{}, machines, fake, "deploy-remote4")
+
+	job, _ := store.GetDeploy("deploy-remote4")
+	if job == nil || job.State != StateFailed {
+		t.Fatalf("deploy = %+v, want failed", job)
+	}
+	if !strings.Contains(job.Error, "制品平台与机器不符") {
+		t.Fatalf("error must name the platform mismatch, got %q", job.Error)
+	}
+	runs, pushes, _ := fake.calls()
+	if len(pushes) != 0 {
+		t.Fatalf("nothing may be pushed, got %v", pushes)
+	}
+	// 远端平台要先探测（平台检查需要它），但「目录预检 / 下载 / 推送」都不该发生。
+	probed := false
+	for _, r := range runs {
+		if strings.Contains(r, "uname -s") {
+			probed = true
+		}
+		if strings.Contains(r, "scripts/restart.sh") || strings.Contains(r, "mkdir -p") {
+			t.Fatalf("the platform check must fire before the dir check/download:\n%s", r)
+		}
+	}
+	if !probed {
+		t.Fatal("the remote platform must be probed to compare with the tag")
+	}
+	events, _ := store.ListDeployEvents("deploy-remote4")
+	for _, e := range events {
+		if strings.Contains(e.Message, "下载开始") {
+			t.Fatalf("the foreign-platform tag must not even download: %s", e.Message)
+		}
+	}
+	_ = localRuntimeDir
 }
 
 func TestExecuteDeployRemotePreflightFailureFailsFast(t *testing.T) {

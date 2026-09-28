@@ -556,7 +556,7 @@ test('pipeline trigger: 机器下拉标出本机/远端通道', async (t) => {
       defaultDeployMachine: 'local',
       deployMachineTargets: {
         local: { kind: 'local' },
-        '43.162.117.240': { kind: 'ssh', host: '43.162.117.240', runtimeHome: '/home/ubuntu/runtime' },
+        '43.162.117.240': { kind: 'ssh', host: '43.162.117.240', runtimeHome: '/home/ubuntu/runtime', platform: 'linux/amd64' },
       },
     },
   });
@@ -566,7 +566,7 @@ test('pipeline trigger: 机器下拉标出本机/远端通道', async (t) => {
 
   const labels = Array.from(doc.querySelectorAll('#pipe-machine option')).map((o) => o.textContent);
   assert.match(labels[0], /local（本机）/, '本机标成「本机」');
-  assert.match(labels[1], /（远端 43\.162\.117\.240）/, '远端机器标出主机');
+  assert.match(labels[1], /（远端 43\.162\.117\.240 linux\/amd64）/, '远端机器标出主机与构建平台');
 
   // 选远端机器 → 请求体带 targetMachine（服务端会真的部署过去）。
   const sel = doc.querySelector('#pipe-machine');

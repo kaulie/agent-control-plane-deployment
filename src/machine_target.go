@@ -35,9 +35,21 @@ type MachineTarget struct {
 	// APP_VERSION。支持占位符：{serviceId} {version} {runtimeDir} {remoteDir} {machine}。
 	// 形如 `id=ssh user@host /remote/home restart=<命令到条目结尾>`。
 	RestartCmd string
+	// Platform 是这台机器的平台（`linux/amd64`），显式声明时打包就按它构建，不必 ssh 去问；
+	// 没写则在打包/部署时探（uname -s -m）。形如 `… platform=linux/amd64`。
+	Platform string
 }
 
 func (t MachineTarget) Remote() bool { return t.Kind == "ssh" }
+
+// BuildPlatformFromTarget 返回这台机器显式声明的平台（没写 = 零值，需要探测）。
+func (t MachineTarget) BuildPlatformFromTarget() BuildPlatform {
+	p, err := ParseBuildPlatform(t.Platform)
+	if err != nil {
+		return BuildPlatform{}
+	}
+	return p
+}
 
 // SSHDest 是 ssh/rsync 的目标（user@host）；端口单独用 -p 传。
 func (t MachineTarget) SSHDest() string {
@@ -123,10 +135,26 @@ func parseMachineTargetSpec(id, spec string) (MachineTarget, error) {
 	if i := strings.Index(spec, "restart="); i >= 0 {
 		restartCmd = strings.TrimSpace(spec[i+len("restart="):])
 		spec = strings.TrimSpace(spec[:i])
-		fields = strings.Fields(spec)
-		if len(fields) == 0 {
-			return target, fmt.Errorf("%s 的 %q 只写了 restart= 没有目标", deployMachineTargetsEnv, id)
+	}
+	// 可选：platform=<os>/<arch> —— 显式声明目标平台（打包按它构建，不用 ssh 探测）。
+	platform := ""
+	if i := strings.Index(spec, "platform="); i >= 0 {
+		rest := strings.TrimSpace(spec[i+len("platform="):])
+		if f := strings.Fields(rest); len(f) > 0 {
+			platform = f[0]
+			rest = strings.TrimSpace(strings.TrimPrefix(rest, f[0]))
 		}
+		spec = strings.TrimSpace(spec[:i] + " " + rest)
+	}
+	if platform != "" {
+		if _, err := ParseBuildPlatform(platform); err != nil {
+			return target, fmt.Errorf("%s 的 %q：%w", deployMachineTargetsEnv, id, err)
+		}
+		target.Platform = platform
+	}
+	fields = strings.Fields(spec)
+	if len(fields) == 0 {
+		return target, fmt.Errorf("%s 的 %q 只写了覆盖项没有目标", deployMachineTargetsEnv, id)
 	}
 	target.RestartCmd = restartCmd
 	switch strings.ToLower(fields[0]) {

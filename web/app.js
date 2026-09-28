@@ -258,7 +258,8 @@ async function refreshDeployMachineOption() {
 function machineChannelLabel(id) {
   const t = deployMachineTargets[id];
   if (!t || !t.kind) return '';
-  if (t.kind === 'ssh') return t.host ? '（远端 ' + t.host + '）' : '（远端 ssh）';
+  const plat = t.platform ? ' ' + t.platform : '';
+  if (t.kind === 'ssh') return (t.host ? '（远端 ' + t.host : '（远端 ssh') + plat + '）';
   return '（本机）';
 }
 
