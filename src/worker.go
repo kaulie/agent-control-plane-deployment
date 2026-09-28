@@ -609,12 +609,12 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 			State:   StateFailed,
 			Version: hash,
-			Error:   "restart finished but health check failed: " + service.HealthURL,
+			Error:   "restart finished but health check failed: " + healthURL,
 		})
 		return
 	}
 	_ = store.AddDeployEvent(job.RequestID, eventlevel.Success,
-		"健康检查通过："+service.HealthURL)
+		"健康检查通过："+healthURL)
 
 	_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 		State:   StateSucceeded,
@@ -652,7 +652,9 @@ func reconcileOrphanDeploys(store *Store) int {
 		if b, err := os.ReadFile(filepath.Join(service.LocalRuntimeDir(), "VERSION")); err == nil {
 			versionOnDisk = strings.TrimSpace(string(b))
 		}
-		ok := healthOK(service.HealthURL)
+		// 契约里只存路径（/health），探活要用按本机端口拼出来的真地址 —— 否则
+		// 自部署收尾时把 "/health" 当 URL 请求，部署会被误判为失败。
+		ok := healthOK(serviceHealthURL(*service))
 		if ok && versionOnDisk == hash {
 			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 				State:   StateSucceeded,
@@ -661,7 +663,7 @@ func reconcileOrphanDeploys(store *Store) int {
 			})
 			fmt.Printf("[deploy] reconciled %s → succeeded (health ok, version=%s)\n", job.RequestID, hash)
 		} else {
-			errMsg := fmt.Sprintf("deployment service restarted mid-deploy; health check failed: %s", service.HealthURL)
+			errMsg := fmt.Sprintf("deployment service restarted mid-deploy; health check failed: %s", serviceHealthURL(*service))
 			if ok {
 				errMsg = fmt.Sprintf("deployment service restarted mid-deploy; VERSION=%s expected=%s", versionOnDisk, hash)
 			}
