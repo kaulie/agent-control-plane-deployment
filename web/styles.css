@@ -384,3 +384,22 @@ a.btn:hover { color: var(--text); }
 }
 .pager__info { margin-right: auto; }
 .pager .btn[disabled] { opacity: .45; cursor: not-allowed; }
+
+/* Machine version inventory tab */
+.inventory-root { display: flex; flex-direction: column; gap: 16px; }
+.inventory-service {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+}
+.inventory-service__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 16px;
+  margin-bottom: 10px;
+}
+.inventory-service__head h3 { margin: 0; font-size: 15px; }
+.inventory-drift { background: rgba(210,153,34,.08); }
+.inventory-empty { color: var(--muted); padding: 24px; text-align: center; }
