@@ -1249,9 +1249,12 @@ func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
 		if t.Remote() {
 			kind = "ssh"
 		}
-		machineKinds[id] = map[string]any{"kind": kind, "host": t.SSHHost, "runtimeHome": t.RuntimeHome}
+		machineKinds[id] = map[string]any{"kind": kind, "host": t.SSHHost, "runtimeHome": t.RuntimeHome,
+			// 显式声明的构建平台（空 = 打包/部署时探测机器的 uname）
+			"platform": strings.TrimSpace(t.Platform)}
 	}
 	machineHint := "发起流水线时可选择「部署机器」：本次部署会**真的**落到那台机器（远端用 ssh：制品 rsync 过去、在那边重启并探活）。" +
+		"**打包按该机器的平台构建**（mac/linux 各自一份产物，tag 带平台后缀），" +
 		"不选 = 默认机器（" + defaultMachine + "）；列表来自部署通道 " + deployMachineTargetsEnv
 	if machineSource != "local" {
 		machineHint += "，注册中心的实例主机只作发现（有通道才可选）"

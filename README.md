@@ -242,6 +242,27 @@ curl -sS http://127.0.0.1:4220/api/pipelines/<requestId>
 - **作用范围**：只作用于打包命令（`git fetch` + 服务自己的 `build.sh`）——它们按请求换 env 是安全的子进程。制品**下载**走进程内的 HTTP client，只认进程启动时的 env（`scripts/start.sh` 里加载 `data/proxy.env` 即可全局生效，服务重启后生效）。代理 URL 里的 `user:pass@` 会在事件里打码。
 - **默认行为不变**：不勾选时完全不注入代理 env，和以前一模一样。
 
+### 跨平台产物：打包按目标机器平台构建
+
+macOS 上打的包（Mach-O）在 Linux 远端起不来，所以**打包时就按目标机器的平台构建**，而不是把本机产物推过去：
+
+- **目标平台怎么定**：① 部署通道里显式写 `platform=linux/amd64` → 直接用它；② 远端机器 → ssh `uname -s -m` 探测（结果按机器缓存 5 分钟）；③ 本机 → 控制面自己的 `GOOS/GOARCH`。
+- **构建**：非本机平台时给服务的 `build.sh` 注入 `GOOS`/`GOARCH`（Go 项目天然支持；这也是约定 —— 服务若下载平台相关的工具，要按这两个变量取对应平台的版本）：
+  ```bash
+  # 通道里可以显式声明平台（省掉一次 ssh 探测）
+  DEPLOY_MACHINE_TARGETS='43.162.117.240=ssh agent-oversea /home/ubuntu/runtime platform=linux/amd64 restart=sudo systemctl restart autonomyd'
+  ```
+- **制品 tag 带平台维度**（同一个 commit 的两份产物不互相覆盖）：
+  ```
+  本机平台      deployment-<hash>                 （与历史一致：老制品/面板/历史都不受影响）
+  其它平台      deployment-<hash>-linux-amd64
+  ```
+  包里同时写一份 `PLATFORM`（如 `linux/amd64`）。
+- **两道平台校验**（都失败得早、说清楚）：
+  1. **打包后**：包里若有非目标平台的二进制 → 打包失败并点名（`产物里有非 linux/amd64 的二进制：bin/cursor-sdk-bridge=darwin/amd64 —— 服务的 build.sh 需要按 GOOS/GOARCH 产对应平台的产物`），**不上传**；
+  2. **部署前**：tag 上的平台 ≠ 机器平台 → 失败（`制品平台与机器不符：… 本次未下载/未推送任何文件`），连制品都不下载。
+- **面板**：机器下拉标注平台（`43.162.117.240 linux/amd64`，通道声明了才显示；否则打包时探测），发起卡片说明里写明「打包按该机器的平台构建」。
+
 ### runtimeDir 按平台（mac / linux）配置
 
 同一个服务在本机（macOS）和 Linux 机器上常常落在**不同目录**（`/Users/gaolei/runtime/x` vs `/home/ubuntu/runtime/x`），所以契约支持分平台：

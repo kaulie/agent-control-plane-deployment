@@ -263,7 +263,7 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{State: StateFailed, Error: err.Error()})
 		return
 	}
-	hash := strings.TrimPrefix(tag, "deployment-")
+	hash := deploymentHash(tag)
 	// 本次部署落到的「部署机器」：触发时选择并随任务转发而来；空/未知 → 默认机器。
 	// 已知机器来自注册中心（+ 本机 + DEPLOY_MACHINES），见 MachineCatalog。
 	machine, mErr := machines.Validate(context.Background(), job.TargetMachine)
@@ -311,6 +311,13 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 			})
 			return
 		}
+	}
+	// 产物平台 vs 机器平台：tag 上带着产物平台，机器平台已知（本机 GOOS / 远端 uname），
+	// 不一致就**不下载、不推送**，直接说清怎么办。
+	if err := assertTagPlatformMatchesMachine(tag, machine, target, remotePlatform); err != nil {
+		_ = store.AddDeployEvent(job.RequestID, eventlevel.Error, err.Error())
+		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{State: StateFailed, Error: err.Error()})
+		return
 	}
 	startMsg := "开始部署：service=" + job.ServiceID + " deployment=" + tag + " version=" + hash +
 		" 部署机器=" + machine
@@ -647,7 +654,7 @@ func reconcileOrphanDeploys(store *Store) int {
 			continue
 		}
 		tag, _ := normalizeDeploymentTag(job.Deployment)
-		hash := strings.TrimPrefix(tag, "deployment-")
+		hash := deploymentHash(tag)
 		versionOnDisk := ""
 		if b, err := os.ReadFile(filepath.Join(service.LocalRuntimeDir(), "VERSION")); err == nil {
 			versionOnDisk = strings.TrimSpace(string(b))

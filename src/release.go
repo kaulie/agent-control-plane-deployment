@@ -18,6 +18,7 @@ type PackageResult struct {
 	FullCommit string
 	Dir        string
 	Skipped    bool
+	Platform   string
 	Artifact   *ArtifactMeta
 }
 
@@ -39,7 +40,10 @@ type PackageOptions struct {
 	// to this process' own HTTP(S)_PROXY.
 	UseProxy     bool
 	ProxyEnvFile string
-	Events       PackageEventFunc
+	// BuildPlatform 是这批产物要在哪个平台跑（跨机部署时 = 目标机器平台）。
+	// 非本机平台时：给 build.sh 注入 GOOS/GOARCH，制品 tag 也带上平台维度。
+	BuildPlatform BuildPlatform
+	Events        PackageEventFunc
 }
 
 // useProxySettings resolves the machine proxy for this pack. Zero value (no
@@ -142,10 +146,15 @@ func packageFromGit(serviceID, gitRepoURL, ref string, opts PackageOptions) (Pac
 		return out, err
 	}
 	hash := strings.TrimSpace(hashOut)
-	tag := "deployment-" + hash
+	platform := opts.BuildPlatform
+	if platform.IsZero() {
+		platform = LocalBuildPlatform()
+	}
+	tag := deploymentTagFor(hash, platform)
 	out.Tag = tag
 	out.Hash = hash
 	out.FullCommit = full
+	out.Platform = platform.String()
 
 	// Skip build if the artifact already exists in storage (idempotent re-deploys).
 	if exists, err := storage.Exists(context.Background(), serviceID, gitRepoURL, tag); err == nil && exists {
@@ -198,7 +207,15 @@ func packageFromGit(serviceID, gitRepoURL, ref string, opts PackageOptions) (Pac
 	defer cancel()
 	buildCmd := exec.CommandContext(buildCtx, "/bin/bash", "./build.sh")
 	buildCmd.Dir = srcTree
-	buildCmd.Env = append(os.Environ(), "APP_VERSION="+hash)
+	buildEnv := []string{"APP_VERSION=" + hash}
+	if !platform.IsLocal() {
+		// 目标平台与本机不同：让服务的 build.sh 产出那一边的二进制（GOOS/GOARCH）。
+		buildEnv = append(buildEnv, "GOOS="+platform.OS, "GOARCH="+platform.Arch)
+		if events != nil {
+			events(eventlevel.Info, "按目标平台构建：GOOS="+platform.OS+" GOARCH="+platform.Arch)
+		}
+	}
+	buildCmd.Env = append(os.Environ(), buildEnv...)
 	buildOut, err := buildCmd.CombinedOutput()
 	if err != nil {
 		s := string(buildOut)
@@ -233,6 +250,16 @@ func packageFromGit(serviceID, gitRepoURL, ref string, opts PackageOptions) (Pac
 	_ = os.WriteFile(filepath.Join(pkgDir, "VERSION"), []byte(hash+"\n"), 0o644)
 	_ = os.WriteFile(filepath.Join(pkgDir, "COMMIT"), []byte(full+"\n"), 0o644)
 	_ = os.WriteFile(filepath.Join(pkgDir, "GIT_REPO_URL"), []byte(gitRepoURL+"\n"), 0o644)
+	// 产物平台写进包里：部署前据此判断「这份能发到那台机器吗」。
+	_ = os.WriteFile(filepath.Join(pkgDir, "PLATFORM"), []byte(platform.String()+"\n"), 0o644)
+	// 打包时就核对产物平台：build.sh 可能把**构建机**的东西打进包里（例如按 uname 下载的
+	// 平台相关工具）。在这里失败 = 没有上传、没有下载，比推到远端才发现便宜得多。
+	if err := assertPackageMatchesPlatform(pkgDir, platform); err != nil {
+		if events != nil {
+			events(eventlevel.Error, "产物平台校验失败："+err.Error())
+		}
+		return out, err
+	}
 
 	if events != nil {
 		events(eventlevel.Info, "上传开始：storage="+storage.Name()+" tag="+tag)
