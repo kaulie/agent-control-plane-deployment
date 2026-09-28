@@ -278,6 +278,7 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		return
 	}
 	// 远端机器的 runtime 目录按约定 = <remote-runtime-home>/<serviceId>。
+	remotePlatform := ""
 	runtimeDir := service.RuntimeDir
 	if target.Remote() {
 		runtimeDir = target.RuntimeDirFor(job.ServiceID)
@@ -299,11 +300,13 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
 			"远端部署："+target.Describe()+" → runtime="+runtimeDir)
 		// 预检放在最前面：ssh 不通/没 curl/目录不对时立刻失败，别先下载几百 MB、
-		// 也别在 graceful 里等十分钟。
-		if code, out := remotePreflight(store, *job, target, remote, runtimeDir); code != 0 {
+		// 也别在 graceful 里等十分钟。预检顺带把远端平台带回来（产物平台检查要用）。
+		code, out, platform := remotePreflight(store, *job, target, remote, runtimeDir)
+		if code != 0 {
 			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{State: StateFailed, Error: out})
 			return
 		}
+		remotePlatform = platform
 	}
 	// Fetch the package from the configured storage backend into a temp dir;
 	// the storage is the single source of truth for the bytes (local disk or
@@ -342,6 +345,15 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 	_ = store.AddDeployEvent(job.RequestID, eventlevel.Success,
 		"下载结束：storage="+storage.Name()+" tag="+tag+
 			" size="+humanBytes(dirSize(src))+" 耗时="+humanDuration(time.Since(dlStart)))
+
+	if target.Remote() {
+		// 产物平台检查：本机打的包（例如 macOS Mach-O）推到 Linux 远端是起不来的，
+		// 必须在这里拦住 —— 推送之后远端服务已经停了，损失更大。
+		if err := remotePlatformGuard(store, *job, src, remotePlatform); err != nil {
+			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{State: StateFailed, Error: err.Error()})
+			return
+		}
+	}
 
 	self := isSelfDeploy(*service, cfg)
 	if self {
@@ -523,9 +535,19 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 	var restartCode int
 	var restartOut string
 	if target.Remote() {
+		override := target.ExpandRestartCmd(job.ServiceID, hash, service.RuntimeDir, runtimeDir, machine)
 		remoteCmd := remoteRestartCmd(restartCmd, *service, map[string]string{
 			"APP_VERSION": hash, "DEPLOY_MACHINE": machine, "RUNTIME_DIR": runtimeDir,
 		})
+		if override != "" {
+			// 这台机器有自己的一套（例如 systemd 管理的服务要走 systemctl）：
+			// 仍然先把运行目录 cd 过去、注入同样的环境，再跑它自己的命令。
+			remoteCmd = remoteEnvPrefix(*service, map[string]string{
+				"APP_VERSION": hash, "DEPLOY_MACHINE": machine, "RUNTIME_DIR": runtimeDir,
+			}) + " && " + override
+			_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
+				"使用该机器的 restart= 覆盖契约 restartCmd："+override)
+		}
 		_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
 			"远端执行（"+target.SSHDest()+"）："+remoteCmd)
 		restartCode, restartOut = remote.Run(target, remoteCmd, cfg.DeployMaxSec)

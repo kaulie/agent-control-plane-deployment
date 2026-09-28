@@ -42,7 +42,8 @@ func (r sshRemoteRunner) Run(target MachineTarget, script string, timeoutSec int
 	return res.Code, res.Output
 }
 
-func (r sshRemoteRunner) PushDir(target MachineTarget, src, dst string, deleteExtra bool, timeoutSec int) (int, string) {
+// remoteRsyncCmd 拼出「把本地目录推到远端目录」的命令行（抽出来是为了可测试）。
+func remoteRsyncCmd(target MachineTarget, src, dst string, deleteExtra bool) string {
 	sshCmd := "ssh -o BatchMode=yes -o ConnectTimeout=10"
 	if target.SSHPort > 0 {
 		sshCmd += " -p " + strconv.Itoa(target.SSHPort)
@@ -51,22 +52,23 @@ func (r sshRemoteRunner) PushDir(target MachineTarget, src, dst string, deleteEx
 	if deleteExtra {
 		parts = append(parts, "--delete")
 	}
+	// 远端**必须**保住它自己的运行态：`P`（protect）只防删、不防覆盖，所以每条都要
+	// 配一个 `--exclude` 才真的不传 —— 否则会把本机的 backend/.env、data/、日志、
+	// pid 覆盖到远端（实测踩过：远端服务因此起不来）。与本地非 self 部署同一套规则。
+	for _, keep := range remotePreserved {
+		parts = append(parts, "--filter='P "+keep+"'", "--exclude='"+keep+"'")
+	}
 	parts = append(parts,
-		// 远端同样要保住它自己的运行态（与本地部署同一套豁免）。
-		"--filter='P backend/.env'",
-		"--filter='P backend/data/'",
-		"--filter='P backend/runtime.pid'",
-		"--filter='P backend/server.log'",
-		"--filter='P backend/.watchdog-paused'",
-		"--filter='P data/'",
-		"--filter='P logs/'",
-		"--filter='P packages/'",
 		"--exclude='.git/'",
 		"-e", shellQuote(sshCmd),
 		fmt.Sprintf("%q/", src),
 		shellQuote(target.SSHDest()+":"+dst+"/"),
 	)
-	res := runShell(strings.Join(parts, " "), r.home, nil, timeoutSec)
+	return strings.Join(parts, " ")
+}
+
+func (r sshRemoteRunner) PushDir(target MachineTarget, src, dst string, deleteExtra bool, timeoutSec int) (int, string) {
+	res := runShell(remoteRsyncCmd(target, src, dst, deleteExtra), r.home, nil, timeoutSec)
 	return res.Code, res.Output
 }
 
@@ -100,6 +102,21 @@ func (r sshRemoteRunner) HTTP(target MachineTarget, method, rawURL, body string,
 		return 0, strings.TrimSpace(out)
 	}
 	return status, strings.TrimSpace(trimmed[:idx])
+}
+
+// remotePreserved 是远端 runtime 里「属于那台机器、绝不能被本机覆盖」的路径。
+var remotePreserved = []string{
+	"backend/.env",
+	"backend/data/",
+	"backend/runtime.pid",
+	"backend/server.log",
+	"backend/.watchdog-paused",
+	".env",
+	"data/",
+	"logs/",
+	"packages/",
+	"*.pid",
+	"upgrade-requests/",
 }
 
 // shellQuote 用单引号包住一段脚本/参数（内部的单引号按 POSIX 的转义写法处理）。
