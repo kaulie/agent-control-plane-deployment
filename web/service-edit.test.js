@@ -316,3 +316,66 @@ test('service edit page: 端口唯一性（前端先拦，不发请求）', asyn
   assert.ok(put && JSON.parse(put.body).port === 4310, '换端口后可以保存');
 });
 
+// 字段按含义分区：十几个字段平铺成一坨很难读，页面按「标识 / 目录 / 接口 / 命令」分四区，
+// 每区「小标题 + 一行说明 + 字段网格」，提示跟着它解释的字段走。
+test('service edit page: 字段按含义分区（标识 / 运行目录 / 服务接口 / 启停命令）', async (t) => {
+  const { dom, flush } = makePage('web-cursor');
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+  await flush();
+
+  const sections = [...doc.querySelectorAll('.form-card > section.cfg')];
+  assert.deepEqual(
+    sections.map((s) => s.id),
+    ['cfg-identity', 'cfg-runtimedir', 'cfg-endpoints', 'cfg-commands'],
+  );
+  assert.deepEqual(
+    sections.map((s) => s.querySelector('.cfg__title').firstChild.textContent.trim()),
+    ['服务标识', '运行目录', '服务接口', '启停命令'],
+  );
+  for (const s of sections) {
+    assert.ok(s.querySelector('.cfg__desc').textContent.trim().length > 0, s.id + ' 要有分区说明');
+    assert.ok(s.querySelectorAll('.form-grid').length === 1, s.id + ' 里是一块字段网格');
+  }
+
+  // 每个字段落在与它含义相符的分区；提示跟着它解释的字段
+  const owner = (sel) => doc.querySelector(sel).closest('section.cfg').id;
+  const expected = {
+    '#svc-serviceId': 'cfg-identity',
+    '#svc-name': 'cfg-identity',
+    '#svc-gitRepoUrl': 'cfg-identity',
+    '#svc-defaultBranch': 'cfg-identity',
+    '#svc-runtimeDir': 'cfg-runtimedir',
+    '#svc-runtimeDir-darwin': 'cfg-runtimedir',
+    '#svc-runtimeDir-linux': 'cfg-runtimedir',
+    '#svc-runtimeDir-hint': 'cfg-runtimedir',
+    '#svc-port': 'cfg-endpoints',
+    '#svc-healthUrl': 'cfg-endpoints',
+    '#svc-restartNotifyUrl': 'cfg-endpoints',
+    '#svc-restartPollUrl': 'cfg-endpoints',
+    '#svc-gracefulRestartMaxWaitMs': 'cfg-endpoints',
+    '#svc-url-hint': 'cfg-endpoints',
+    '#svc-startCmd': 'cfg-commands',
+    '#svc-stopCmd': 'cfg-commands',
+    '#svc-restartCmd': 'cfg-commands',
+  };
+  for (const [sel, want] of Object.entries(expected)) {
+    assert.equal(owner(sel), want, sel + ' 应属于 ' + want);
+    // 分组不能靠复制控件：每个字段全页只有一个
+    assert.equal(doc.querySelectorAll(sel).length, 1, sel + ' 应只有一个控件');
+  }
+
+  // 保存按钮在所有分区之外（全页只有一组操作按钮）
+  const save = doc.querySelector('#svc-save');
+  assert.equal(doc.querySelectorAll('#svc-save').length, 1);
+  assert.equal(save.closest('section.cfg'), null, '保存按钮不应落在某个分区里');
+
+  // 样式要跟着分区走，否则只是多了几个没层次的标题
+  const css = fs.readFileSync(path.join(root, 'web', 'styles.css'), 'utf8');
+  assert.match(css, /\.cfg \{/, 'styles.css 要有分区样式');
+  assert.match(css, /\.cfg__title \{/);
+  assert.match(css, /\.cfg__desc \{/);
+  assert.match(css, /\.form-grid \.hint \{\s*grid-column: 1 \/ -1;/, '分区里的提示要横跨整行');
+  assert.match(css, /\.form-card > \.form-actions \{/, '按钮区移到网格外后要有自己的样式');
+});
+
