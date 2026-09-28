@@ -233,6 +233,9 @@ let machineListLoaded = false;
 let machineFetchInFlight = false;
 // 手上这份列表是按哪个服务拉的（'' = 全局视图）：切换服务后要重拉。
 let deployMachineScope = null;
+// 非空 = 服务端说这个服务在 service_registry 没绑定部署实例：发起会失败（400），
+// 面板据此禁用触发按钮并把原因显示出来 —— 不假装「还能发」。
+let deployMachineBlocked = '';
 // 最近一次**想要**的 scope：飞行期间用户又切了服务时，用它决定要不要再拉一轮。
 let machineScopeWanted = null;
 
@@ -248,14 +251,16 @@ async function fetchDeployMachineOption(scope) {
   deployMachineTargets = (m.deployMachineTargets && typeof m.deployMachineTargets === 'object') ? m.deployMachineTargets : {};
   deployMachines = Array.isArray(m.deployMachines) ? m.deployMachines.filter((id) => id) : [];
   defaultDeployMachine = m.defaultDeployMachine || (deployMachines[0] || '');
+  deployMachineBlocked = typeof m.deployMachineBlocked === 'string' ? m.deployMachineBlocked : '';
   deployMachineScope = typeof m.deployMachineScope === 'string' ? m.deployMachineScope : scope;
-  machineListLoaded = deployMachines.length > 0;
+  machineListLoaded = deployMachines.length > 0 || deployMachineBlocked !== '';
 }
 
-async function refreshDeployMachineOption() {
+async function refreshDeployMachineOption(force = false) {
   machineScopeWanted = currentTriggerService();
   // 同一个 scope 且已经拉到过：不用再出网（3s 轮询会反复调到这里）。
-  if (machineListLoaded && deployMachineScope === machineScopeWanted) return;
+  // force = 「被挡住」状态下的轮询重试：等运维去注册中心绑定，绑好就自动放行。
+  if (!force && machineListLoaded && deployMachineScope === machineScopeWanted) return;
   // 已经在飞：它结束时会发现 scope 变了，按新服务再拉一轮，别把这次请求丢掉。
   if (machineFetchInFlight) return;
   machineFetchInFlight = true;
@@ -267,6 +272,7 @@ async function refreshDeployMachineOption() {
       } catch {
         deployMachines = [];
         defaultDeployMachine = '';
+        deployMachineBlocked = '';
         deployMachineScope = scope;
         machineListLoaded = false;
       }
@@ -293,6 +299,20 @@ function renderDeployMachineOption() {
   const sel = $('#pipe-machine');
   if (!sel) return;
   const prev = sel.value;
+  // 服务没绑定部署实例：下拉只能空着（这一栏没有意义），并**禁用触发按钮** ——
+  // 让人先照提示去注册中心绑定，而不是点下去再吃一个 400。
+  if (deployMachineBlocked) {
+    sel.innerHTML = `<option value="">— 未绑定部署机器 —</option>`;
+    sel.value = '';
+    setTriggerBlocked(deployMachineBlocked);
+    const hint = $('#pipe-machine-hint');
+    if (hint) {
+      hint.textContent = deployMachineBlocked;
+      hint.className = 'hint hint--err';
+    }
+    return;
+  }
+  setTriggerBlocked('');
   const known = deployMachines.length > 0;
   const list = known ? deployMachines : [defaultDeployMachine || FALLBACK_DEPLOY_MACHINE];
   const dflt = defaultDeployMachine || list[0];
@@ -304,6 +324,7 @@ function renderDeployMachineOption() {
   sel.value = list.includes(prev) ? prev : dflt;
   const hint = $('#pipe-machine-hint');
   if (hint) {
+    hint.className = 'hint';
     if (known && deployMachineHintText) {
       hint.textContent = deployMachineHintText; // 服务端文案里带着数据源与作用域
     } else {
@@ -312,6 +333,16 @@ function renderDeployMachineOption() {
         : '暂未取到机器列表（GET /api/meta）；本次部署按默认机器 ' + dflt + ' 处理，稍后自动重试。';
     }
   }
+}
+
+// 服务没绑定部署实例时禁用「触发打包+部署」：按钮上挂 title 说明原因（鼠标停一下就能看到），
+// 面板的提示行也写着同一句话。绑定后（下一次刷新/切服务）自动恢复。
+function setTriggerBlocked(reason) {
+  const btn = $('#pipe-trigger');
+  if (!btn) return;
+  btn.disabled = !!reason;
+  if (reason) btn.title = reason;
+  else btn.removeAttribute('title');
 }
 
 // ---- services (dropdown options + 服务契约 tab) ---------------------------
@@ -346,7 +377,8 @@ async function refreshServices() {
 // 「发起」子页不在 3s 轮询里 —— 任何一次拉失败（例如服务刚好在重启）都会让下拉
 // 空着不会自己恢复。这里把「还没拉到」当成待办：轮询到就补一次。
 function healTriggerOptions() {
-  if (!machineListLoaded) refreshDeployMachineOption();
+  // 「被挡住」（服务没绑定部署实例）也要每隔一段时间重试：绑好之后面板自己就放行了。
+  if (!machineListLoaded || deployMachineBlocked) refreshDeployMachineOption(deployMachineBlocked !== '');
   if (!servicesLoaded) refreshServices();
 }
 
@@ -888,6 +920,8 @@ $('#pipe-trigger').addEventListener('click', async () => {
   const serviceId = $('#pipe-service').value;
   const ref = $('#pipe-ref').value.trim();
   if (!serviceId) { toast('请先在「服务契约」里为已登记的服务配置部署参数', 'err'); return; }
+  // 服务没绑定部署实例：服务端会 400，这里先拦一次（按钮本身也是禁用的）。
+  if (deployMachineBlocked) { toast(deployMachineBlocked, 'err'); return; }
   try {
     const body = { serviceId };
     if (ref) body.ref = ref;

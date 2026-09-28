@@ -218,6 +218,34 @@
                 }
             }
         },
+        "/api/deployment-inventory": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "meta"
+                ],
+                "summary": "元信息（路径 / 端口 / 制品后端 / 注册中心状态 / 部署机器）",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "按这个服务收窄「部署机器」列表（机器是服务的字段：本机 + 它在 service_registry 登记在案的机器）；不给 = 全局视图",
+                        "name": "serviceId",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/deploys": {
             "get": {
                 "produces": [
@@ -459,30 +487,7 @@
         },
         "/api/meta": {
             "get": {
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "meta"
-                ],
-                "summary": "元信息（路径 / 端口 / 制品后端 / 注册中心状态 / 部署机器）",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "按这个服务收窄「部署机器」列表（机器是服务的字段：本机 + 它在 service_registry 登记在案的机器）；不给 = 全局视图",
-                        "name": "serviceId",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
-                    }
-                }
+                "responses": {}
             }
         },
         "/api/pipelines": {

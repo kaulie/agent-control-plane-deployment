@@ -667,6 +667,63 @@ test('pipeline trigger: 机器列表按服务收窄，换服务就换列表', as
     '同一个服务的列表已拉到就不再拉（轮询里不能每次都出网）');
 });
 
+test('pipeline trigger: 服务没绑定部署实例时直接挡住（禁用触发按钮并指路注册中心）', async (t) => {
+  const blocked = '服务 acp 没有绑定部署实例（机器）：先在 service_registry 登记它的实例…';
+  const metaByService = {
+    // 让默认选中的服务（web-cursor）正常，另一个服务（acp）未绑定 —— 切过去就该被挡住。
+    'web-cursor': { deployMachines: ['local'], defaultDeployMachine: 'local', deployMachineScope: 'web-cursor' },
+    acp: {
+      deployMachines: [], defaultDeployMachine: 'local', deployMachineScope: 'acp',
+      deployMachineBlocked: blocked, deployMachineHint: blocked,
+    },
+  };
+  const { dom, flush, requests } = makePanel({
+    meta: { deployMachines: ['local'], defaultDeployMachine: 'local' },
+    metaByService,
+  });
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+  await flush();
+
+  const serviceSel = doc.querySelector('#pipe-service');
+  const machineSel = doc.querySelector('#pipe-machine');
+  const trigger = doc.querySelector('#pipe-trigger');
+  assert.equal(trigger.disabled, false, '先决条件：绑好的服务可以发起');
+
+  serviceSel.value = 'acp';
+  serviceSel.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  await flush();
+  await flush();
+
+  assert.equal(trigger.disabled, true, '没绑定部署实例 → 禁用触发按钮');
+  assert.equal(trigger.title, blocked, '按钮上挂同一句原因（鼠标停一下就能看到）');
+  assert.equal(machineSel.value, '', '下拉没有可选机器');
+  assert.match(machineSel.options[0].textContent, /未绑定部署机器/);
+  const hint = doc.querySelector('#pipe-machine-hint');
+  assert.match(hint.textContent, /没有绑定部署实例/);
+  assert.match(hint.className, /hint--err/, '这类提示要显眼（红色），不能混在灰字里');
+
+  // 按钮被禁用时，浏览器/jsdom 都不会把点击派发到处理器（这就是主要防线）；
+  // 处理器里那一句是第二道防线（脚本/老浏览器），这里只断言「没发请求」。
+  const before = requests.filter((r) => r.pathname === '/api/deploy-notify').length;
+  trigger.click();
+  await flush();
+  assert.equal(requests.filter((r) => r.pathname === '/api/deploy-notify').length, before,
+    '被挡住时不该发触发请求（服务端也会 400）');
+
+  // 运维去注册中心绑好之后：下一次刷新（被挡住时 heal 会强制重拉）→ 自动放行。
+  delete metaByService.acp.deployMachineBlocked;
+  delete metaByService.acp.deployMachineHint;
+  metaByService.acp.deployMachines = ['local', '43.162.117.240'];
+  doc.querySelector('[data-tab="pipelines"]').click();
+  await flush();
+  await flush();
+  assert.equal(trigger.disabled, false, '绑定完成后应自动放行（不用手动重进页面）');
+  assert.deepEqual(Array.from(machineSel.options).map((o) => o.value), ['local', '43.162.117.240'],
+    '放行后下拉列出绑定的机器');
+  assert.equal(doc.querySelector('#pipe-machine-hint').className, 'hint', '错误样式要撤掉');
+});
+
 test('pipeline trigger: 机器列表的说明用服务端文案（写明数据源）', async (t) => {
   const { dom, flush } = makePanel({
     meta: {
