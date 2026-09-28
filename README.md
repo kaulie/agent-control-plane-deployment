@@ -141,7 +141,7 @@ curl -sS -X PUT http://127.0.0.1:4220/api/services/web-cursor \
 | `SERVICE_REGISTRY_TOKEN` | 空 | 注册中心读令牌（`REGISTRY_READ_AUTH=token` 时用） |
 | `SERVICE_REGISTRY_TIMEOUT_SEC` | `5` | 单次拉取超时（秒） |
 | `DEPLOY_MACHINE_TARGETS` | 空（= `local`） | **部署通道**：`id=local` 或 `id=ssh [user@]host[:port] <remote-runtime-home>`（`;` 分隔）。有通道的机器才可选、才会真的部署过去（也可写在本机 `data/machine-targets`） |
-| `DEPLOY_MACHINES` | 空 | 机器**发现**补充（逗号分隔 id）：只登记、没通道的机器不可选，用于提示「还有哪些机器」（也可写在本机 `data/deploy-machines`） |
+| `DEPLOY_MACHINES` | 空 | **显式全局补充**（逗号分隔 id）：写进来的机器对所有服务可选 —— 给「还没在 service-registry 登记实例」的机器用（服务第一次上某台机器）；仍须有通道才可选（也可写在本机 `data/deploy-machines`） |
 | `DEPLOY_DEFAULT_MACHINE` | 空（= 列表第一台） | 未选择机器时用的默认机器 |
 | `PROXY_ENV_FILE` | `<home>/data/proxy.env` | 「打包走本机代理」读取的代理配置；`off` 关闭该选项 |
 
@@ -326,9 +326,13 @@ macOS 上打的包（Mach-O）在 Linux 远端起不来，所以**打包时就�
 
 ### 部署机器（可选，按次，支持跨机部署）
 
-发起流水线时可**按次**选择本次部署落到哪台机器。**能不能被选中，取决于有没有「部署通道」**（怎么把部署送到那台机器）：
+发起流水线时可**按次**选择本次部署落到哪台机器。两条规则一起决定下拉里有什么：
 
-- **数据源（从下往上）**：面板 `#pipe-machine` 下拉 ← `GET /api/meta` 的 `deployMachines` + `deployMachineTargets`（每台的通道）← 服务端 `MachineCatalog` ← **部署通道配置**（`DEPLOY_MACHINE_TARGETS`，或本机 `data/machine-targets`）。机器「发现」还看 service-registry 的实例主机（`GET /v1/snapshot`），但**只发现、不可选**（`deployMachineDiscovered`）——没通道就不给选，避免「选得中、却静默部署在本机」。
+1. **机器是服务的字段**（列表按选中的服务收窄）：某个服务的下拉 = **本机** + 这个服务在 **service-registry 登记在案的机器**（实例的 `host`，或 `metadata.machine` 友好名）。`event-center` 只在本机跑就只列 `local`；`autonomy` 在 `43.162.117.240` 上有实例，那台才出现在它的列表里。
+2. **能不能被选中，取决于有没有「部署通道」**（怎么把部署送到那台机器）：注册中心只说明「这台机器上有这个服务」，通道说明「控制面能把部署送到它」。没通道就不给选，避免「选得中、却静默部署在本机」。
+
+- **数据源（从下往上）**：面板 `#pipe-machine` 下拉 ← `GET /api/meta?serviceId=<选中的服务>`（切服务就重拉）的 `deployMachines` + `deployMachineTargets`（每台的通道）← 服务端 `MachineCatalog.For(serviceID)` ← **service-registry 上这个服务的实例所在机器** ∩ **部署通道配置**（`DEPLOY_MACHINE_TARGETS`，或本机 `data/machine-targets`）。不传 `serviceId` 时是**全局视图**（本机 + 全部有通道的机器），只给元信息页/老调用方用。机器「发现」还看注册中心的所有实例主机，但**只发现、不可选**（`deployMachineDiscovered`）。
+- **问不出来时退回全局视图**（并在下拉说明里写明原因，不会假装成「这个服务的机器」）：① 没给 `serviceId`；② 注册中心不可达/未配置；③ 注册中心里没有这个服务的实例登记。第三种就是「服务第一次上某台机器」的情况 —— 这时把机器写进 `DEPLOY_MACHINES`（本机 `data/deploy-machines` 也行）作为**显式全局补充**，它对所有服务可选（`DEPLOY_MACHINES` 里的机器仍须有通道才可选）。
 - **通道写法**（`;` 或换行分隔，一条一个 `id=spec`）：
   ```bash
   # local=local                                                             # 本机（缺省自带，不用写）
@@ -352,8 +356,8 @@ macOS 上打的包（Mach-O）在 Linux 远端起不来，所以**打包时就�
     43.162.117.240=ssh agent-oversea /home/ubuntu/runtime restart=sudo systemctl restart autonomyd
     ```
     执行前仍会 `cd` 到该服务的远端 runtime 并注入 `SERVICE_PORT`/`PORT`/`APP_VERSION`/`DEPLOY_MACHINE`/`RUNTIME_DIR`。
-- **跨平台产物是另一件事（尚未做）**：`build.sh` 在**本机**跑，所以 macOS 上打的包只能部署到 macOS。要部署到 Linux 远端，需要在目标平台构建（或用 `GOOS/GOARCH` 交叉编译）后打包；在那之前，平台检查会把这种部署拦在推送之前（远端不受影响）。
-- **API**：`POST /api/deploy-notify {"serviceId": ..., "ref": ..., "targetMachine": "43.162.117.240"}`；`POST /api/deploys` 同样接受。非空机器必须是**有通道**的机器，否则 **400**（已知但没通道的机器会提示去配 `DEPLOY_MACHINE_TARGETS`）。
+- **跨平台产物**：打包时已知目标机器 → 取它的平台（① 注册中心登记的平台 `metadata.platform` ② 通道里显式 `platform=linux/amd64` ③ 远端 `uname -s -m` 探测兜底）→ 给服务 `build.sh` 注入 `GOOS`/`GOARCH`，制品 tag 带平台后缀（`deployment-<hash>-linux-amd64`；本机平台仍是老形式），部署前再比对包里二进制与远端平台。服务自己的 `build.sh` 要按 `GOOS/GOARCH` 产**所有**平台相关的产物（例如下载物也要按目标平台取；autonomy 的 cursor bridge 已按此修好）。
+- **API**：`POST /api/deploy-notify {"serviceId": ..., "ref": ..., "targetMachine": "43.162.117.240"}`；`POST /api/deploys` 同样接受。非空机器必须是**这个服务**可选的机器，否则 **400**：别的服务的机器 → 说明「那台机器上没有它的实例登记」（并附本服务允许列表）；已知但没通道 → 提示去配 `DEPLOY_MACHINE_TARGETS`。
 - **默认机器**：`DEPLOY_DEFAULT_MACHINE`；不配置则是 `local`。请求不带 `targetMachine` 时按默认机器处理 —— **默认行为不变**（本机部署路径与以前完全一致）。
 - **随任务转发**：机器记在流水线上（`GET /api/pipelines/:id` 的 `targetMachine`）并转发给部署任务（`GET /api/deploys/:id`）；部署事件里带 `部署机器=<machine>`，并作为 `DEPLOY_MACHINE` 注入服务重启时的环境。
 - **面板不会被浏览器缓存 / 已打开页面会自己跟上升级**：静态资源与 API 都回 `Cache-Control: no-store`，`/api/meta` 还带 `panelVersion`（指纹），变了页面自动刷新一次。
@@ -421,7 +425,7 @@ curl -sS http://127.0.0.1:4220/api/deploys/<requestId>
 | POST | `/api/artifacts/scan?serviceId=` | 扫描当前存储后端的制品，回填本地 artifacts 表 |
 | POST | `/restart/notify` | ACP 自身 graceful：通知进入 drain |
 | GET | `/restart/poll` | ACP 自身 graceful：轮询是否可重启 |
-| GET | `/api/meta` | 含 graceful / release / 身份校验 配置 |
+| GET | `/api/meta` | 含 graceful / release / 身份校验 配置；`?serviceId=` 收窄「部署机器」列表（机器是服务的字段） |
 
 ### 事件级别（部署流水线 / 部署任务）
 

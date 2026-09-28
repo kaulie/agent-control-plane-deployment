@@ -23,6 +23,10 @@ import (
 // 否则会出现「选得中、却静默部署在本机」。
 const deployMachineTargetsEnv = "DEPLOY_MACHINE_TARGETS"
 
+// deployMachinesEnv 是「补充机器」的本地配置（env 或 data/deploy-machines）：给**还没在
+// service-registry 登记实例**的机器一个全局入口（服务第一次上某台机器时用）。
+const deployMachinesEnv = "DEPLOY_MACHINES"
+
 type MachineTarget struct {
 	ID          string
 	Kind        string // local | ssh

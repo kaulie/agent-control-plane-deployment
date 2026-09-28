@@ -704,9 +704,9 @@ func (s *apiServer) handleCreateDeploy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "request already exists: "+requestID)
 		return
 	}
-	// 「部署机器」：可选；空 = 默认机器。非空必须是已知机器（真源：service-registry），
-	// 否则 400。
-	targetMachine, err := s.machineCatalog().Validate(r.Context(), body.TargetMachine)
+	// 「部署机器」：可选；空 = 默认机器。非空必须是**这个服务**可选的机器（真源：service-registry
+	// 上该服务的实例所在机器），否则 400。
+	targetMachine, err := s.machineCatalog().ValidateForService(r.Context(), serviceID, body.TargetMachine)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -864,9 +864,9 @@ func (s *apiServer) handleDeployNotify(w http.ResponseWriter, r *http.Request) {
 				"本机不能设置): "+serviceID)
 		return
 	}
-	// 「部署机器」：可选；空 = 默认机器。非空必须是已知机器（真源：service-registry），
-	// 否则 400（附允许列表）。
-	targetMachine, err := s.machineCatalog().Validate(r.Context(), body.TargetMachine)
+	// 「部署机器」：可选；空 = 默认机器。非空必须是**这个服务**可选的机器（机器是服务的字段：
+	// 真源是 service-registry 上该服务的实例所在机器），否则 400（附本服务允许列表）。
+	targetMachine, err := s.machineCatalog().ValidateForService(r.Context(), serviceID, body.TargetMachine)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -1234,9 +1234,10 @@ func (s *apiServer) deployRunning(requestID string) bool {
 	return dep.State == StateRunning
 }
 
-// @Summary  元信息（路径 / 端口 / 制品后端 / 注册中心状态）
+// @Summary  元信息（路径 / 端口 / 制品后端 / 注册中心状态 / 部署机器）
 // @Tags     meta
 // @Produce  json
+// @Param    serviceId  query  string  false  "按这个服务收窄「部署机器」列表（机器是服务的字段：本机 + 它在 service_registry 登记在案的机器）；不给 = 全局视图"
 // @Success  200  {object}  map[string]interface{}
 // @Router   /api/deployment-inventory [get]
 func (s *apiServer) handleDeploymentInventory(w http.ResponseWriter, r *http.Request) {
@@ -1252,9 +1253,11 @@ func (s *apiServer) handleDeploymentInventory(w http.ResponseWriter, r *http.Req
 // @Router   /api/meta [get]
 func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
 	example, _ := normalizeDeploymentTag("abc12345")
-	machines, machineSource, machineNote := s.machineCatalog().List(r.Context())
-	defaultMachine := s.machineCatalog().DefaultID(r.Context())
-	targets := s.machineCatalog().Targets(r.Context())
+	// 部署机器：`?serviceId=` 时按服务收窄（本机 + 这个服务登记在案的机器，见 MachineCatalog.For）。
+	scopeService := strings.TrimSpace(r.URL.Query().Get("serviceId"))
+	machines, machineSource, machineNote := s.machineCatalog().For(r.Context(), scopeService)
+	defaultMachine := s.machineCatalog().DefaultFor(r.Context(), scopeService)
+	targets := s.machineCatalog().TargetsFor(r.Context(), scopeService)
 	machineKinds := map[string]any{}
 	for id, t := range targets {
 		kind := "local"
@@ -1271,12 +1274,20 @@ func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
 	}
 	machineHint := "发起流水线时可选择「部署机器」：本次部署会**真的**落到那台机器（远端用 ssh：制品 rsync 过去、在那边重启并探活）。" +
 		"**打包按该机器的平台构建**（mac/linux 各自一份产物，tag 带平台后缀），" +
-		"不选 = 默认机器（" + defaultMachine + "）；列表来自部署通道 " + deployMachineTargetsEnv
-	if machineSource != "local" {
-		machineHint += "，注册中心的实例主机只作发现（有通道才可选）"
+		"不选 = 默认机器（" + defaultMachine + "）。"
+	// machineSource 以 registry 开头 = 真的按服务收窄了（For 的两种收窄结果）；
+	// 否则（带 serviceId 却还是通道列表）说明没问出来，就把原因顶到最前面 ——
+	// 别让一份「全部机器」的列表看起来像「这个服务的机器」。
+	switch {
+	case scopeService == "":
+		machineHint += "列表来自部署通道 " + deployMachineTargetsEnv + "。"
+	case strings.HasPrefix(machineSource, "registry"):
+		machineHint = "「部署机器」按**服务**取自 service_registry：列出 " + scopeService +
+			" 登记在案的机器（有部署通道的才可选）+ 本机。" + machineHint
+	default:
+		machineHint = "「部署机器」没能按服务收窄：" + machineNote + "。这次列出的是全部有通道的机器。" + machineHint
 	}
-	machineHint += "。"
-	if machineNote != "" {
+	if machineNote != "" && !strings.Contains(machineHint, machineNote) {
 		machineHint += " " + machineNote + "。"
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1298,6 +1309,8 @@ func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
 			s.cfg.ProxyEnvFile + " 里的 HTTP(S)_PROXY（直连 github 失败时用）",
 		"deployMachines":       machines,
 		"defaultDeployMachine": defaultMachine,
+		// 这份列表是按哪个服务收窄的（空 = 全局视图）：面板据此判断手上的列表是否过期。
+		"deployMachineScope": scopeService,
 		// 每台可部署机器的通道（local / ssh）——面板据此标注「本机 / 远端」。
 		"deployMachineTargets": machineKinds,
 		// 只登记、没配通道的机器（不可选；配 DEPLOY_MACHINE_TARGETS 后自动可选）。
