@@ -450,6 +450,84 @@ function renderServiceContracts() {
   }).join('');
 }
 
+// ---- 机器版本 (deployment inventory) ---------------------------------------
+let inventoryError = '';
+
+function formatInstanceHost(row) {
+  const parts = [];
+  if (row.host) parts.push(row.host);
+  if (row.port > 0) parts.push(String(row.port));
+  return parts.length ? parts.join(':') : '—';
+}
+
+function renderInventory(data) {
+  const root = $('#inv-root');
+  const status = $('#inv-status');
+  if (!root) return;
+  if (inventoryError) {
+    root.innerHTML = `<p class="inventory-empty">加载失败：${esc(inventoryError)}</p>`;
+    if (status) status.textContent = '加载失败';
+    return;
+  }
+  const services = (data && data.services) || [];
+  if (!services.length) {
+    root.innerHTML = '<p class="inventory-empty">暂无服务（先在 service_registry 登记并配置部署参数）</p>';
+    if (status) status.textContent = '空';
+    return;
+  }
+  root.innerHTML = services.map((svc) => {
+    const machines = svc.machines || [];
+    const ref = svc.referenceVersion ? esc(svc.referenceVersion) : '—';
+    const rows = machines.length ? machines.map((m) => {
+      const driftCls = m.versionDrift ? ' inventory-drift' : '';
+      const ver = m.version ? esc(m.version) : '—';
+      const fin = m.finishedAt ? esc(m.finishedAt) : '—';
+      return `<tr class="${driftCls.trim()}">
+        <td class="mono">${esc(m.machineId)}</td>
+        <td class="mono">${esc(formatInstanceHost(m))}</td>
+        <td class="mono">${ver}${m.versionDrift ? ' <span class="badge badge--wait">不一致</span>' : ''}</td>
+        <td class="mono">${esc(m.deployment || '—')}</td>
+        <td>${esc(m.state || '—')}</td>
+        <td class="mono">${fin}</td>
+      </tr>`;
+    }).join('') : `<tr><td colspan="6" class="muted">暂无实例 / 部署记录</td></tr>`;
+    return `<article class="inventory-service">
+      <div class="inventory-service__head">
+        <h3 class="mono">${esc(svc.serviceId)}</h3>
+        <span class="muted">${esc(svc.name || '')}</span>
+        <span class="muted">参考版本：<span class="mono">${ref}</span></span>
+      </div>
+      <div class="tablewrap">
+        <table class="grid">
+          <thead><tr>
+            <th>机器</th><th>实例</th><th>部署版本</th><th>deployment</th><th>状态</th><th>完成时间</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </article>`;
+  }).join('');
+  if (status) {
+    const reg = data.registry || {};
+    status.textContent = reg.enabled
+      ? (reg.ok ? `已更新 · ${services.length} 个服务` : '注册中心异常')
+      : `已更新 · ${services.length} 个服务（仅本地历史）`;
+  }
+}
+
+async function refreshInventory() {
+  try {
+    const data = await apiGet('/api/deployment-inventory');
+    inventoryError = '';
+    renderInventory(data);
+  } catch (e) {
+    inventoryError = e.message;
+    renderInventory(null);
+  }
+}
+
+$('#inv-refresh').addEventListener('click', () => refreshInventory());
+
 // ---- 清除服务配置：先确认历史记录的去处 -------------------------------------
 // 早期（service_registry 接入前）本机自建的老契约和注册中心里的服务往往是同一个
 // 服务的两个 id（如 web-cursor ↔ agent-control-plane）。直接删配置会把几十条流水线 /
@@ -1106,6 +1184,7 @@ function refreshActiveTab() {
   else if (active === 'artifacts') refreshArtifacts();
   else if (active === 'meta') refreshMeta();
   else if (active === 'services') refreshServices();
+  else if (active === 'inventory') refreshInventory();
 }
 
 function refresh() {
