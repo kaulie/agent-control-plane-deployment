@@ -85,13 +85,24 @@ func (w *PipelineWorker) packageOptions(job *PipelineJob, events PackageEventFun
 	}
 }
 
-// platformFor 决定这次打包按哪个平台构建：目标机器的平台（通道声明或 ssh 探测），
-// 本机机器就是控制面自己的平台（tag 保持 deployment-<hash>，与历史一致）。找不到通道
-// 时退回本机平台 —— 部署前的平台校验会拦住发错的产物。
+// platformFor 决定这次打包按哪个平台构建。平台是**机器的字段**：
+//
+//	① service_registry 上这台机器的实例登记的 metadata.platform（真源，控制面同步）；
+//	② 注册中心没登记 → ssh 探测该机器（uname -s -m）兜底；
+//	③ 本机机器 → 控制面自己的平台（tag 保持 deployment-<hash>，与历史一致）。
+//
+// 找不到机器/通道时退回本机平台 —— 部署前的平台校验会拦住发错的产物。
 func (w *PipelineWorker) platformFor(job *PipelineJob) BuildPlatform {
 	machine := strings.TrimSpace(job.TargetMachine)
 	if machine == "" {
 		machine = w.machinesDefault()
+	}
+	if w.machines != nil {
+		if p, ok := w.machines.PlatformFor(context.Background(), machine); ok {
+			_ = w.store.AddPipelineEvent(job.RequestID, eventlevel.Info,
+				"构建平台="+p.String()+"（部署机器="+machine+"；平台来自 service_registry 登记的实例字段）")
+			return p
+		}
 	}
 	target, ok := w.machineTarget(machine)
 	if !ok {
@@ -100,7 +111,7 @@ func (w *PipelineWorker) platformFor(job *PipelineJob) BuildPlatform {
 	p, why := w.platforms.Resolve(target)
 	if strings.TrimSpace(why) != "" {
 		_ = w.store.AddPipelineEvent(job.RequestID, eventlevel.Info,
-			"构建平台="+p.String()+"（部署机器="+machine+"；"+why+"）")
+			"构建平台="+p.String()+"（部署机器="+machine+"；注册中心没登记平台，"+why+"）")
 	}
 	return p
 }

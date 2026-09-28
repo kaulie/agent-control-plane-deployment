@@ -174,31 +174,90 @@ func (r *ServiceRegistry) Snapshot(ctx context.Context) ([]RegistryService, []Re
 	return out.Services, out.Instances, nil
 }
 
-// DeployMachines returns the machines the registry knows about — the machines its
-// service instances run on. This is the single source of truth for the 部署机器
-// list: nobody has to configure the same machine twice (registry + deployment
-// control plane).
+// RegistryMachine 是注册中心里的一台机器：从服务实例归并出来（实例 = 服务跑在哪台机器上）。
+// 机器 id 与**平台**都是实例上的字段（`metadata.machine` / `metadata.platform`），
+// 控制面只做同步，不自己构造：同一个事实不在两处配置。
+type RegistryMachine struct {
+	ID       string
+	Platform BuildPlatform // 零值 = 没登记平台
+}
+
+// MachineFromInstance 把一个服务实例归并成「机器 + 平台」。
 //
-// The machine id is the instance's `metadata.machine` when the registrant named
-// it (friendly ids like "gpu-2" are welcome), else its host. Instances that live
-// on *this* machine (loopback / localhost / this hostname) all collapse into
-// defaultDeployMachine ("local"), because that is what a deploy to "here" is.
-func (r *ServiceRegistry) DeployMachines(ctx context.Context) ([]string, error) {
+//	id：`metadata.machine`（登记方给的友好名，如 gpu-2）优先，否则 host；
+//	    本机（loopback / localhost / 本机 hostname）统一成 local；
+//	平台：`metadata.platform`（如 linux/amd64），或 `metadata.os` + `metadata.arch`。
+func MachineFromInstance(inst RegistryInstance) RegistryMachine {
+	out := RegistryMachine{ID: MachineIDForInstance(inst)}
+	out.Platform = InstancePlatform(inst)
+	return out
+}
+
+// InstancePlatform 读出实例登记的机器平台（没登记 → 零值）。
+func InstancePlatform(inst RegistryInstance) BuildPlatform {
+	meta := inst.Metadata
+	if len(meta) == 0 {
+		return BuildPlatform{}
+	}
+	get := func(keys ...string) string {
+		for _, k := range keys {
+			for mk, mv := range meta {
+				if strings.EqualFold(strings.TrimSpace(mk), k) {
+					return strings.TrimSpace(mv)
+				}
+			}
+		}
+		return ""
+	}
+	if raw := get("platform", "buildPlatform", "targetPlatform"); raw != "" {
+		if p, err := ParseBuildPlatform(raw); err == nil {
+			return p
+		}
+	}
+	osName := get("os", "goos")
+	arch := get("arch", "goarch")
+	if osName == "" && arch == "" {
+		return BuildPlatform{}
+	}
+	if osName == "" {
+		osName = LocalBuildPlatform().OS
+	}
+	if p, err := ParseBuildPlatform(osName + "/" + arch); err == nil {
+		return p
+	}
+	return BuildPlatform{}
+}
+
+// SnapshotMachines 返回注册中心里已知的机器（含各自登记的平台）。
+func (r *ServiceRegistry) SnapshotMachines(ctx context.Context) ([]RegistryMachine, error) {
 	_, instances, err := r.Snapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
 	seen := map[string]bool{}
-	out := []string{}
+	out := []RegistryMachine{}
 	for _, inst := range instances {
-		id := MachineIDForInstance(inst)
-		if id == "" || seen[id] {
+		m := MachineFromInstance(inst)
+		if m.ID == "" || seen[m.ID] {
 			continue
 		}
-		seen[id] = true
-		out = append(out, id)
+		seen[m.ID] = true
+		out = append(out, m)
 	}
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+// DeployMachines 只返回机器 id（老调用方/测试用）。
+func (r *ServiceRegistry) DeployMachines(ctx context.Context) ([]string, error) {
+	machines, err := r.SnapshotMachines(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(machines))
+	for _, m := range machines {
+		out = append(out, m.ID)
+	}
 	return out, nil
 }
 

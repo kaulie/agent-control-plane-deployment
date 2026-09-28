@@ -143,7 +143,7 @@ func TestAssertTagPlatformMatchesMachine(t *testing.T) {
 	if err == nil {
 		t.Fatal("a local-platform artifact must not be deployed to a foreign machine")
 	}
-	for _, want := range []string{"制品平台与机器不符", "未下载/未推送", "platform="} {
+	for _, want := range []string{"制品平台与机器不符", "未下载/未推送", "触发打包"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error should contain %q, got %v", want, err)
 		}
