@@ -1234,11 +1234,10 @@ func (s *apiServer) deployRunning(requestID string) bool {
 	return dep.State == StateRunning
 }
 
-// @Summary  元信息（路径 / 端口 / 制品后端 / 注册中心状态 / 部署机器）
+// @Summary  部署清单：每个服务在它各台机器上的部署版本
 // @Tags     meta
 // @Produce  json
-// @Param    serviceId  query  string  false  "按这个服务收窄「部署机器」列表（机器是服务的字段：本机 + 它在 service_registry 登记在案的机器）；不给 = 全局视图"
-// @Success  200  {object}  map[string]interface{}
+// @Success  200  {object}  map[string]interface{}  "DeploymentInventory"
 // @Router   /api/deployment-inventory [get]
 func (s *apiServer) handleDeploymentInventory(w http.ResponseWriter, r *http.Request) {
 	defaultMachine := s.machineCatalog().DefaultID(r.Context())
@@ -1250,6 +1249,11 @@ func (s *apiServer) handleDeploymentInventory(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, inv)
 }
 
+// @Summary  元信息（路径 / 端口 / 制品后端 / 注册中心状态 / 部署机器）
+// @Tags     meta
+// @Produce  json
+// @Param    serviceId  query  string  false  "按这个服务收窄「部署机器」列表（机器是服务的字段：本机 + 它在 service_registry 绑定在案的机器）；不给 = 全局视图"
+// @Success  200  {object}  map[string]interface{}
 // @Router   /api/meta [get]
 func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
 	example, _ := normalizeDeploymentTag("abc12345")
