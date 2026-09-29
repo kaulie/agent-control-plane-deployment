@@ -106,6 +106,12 @@ service-registry :4240  ──pull(GET /v1/services)──▶  本控制面 :422
 | `PORT` | 同一个值（兼容老脚本） |
 | `RUNTIME_DIR` | 该服务的 `runtimeDir` |
 
+**进程约定**（平台据此 stop / 记 pid，业务方不用改 stop 文案）：
+
+- `start.sh` 用 `nohup 服务 >>backend/server.log 2>&1 &`（或等价后台启动），**不要 double-fork**，然后 `echo $! > "$RUNTIME_DIR/backend/runtime.pid"`。不要用前台 `exec`（`startCmd` 必须返回）。
+- 平台 stop：先杀 pidfile 里还活着的进程，再 `lsof` `SERVICE_PORT` 上 LISTEN 的进程；没有进程只记 warning。契约 `stopCmd` 仍会跑（额外清理），失败忽略。
+- 通道 `restart=systemctl …` 不走 pidfile，仍交给 systemd。
+
 - **探活仍然走 `healthUrl`**（`port` 与 `healthUrl` 里的端口不一致时：探活按 `healthUrl`，脚本收到的 `SERVICE_PORT` 按 `port`）。
 - **端口必须唯一**（保存时校验）：同一个端口不能被两个服务用。`PUT` 撞到别人的端口 → `409 端口 4211 已被服务 "web-cursor" 占用；服务端口必须唯一，请换一个`（编辑自己不算冲突）；面板会先在本地拦一次、直接给出占用者。库层还有一条兜底：`CREATE UNIQUE INDEX ... ON services(port) WHERE port > 0`（0 = 未指定，不参与唯一性；目标库若已有重复端口，索引创建失败只记日志、不影响启动，仍由 API 层逐个校验）。
 - 老契约（`port=0`，还没补填）也能部署：注入的 `SERVICE_PORT` 退回按 `healthUrl` 推导，并在**部署时间线上打一条 warn**（`部署契约未指定服务端口（port）：本次按 healthUrl 推导 SERVICE_PORT=4211，请在「服务契约」里补填`），提示补填。新配置一律要求显式指定。
@@ -349,7 +355,7 @@ macOS 上打的包（Mach-O）在 Linux 远端起不来，所以**打包时就�
   1. **预检**：能 `ssh` 登录、远端有 `curl`、目标 runtime 目录存在且像这个服务（没有 `scripts/restart.sh` 就拒绝 `rsync --delete`，不会误删别的东西；目录不存在则创建，首次部署不带 `--delete`）；
   2. **传制品**：本机下载后 `rsync -a --delete -e ssh` 推到远端 runtime（`backend/.env`、`backend/data/`、`data/`、`logs/`、`packages/`、`*.pid` 等运行态豁免，与本地同一套规则）；
   3. **graceful**：通知/轮询**在远端**发（契约里的 `restartNotifyUrl`/`restartPollUrl` 是 `127.0.0.1`，站在那台机器上问才对）；
-  4. **重启**：先 `stopCmd` 再 `startCmd`。**有没有进程可停由平台用契约 `healthUrl` 判断**，不解析各服务 stop 脚本的输出，所以业务方不用改 stop.sh。stop 在部署里是 best-effort：没在跑、已挂掉、stop 自己非 0 退出都只记 warning，然后照常 start。rsync 不传 `backend/.env`（保护密钥），若远端还没有该文件，会从包里的 example 拷一份再启动（已有文件不覆盖）。通道配了 `restart=` 时仍跑那条覆盖命令（失败同样改跑 startCmd）；
+  4. **重启**：平台按 `$RUNTIME_DIR/backend/runtime.pid` + `SERVICE_PORT` 停进程（没有实例只 warning），再跑契约 `stopCmd`（best-effort），然后 `startCmd`；成功后读 pidfile 记到时间线。`healthUrl` 只用于探活/是否在跑。rsync 不传 `backend/.env`；若远端还没有该文件，会从包里的 example 拷一份。通道配了 `restart=` 时仍跑那条覆盖命令（失败改跑 startCmd）；
   5. **探活**：同样在远端 `curl` 契约的 `healthUrl`；失败即这次部署失败（**不会**静默退化成本机部署）。
   时间线每一步都标「远端 `<dest>:<dir>`」，成功那句是「部署成功：version=…（远端 `<machine>`：`<dest>:<dir>`）」。前置要求：控制面这台机器能免密 `ssh` 到目标（`~/.ssh/config` 的别名可用），目标机器上有 `curl`。
 - **远端安全网（实测踩过，都已补上）**：
