@@ -88,9 +88,10 @@ func shownServiceCmd(cmd, override string, service ServiceContract, runtimeDir, 
 }
 
 // runDeployRestart 是部署时的停再起：先 stopCmd，再 startCmd。
-// stop 发现没有可停的实例（首次部署、或服务已经异常退出）只记 warning 并跳过，
-// 然后照常 start —— 不要因为 stop 非 0 把整次部署卡住。
-// 通道 restart= 覆盖时仍跑那条命令；它也报没在跑则同样改跑 startCmd。
+//
+// 判定「有没有进程可停」是平台的事：看契约里的 healthUrl，不解析各服务 stop.sh 的文案。
+// 所以业务方不用改 stop 脚本。stop 在部署里永远是 best-effort：失败只记 warning，
+// 然后照常 start（没在跑、异常挂掉、stop 自己退出非 0 都一样）。start 才决定这次能不能成功。
 func runDeployRestart(store *Store, job DeployJob, cfg Config, service ServiceContract,
 	target MachineTarget, remote RemoteRunner, runtimeDir, hash, machine string) string {
 	startCmd := strings.TrimSpace(service.StartCmd)
@@ -113,15 +114,20 @@ func runDeployRestart(store *Store, job DeployJob, cfg Config, service ServiceCo
 		_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
 			"远端执行（"+target.SSHDest()+"）："+shownServiceCmd(cmd, ov, service, runtimeDir, hash, machine))
 	}
+	up := serviceIsUp(target, remote, service)
+	if !up {
+		_ = store.AddDeployEvent(job.RequestID, eventlevel.Warn,
+			"服务当前未在运行（健康检查未通过）：stop 按 best-effort，失败不阻断部署")
+	}
 
 	if override != "" {
 		_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
 			"使用该机器的 restart= 覆盖契约 restartCmd："+override)
 		logRemote(restartCmd, override)
 		code, out := run(restartCmd, override)
-		if code != 0 && looksLikeNotRunning(out) && startCmd != "" {
+		if code != 0 && startCmd != "" {
 			_ = store.AddDeployEvent(job.RequestID, eventlevel.Warn,
-				"restart：没有运行中的实例，已跳过（首次部署或服务已异常退出），改跑 startCmd："+startCmd)
+				"restart= 未成功（已忽略，改跑 startCmd）："+clipCmdOut(out))
 			logRemote(startCmd, "")
 			code, out = run(startCmd, "")
 		}
@@ -137,13 +143,10 @@ func runDeployRestart(store *Store, job DeployJob, cfg Config, service ServiceCo
 		_ = store.AddDeployEvent(job.RequestID, eventlevel.Info, "执行 stopCmd："+stopCmd)
 		logRemote(stopCmd, "")
 		code, out := run(stopCmd, "")
-		if looksLikeNotRunning(out) {
+		if code != 0 {
 			_ = store.AddDeployEvent(job.RequestID, eventlevel.Warn,
-				"stop：没有运行中的实例，已跳过（首次部署或服务已异常退出）")
-			fmt.Printf("[deploy] %s stop skipped (not running)\n", job.RequestID)
-		} else if code != 0 {
-			_ = store.AddDeployEvent(job.RequestID, eventlevel.Error, "stop 失败："+clipCmdOut(out))
-			return "stop failed: " + clipCmdOut(out)
+				"stop 未成功，已忽略并继续 start："+clipCmdOut(out))
+			fmt.Printf("[deploy] %s stop failed (ignored): %s\n", job.RequestID, clipCmdOut(out))
 		} else {
 			_ = store.AddDeployEvent(job.RequestID, eventlevel.Success, "stop 完成")
 		}
@@ -169,10 +172,6 @@ func runDeployRestart(store *Store, job DeployJob, cfg Config, service ServiceCo
 		"执行 restartCmd（SERVICE_PORT="+servicePort(service)+"，同时注入 PORT）："+restartCmd)
 	logRemote(restartCmd, "")
 	code, out := run(restartCmd, "")
-	if code != 0 && looksLikeNotRunning(out) {
-		_ = store.AddDeployEvent(job.RequestID, eventlevel.Warn,
-			"restart：没有运行中的实例，已跳过 stop（首次部署或服务已异常退出）；契约未配 startCmd，无法拉起")
-	}
 	if code != 0 {
 		_ = store.AddDeployEvent(job.RequestID, eventlevel.Error, "restart 失败："+clipCmdOut(out))
 		return "restart failed: " + clipCmdOut(out)
@@ -227,6 +226,18 @@ func runShell(cmdStr, cwd string, env []string, timeoutSec int) shellResult {
 		}
 		return shellResult{Code: code, Output: out}
 	}
+}
+
+func serviceIsUp(target MachineTarget, remote RemoteRunner, service ServiceContract) bool {
+	url := serviceHealthURL(service)
+	if strings.TrimSpace(url) == "" {
+		return false
+	}
+	if target.Remote() {
+		code, _ := remote.HTTP(target, "GET", url, "", 3)
+		return code >= 200 && code < 300
+	}
+	return healthOK(url)
 }
 
 func healthOK(rawURL string) bool {

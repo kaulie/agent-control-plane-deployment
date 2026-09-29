@@ -458,8 +458,8 @@ func joinedEvents(t *testing.T, store *Store, requestID string) string {
 	return ev
 }
 
-// 没有可 stop 的实例（第一次部署、或服务已经异常挂掉）：stop 只 warning 跳过，然后 start。
-func TestExecuteDeploySkipsStopWhenNothingRunning(t *testing.T) {
+// stop 失败不再看文案：任意非 0 都 warning 后继续 start，业务方不用改 stop.sh。
+func TestExecuteDeployIgnoresStopFailureAndStarts(t *testing.T) {
 	store, cfg, storage, machines, tag := newRemoteNoOverride(t)
 	mustQueueRemote(t, store, "deploy-first1", tag)
 
@@ -468,13 +468,13 @@ func TestExecuteDeploySkipsStopWhenNothingRunning(t *testing.T) {
 		remoteArch:   "x86_64",
 		failContains: "bash scripts/stop.sh",
 		failCode:     1,
-		failOutput:   "[stop] 没有运行中的 Brain\n",
+		failOutput:   "custom-stop: nothing here (not a platform-known phrase)\n",
 	}
 	executeDeploy(store, cfg, storage, &GracefulDrain{}, machines, fake, "deploy-first1")
 
 	job, _ := store.GetDeploy("deploy-first1")
 	if job == nil || job.State != StateSucceeded {
-		t.Fatalf("deploy must succeed when stop only said not-running, got %+v", job)
+		t.Fatalf("deploy must succeed when stop fails with an unknown message, got %+v", job)
 	}
 	runs, _, _ := fake.calls()
 	joined := strings.Join(runs, "\n---\n")
@@ -482,18 +482,18 @@ func TestExecuteDeploySkipsStopWhenNothingRunning(t *testing.T) {
 		t.Fatalf("must try stopCmd, got:\n%s", joined)
 	}
 	if !strings.Contains(joined, "bash scripts/start.sh") {
-		t.Fatalf("must continue to startCmd after skipping stop, got:\n%s", joined)
+		t.Fatalf("must continue to startCmd after stop failure, got:\n%s", joined)
 	}
 	if strings.Contains(joined, "bash scripts/restart.sh") {
 		t.Fatalf("must not fall back to restartCmd when startCmd exists, got:\n%s", joined)
 	}
 	ev := joinedEvents(t, store, "deploy-first1")
-	if !strings.Contains(ev, "stop：没有运行中的实例，已跳过") {
-		t.Fatalf("timeline must warn that stop was skipped, got:\n%s", ev)
+	if !strings.Contains(ev, "stop 未成功，已忽略并继续 start") {
+		t.Fatalf("timeline must warn that stop was ignored, got:\n%s", ev)
 	}
 }
 
-func TestExecuteDeployStopRealFailureDoesNotStart(t *testing.T) {
+func TestExecuteDeployStopPermissionDeniedStillStarts(t *testing.T) {
 	store, cfg, storage, machines, tag := newRemoteNoOverride(t)
 	mustQueueRemote(t, store, "deploy-crash1", tag)
 
@@ -507,16 +507,12 @@ func TestExecuteDeployStopRealFailureDoesNotStart(t *testing.T) {
 	executeDeploy(store, cfg, storage, &GracefulDrain{}, machines, fake, "deploy-crash1")
 
 	job, _ := store.GetDeploy("deploy-crash1")
-	if job == nil || job.State != StateFailed {
-		t.Fatalf("a real stop failure must fail the deploy, got %+v", job)
-	}
-	if !strings.Contains(job.Error, "permission denied") {
-		t.Fatalf("error must keep the stop failure, got %q", job.Error)
+	if job == nil || job.State != StateSucceeded {
+		t.Fatalf("stop permission denied must not fail the deploy; start should still run, got %+v", job)
 	}
 	runs, _, _ := fake.calls()
-	for _, r := range runs {
-		if strings.Contains(r, "bash scripts/start.sh") {
-			t.Fatalf("must not start after a real stop failure, got %q", r)
-		}
+	joined := strings.Join(runs, "\n---\n")
+	if !strings.Contains(joined, "bash scripts/start.sh") {
+		t.Fatalf("must start after an ignored stop failure, got:\n%s", joined)
 	}
 }

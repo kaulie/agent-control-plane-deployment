@@ -7,35 +7,6 @@ import (
 	"testing"
 )
 
-func TestLooksLikeNotRunning(t *testing.T) {
-	yes := []string{
-		"[restart] stop\n[stop] 没有运行中的 Brain\n[restart]",
-		"[stop] 没有运行中的能力集市服务",
-		"[stop] not running",
-		"Job is not running",
-		"service isn't running yet",
-		"unit not currently running",
-		"No such process",
-		"already stopped",
-	}
-	for _, s := range yes {
-		if !looksLikeNotRunning(s) {
-			t.Fatalf("expected not-running: %q", s)
-		}
-	}
-	no := []string{
-		"[start] ok pid=12",
-		"address already in use",
-		"permission denied",
-		"",
-	}
-	for _, s := range no {
-		if looksLikeNotRunning(s) {
-			t.Fatalf("did not expect not-running: %q", s)
-		}
-	}
-}
-
 func TestSeedMissingBackendEnvCopiesExampleOnce(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "server"), 0o755); err != nil {
