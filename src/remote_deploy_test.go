@@ -418,101 +418,105 @@ func (authFailRemote) HTTP(target MachineTarget, method, rawURL, body string, ti
 	return 0, "Permission denied (publickey)."
 }
 
-// 新机器第一次部署：restart.sh 的 stop 报「没有运行中的 Brain」并非 0 退出。
-// 平台必须忽略这类错误、改跑 startCmd，部署才能成功。
-func TestExecuteDeployFirstDeployIgnoresNotRunningRestart(t *testing.T) {
+func newRemoteNoOverride(t *testing.T) (*Store, Config, ArtifactStorage, *MachineCatalog, string) {
+	t.Helper()
 	store, cfg, storage, _, tag, _ := newRemoteDeployFixture(t)
 	cfg.DeployMachineTargets["10.0.0.8"] = MachineTarget{
 		ID: "10.0.0.8", Kind: "ssh", SSHUser: "ubuntu", SSHHost: "10.0.0.8",
 		RuntimeHome: "/home/ubuntu/runtime",
 	}
-	machines := NewMachineCatalog(cfg, nil)
 	svc, err := store.GetService("web-cursor")
 	if err != nil || svc == nil {
 		t.Fatalf("GetService: %v %v", svc, err)
 	}
+	svc.StopCmd = "bash scripts/stop.sh"
 	svc.StartCmd = "bash scripts/start.sh"
 	svc.RestartCmd = "bash scripts/restart.sh"
 	if _, err := store.UpsertService(*svc); err != nil {
 		t.Fatalf("UpsertService: %v", err)
 	}
-	if _, err := store.CreateDeploy("deploy-first1", "web-cursor", tag, Identity{}, "queued", "10.0.0.8"); err != nil {
+	return store, cfg, storage, NewMachineCatalog(cfg, nil), tag
+}
+
+func mustQueueRemote(t *testing.T, store *Store, requestID, tag string) {
+	t.Helper()
+	if _, err := store.CreateDeploy(requestID, "web-cursor", tag, Identity{}, "queued", "10.0.0.8"); err != nil {
 		t.Fatalf("CreateDeploy: %v", err)
 	}
 	if _, err := store.ClaimNextQueued(); err != nil {
 		t.Fatalf("ClaimNextQueued: %v", err)
 	}
+}
+
+func joinedEvents(t *testing.T, store *Store, requestID string) string {
+	t.Helper()
+	events, _ := store.ListDeployEvents(requestID)
+	ev := ""
+	for _, e := range events {
+		ev += e.Message + "\n"
+	}
+	return ev
+}
+
+// 没有可 stop 的实例（第一次部署、或服务已经异常挂掉）：stop 只 warning 跳过，然后 start。
+func TestExecuteDeploySkipsStopWhenNothingRunning(t *testing.T) {
+	store, cfg, storage, machines, tag := newRemoteNoOverride(t)
+	mustQueueRemote(t, store, "deploy-first1", tag)
 
 	fake := &fakeRemote{
 		remoteOS:     "Linux",
 		remoteArch:   "x86_64",
-		failContains: "bash scripts/restart.sh",
+		failContains: "bash scripts/stop.sh",
 		failCode:     1,
-		failOutput:   "[restart] stop\n[stop] 没有运行中的 Brain\n[restart]\n",
+		failOutput:   "[stop] 没有运行中的 Brain\n",
 	}
 	executeDeploy(store, cfg, storage, &GracefulDrain{}, machines, fake, "deploy-first1")
 
 	job, _ := store.GetDeploy("deploy-first1")
 	if job == nil || job.State != StateSucceeded {
-		t.Fatalf("first deploy must succeed when stop only said not-running, got %+v", job)
+		t.Fatalf("deploy must succeed when stop only said not-running, got %+v", job)
 	}
 	runs, _, _ := fake.calls()
 	joined := strings.Join(runs, "\n---\n")
-	if !strings.Contains(joined, "bash scripts/restart.sh") {
-		t.Fatalf("must try restartCmd first, got:\n%s", joined)
+	if !strings.Contains(joined, "bash scripts/stop.sh") {
+		t.Fatalf("must try stopCmd, got:\n%s", joined)
 	}
 	if !strings.Contains(joined, "bash scripts/start.sh") {
-		t.Fatalf("must fall back to startCmd, got:\n%s", joined)
+		t.Fatalf("must continue to startCmd after skipping stop, got:\n%s", joined)
 	}
-	events, _ := store.ListDeployEvents("deploy-first1")
-	ev := ""
-	for _, e := range events {
-		ev += e.Message + "\n"
+	if strings.Contains(joined, "bash scripts/restart.sh") {
+		t.Fatalf("must not fall back to restartCmd when startCmd exists, got:\n%s", joined)
 	}
-	if !strings.Contains(ev, "restart 报服务未在运行") {
-		t.Fatalf("timeline must record the not-running fallback, got:\n%s", ev)
+	ev := joinedEvents(t, store, "deploy-first1")
+	if !strings.Contains(ev, "stop：没有运行中的实例，已跳过") {
+		t.Fatalf("timeline must warn that stop was skipped, got:\n%s", ev)
 	}
 }
 
-func TestExecuteDeployRestartCrashDoesNotFallbackToStart(t *testing.T) {
-	store, cfg, storage, _, tag, _ := newRemoteDeployFixture(t)
-	cfg.DeployMachineTargets["10.0.0.8"] = MachineTarget{
-		ID: "10.0.0.8", Kind: "ssh", SSHUser: "ubuntu", SSHHost: "10.0.0.8",
-		RuntimeHome: "/home/ubuntu/runtime",
-	}
-	machines := NewMachineCatalog(cfg, nil)
-	svc, _ := store.GetService("web-cursor")
-	svc.StartCmd = "bash scripts/start.sh"
-	svc.RestartCmd = "bash scripts/restart.sh"
-	if _, err := store.UpsertService(*svc); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.CreateDeploy("deploy-crash1", "web-cursor", tag, Identity{}, "queued", "10.0.0.8"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.ClaimNextQueued(); err != nil {
-		t.Fatal(err)
-	}
+func TestExecuteDeployStopRealFailureDoesNotStart(t *testing.T) {
+	store, cfg, storage, machines, tag := newRemoteNoOverride(t)
+	mustQueueRemote(t, store, "deploy-crash1", tag)
+
 	fake := &fakeRemote{
 		remoteOS:     "Linux",
 		remoteArch:   "x86_64",
-		failContains: "bash scripts/restart.sh",
-		failCode:     139,
-		failOutput:   "segmentation fault",
+		failContains: "bash scripts/stop.sh",
+		failCode:     1,
+		failOutput:   "permission denied",
 	}
 	executeDeploy(store, cfg, storage, &GracefulDrain{}, machines, fake, "deploy-crash1")
 
 	job, _ := store.GetDeploy("deploy-crash1")
 	if job == nil || job.State != StateFailed {
-		t.Fatalf("a real restart crash must fail the deploy, got %+v", job)
+		t.Fatalf("a real stop failure must fail the deploy, got %+v", job)
 	}
-	if !strings.Contains(job.Error, "segmentation fault") {
-		t.Fatalf("error must keep the restart failure, got %q", job.Error)
+	if !strings.Contains(job.Error, "permission denied") {
+		t.Fatalf("error must keep the stop failure, got %q", job.Error)
 	}
 	runs, _, _ := fake.calls()
 	for _, r := range runs {
 		if strings.Contains(r, "bash scripts/start.sh") {
-			t.Fatalf("must not fall back to startCmd on a real crash, got %q", r)
+			t.Fatalf("must not start after a real stop failure, got %q", r)
 		}
 	}
 }

@@ -17,8 +17,8 @@ var envExampleCandidates = []string{
 	".env.example",
 }
 
-// looksLikeNotRunning 判断 restart/stop 输出是不是「服务本来就没在跑」。
-// 新机器第一次部署时 stop.sh 经常因此非 0 退出，restart.sh 的 set -e 会卡住后面的 start。
+// looksLikeNotRunning 判断 stop/restart 输出是不是「根本没有进程可停」。
+// 首次部署、以及服务已经异常退出时都会这样；stop 应 skip，不要让部署卡在这里。
 func looksLikeNotRunning(out string) bool {
 	s := strings.ToLower(out)
 	for _, p := range []string{
@@ -30,6 +30,8 @@ func looksLikeNotRunning(out string) bool {
 		"is not running",
 		"no running",
 		"not currently running",
+		"no such process",
+		"already stopped",
 	} {
 		if strings.Contains(s, strings.ToLower(p)) {
 			return true
