@@ -87,11 +87,11 @@ func shownServiceCmd(cmd, override string, service ServiceContract, runtimeDir, 
 	return remoteRestartCmd(cmd, service, extra)
 }
 
-// runDeployRestart 是部署时的停再起：先 stopCmd，再 startCmd。
+// runDeployRestart 是部署时的停再起。
 //
-// 判定「有没有进程可停」是平台的事：看契约里的 healthUrl，不解析各服务 stop.sh 的文案。
-// 所以业务方不用改 stop 脚本。stop 在部署里永远是 best-effort：失败只记 warning，
-// 然后照常 start（没在跑、异常挂掉、stop 自己退出非 0 都一样）。start 才决定这次能不能成功。
+// 进程跟踪按约定：$RUNTIME_DIR/backend/runtime.pid（start.sh 写 $!）+ SERVICE_PORT 上的 LISTEN。
+// 平台先按这两处 stop，再跑契约 stopCmd（额外清理，best-effort）。start 成功后读 pidfile 记到时间线。
+// 通道 restart= 仍交给 systemd，不走 pidfile stop。
 func runDeployRestart(store *Store, job DeployJob, cfg Config, service ServiceContract,
 	target MachineTarget, remote RemoteRunner, runtimeDir, hash, machine string) string {
 	startCmd := strings.TrimSpace(service.StartCmd)
@@ -114,6 +114,7 @@ func runDeployRestart(store *Store, job DeployJob, cfg Config, service ServiceCo
 		_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
 			"远端执行（"+target.SSHDest()+"）："+shownServiceCmd(cmd, ov, service, runtimeDir, hash, machine))
 	}
+	port := servicePort(service)
 	up := serviceIsUp(target, remote, service)
 	if !up {
 		_ = store.AddDeployEvent(job.RequestID, eventlevel.Warn,
@@ -135,7 +136,31 @@ func runDeployRestart(store *Store, job DeployJob, cfg Config, service ServiceCo
 			_ = store.AddDeployEvent(job.RequestID, eventlevel.Error, "restart 失败："+clipCmdOut(out))
 			return "restart failed: " + clipCmdOut(out)
 		}
+		reportStartedPID(store, job, target, remote, runtimeDir)
 		return ""
+	}
+
+	_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
+		"平台 stop："+runtimePidRel+" + 端口 "+port)
+	if target.Remote() {
+		_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
+			"远端执行（"+target.SSHDest()+"）：平台 stop pidfile+port")
+	}
+	stopTimeout := 30
+	if cfg.DeployMaxSec > 0 && cfg.DeployMaxSec < stopTimeout {
+		stopTimeout = cfg.DeployMaxSec
+	}
+	pcode, pout := runPlatformStop(remote, target, runtimeDir, port, stopTimeout)
+	pout = strings.TrimSpace(pout)
+	switch {
+	case pcode != 0:
+		_ = store.AddDeployEvent(job.RequestID, eventlevel.Warn,
+			"平台 stop 未成功，已忽略："+clipCmdOut(pout))
+	case strings.Contains(pout, "not running"):
+		_ = store.AddDeployEvent(job.RequestID, eventlevel.Warn,
+			"平台 stop：没有运行中的实例，已跳过")
+	default:
+		_ = store.AddDeployEvent(job.RequestID, eventlevel.Success, "平台 stop："+clipCmdOut(pout))
 	}
 
 	if stopCmd != "" {
@@ -145,37 +170,39 @@ func runDeployRestart(store *Store, job DeployJob, cfg Config, service ServiceCo
 		code, out := run(stopCmd, "")
 		if code != 0 {
 			_ = store.AddDeployEvent(job.RequestID, eventlevel.Warn,
-				"stop 未成功，已忽略并继续 start："+clipCmdOut(out))
-			fmt.Printf("[deploy] %s stop failed (ignored): %s\n", job.RequestID, clipCmdOut(out))
+				"stopCmd 未成功，已忽略并继续 start："+clipCmdOut(out))
+			fmt.Printf("[deploy] %s stopCmd failed (ignored): %s\n", job.RequestID, clipCmdOut(out))
 		} else {
-			_ = store.AddDeployEvent(job.RequestID, eventlevel.Success, "stop 完成")
+			_ = store.AddDeployEvent(job.RequestID, eventlevel.Success, "stopCmd 完成")
 		}
 	}
 
 	if startCmd != "" {
 		fmt.Printf("[deploy] %s start via contract (SERVICE_PORT=%s): %s\n",
-			job.RequestID, servicePort(service), startCmd)
+			job.RequestID, port, startCmd)
 		_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
-			"执行 startCmd（SERVICE_PORT="+servicePort(service)+"，同时注入 PORT）："+startCmd)
+			"执行 startCmd（SERVICE_PORT="+port+"，同时注入 PORT）："+startCmd)
 		logRemote(startCmd, "")
 		code, out := run(startCmd, "")
 		if code != 0 {
 			_ = store.AddDeployEvent(job.RequestID, eventlevel.Error, "start 失败："+clipCmdOut(out))
 			return "start failed: " + clipCmdOut(out)
 		}
+		reportStartedPID(store, job, target, remote, runtimeDir)
 		return ""
 	}
 
 	fmt.Printf("[deploy] %s restart via contract (SERVICE_PORT=%s): %s\n",
-		job.RequestID, servicePort(service), restartCmd)
+		job.RequestID, port, restartCmd)
 	_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
-		"执行 restartCmd（SERVICE_PORT="+servicePort(service)+"，同时注入 PORT）："+restartCmd)
+		"执行 restartCmd（SERVICE_PORT="+port+"，同时注入 PORT）："+restartCmd)
 	logRemote(restartCmd, "")
 	code, out := run(restartCmd, "")
 	if code != 0 {
 		_ = store.AddDeployEvent(job.RequestID, eventlevel.Error, "restart 失败："+clipCmdOut(out))
 		return "restart failed: " + clipCmdOut(out)
 	}
+	reportStartedPID(store, job, target, remote, runtimeDir)
 	return ""
 }
 

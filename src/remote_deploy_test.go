@@ -65,6 +65,13 @@ func (f *fakeRemote) Run(target MachineTarget, script string, timeoutSec int) (i
 	if f.fail != "" && strings.Contains(script, f.fail) {
 		return 3, "boom: " + f.fail
 	}
+	// 平台 stop（pidfile + lsof）：带 kill_pid。读 pidfile 的脚本不含它。
+	if strings.Contains(script, runtimePidRel) && strings.Contains(script, "kill_pid") {
+		return 0, "not running\n"
+	}
+	if strings.Contains(script, runtimePidRel) && strings.Contains(script, "tr -d") {
+		return 0, "4242\n"
+	}
 	// 预检脚本尾部会问平台；其余命令回 ok。
 	if strings.Contains(script, "uname -s") {
 		return 0, "ok\n" + f.remoteOS + "\n" + f.remoteArch
@@ -488,8 +495,8 @@ func TestExecuteDeployIgnoresStopFailureAndStarts(t *testing.T) {
 		t.Fatalf("must not fall back to restartCmd when startCmd exists, got:\n%s", joined)
 	}
 	ev := joinedEvents(t, store, "deploy-first1")
-	if !strings.Contains(ev, "stop 未成功，已忽略并继续 start") {
-		t.Fatalf("timeline must warn that stop was ignored, got:\n%s", ev)
+	if !strings.Contains(ev, "stopCmd 未成功，已忽略并继续 start") {
+		t.Fatalf("timeline must warn that stopCmd was ignored, got:\n%s", ev)
 	}
 }
 
@@ -514,5 +521,32 @@ func TestExecuteDeployStopPermissionDeniedStillStarts(t *testing.T) {
 	joined := strings.Join(runs, "\n---\n")
 	if !strings.Contains(joined, "bash scripts/start.sh") {
 		t.Fatalf("must start after an ignored stop failure, got:\n%s", joined)
+	}
+}
+
+func TestExecuteDeployPlatformStopAndRecordsPid(t *testing.T) {
+	store, cfg, storage, machines, tag := newRemoteNoOverride(t)
+	mustQueueRemote(t, store, "deploy-pid1", tag)
+	fake := &fakeRemote{remoteOS: "Linux", remoteArch: "x86_64"}
+	executeDeploy(store, cfg, storage, &GracefulDrain{}, machines, fake, "deploy-pid1")
+
+	job, _ := store.GetDeploy("deploy-pid1")
+	if job == nil || job.State != StateSucceeded {
+		t.Fatalf("deploy = %+v", job)
+	}
+	runs, _, _ := fake.calls()
+	joined := strings.Join(runs, "\n---\n")
+	if !strings.Contains(joined, runtimePidRel) || !strings.Contains(joined, "kill_pid") {
+		t.Fatalf("must run platform stop (pidfile + kill), got:\n%s", joined)
+	}
+	ev := joinedEvents(t, store, "deploy-pid1")
+	if !strings.Contains(ev, "平台 stop") {
+		t.Fatalf("timeline must mention platform stop, got:\n%s", ev)
+	}
+	if !strings.Contains(ev, "没有运行中的实例") {
+		t.Fatalf("first-deploy-style platform stop should warn when nothing is up, got:\n%s", ev)
+	}
+	if !strings.Contains(ev, "服务已启动 pid=4242") {
+		t.Fatalf("timeline must record pid from pidfile, got:\n%s", ev)
 	}
 }
