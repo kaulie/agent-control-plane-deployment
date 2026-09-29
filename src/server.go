@@ -1291,7 +1291,7 @@ func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
 		machineHint += "列表来自部署通道 " + deployMachineTargetsEnv + "。"
 	case strings.HasPrefix(machineSource, "registry"):
 		machineHint = "「部署机器」按**服务**取自 service_registry：列出 " + scopeService +
-			" 绑定在案的机器（有部署通道的才可选）+ 本机。" + machineHint
+			" 在注册中心登记在案的全部机器 + 本机。" + machineHint
 	default:
 		machineHint = "「部署机器」没能按服务收窄：" + machineNote + "。这次列出的是全部有通道的机器。" + machineHint
 	}

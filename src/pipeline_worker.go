@@ -104,7 +104,7 @@ func (w *PipelineWorker) platformFor(job *PipelineJob) BuildPlatform {
 			return p
 		}
 	}
-	target, ok := w.machineTarget(machine)
+	target, ok := w.machineTarget(job, machine)
 	if !ok {
 		return LocalBuildPlatform()
 	}
@@ -116,11 +116,11 @@ func (w *PipelineWorker) platformFor(job *PipelineJob) BuildPlatform {
 	return p
 }
 
-func (w *PipelineWorker) machineTarget(machine string) (MachineTarget, bool) {
+func (w *PipelineWorker) machineTarget(job *PipelineJob, machine string) (MachineTarget, bool) {
 	if w.machines == nil {
 		return MachineTarget{}, false
 	}
-	return w.machines.Target(context.Background(), machine)
+	return w.machines.TargetForService(context.Background(), job.ServiceID, machine)
 }
 
 func (w *PipelineWorker) machinesDefault() string {

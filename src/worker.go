@@ -266,13 +266,13 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 	hash := deploymentHash(tag)
 	// 本次部署落到的「部署机器」：触发时选择并随任务转发而来；空/未知 → 默认机器。
 	// 已知机器来自注册中心（+ 本机 + DEPLOY_MACHINES），见 MachineCatalog。
-	machine, mErr := machines.Validate(context.Background(), job.TargetMachine)
+	machine, mErr := machines.ValidateForService(context.Background(), job.ServiceID, job.TargetMachine)
 	if mErr != nil {
-		machine = machines.DefaultID(context.Background())
+		machine = machines.DefaultFor(context.Background(), job.ServiceID)
 		_ = store.AddDeployEvent(job.RequestID, eventlevel.Warn,
 			"部署机器不可用（"+mErr.Error()+"），退回默认机器="+machine)
 	}
-	target, hasTarget := machines.Target(context.Background(), machine)
+	target, hasTarget := machines.TargetForService(context.Background(), job.ServiceID, machine)
 	if !hasTarget {
 		// 校验层已经保证有通道；这里是兜底（例如通道配置在任务排队期间被改掉）。
 		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{

@@ -212,8 +212,7 @@ func TestMachineCatalogScopeIsPerService(t *testing.T) {
 	}
 }
 
-// 有该服务的实例、但没配通道的机器：不在列表里，但要在说明里点名（否则「明明在跑却选不到」
-// 会变成新的谜题）。
+// 有该服务的实例、但没配通道的机器：要在列表里可见，并在说明里点名如何补通道。
 func TestMachineCatalogScopeNamesChannellessMachines(t *testing.T) {
 	const snapshot = `{
   "services": [{"namespace":"default","name":"web-cursor"}],
@@ -223,17 +222,50 @@ func TestMachineCatalogScopeNamesChannellessMachines(t *testing.T) {
     {"namespace":"default","service":"event-center","host":"127.0.0.1","port":4290}
   ]
 }`
-	cfg := Config{DeployMachineTargets: map[string]MachineTarget{
-		"local": {ID: "local", Kind: "local"},
-	}}
+	cfg := Config{
+		Home: t.TempDir(),
+		DeployMachineTargets: map[string]MachineTarget{
+			"local": {ID: "local", Kind: "local"},
+		},
+	}
 	cat := NewMachineCatalog(cfg, fakeRegistry(t, snapshot, true))
 
 	ids, _, note := cat.For(t.Context(), "web-cursor")
-	if strings.Join(ids, ",") != "local" {
-		t.Fatalf("web-cursor 的列表 = %v, want [local]（10.0.0.5 没通道）", ids)
+	if strings.Join(ids, ",") != "local,10.0.0.5" {
+		t.Fatalf("web-cursor 的列表 = %v, want [local 10.0.0.5]（registry 上的全部机器）", ids)
 	}
-	if !strings.Contains(note, "10.0.0.5") || !strings.Contains(note, deployMachineTargetsEnv) {
-		t.Fatalf("说明要点名「有实例但没通道」的机器，got %q", note)
+	if target, ok := cat.TargetForService(t.Context(), "web-cursor", "10.0.0.5"); !ok || !target.Remote() || target.SSHHost != "10.0.0.5" {
+		t.Fatalf("registry 实例应能解析出 ssh 通道，got %+v ok=%v", target, ok)
+	}
+	if _, err := cat.ValidateForService(t.Context(), "web-cursor", "10.0.0.5"); err != nil {
+		t.Fatalf("有 registry 通道的机器应可选，got %v", err)
+	}
+	_ = note
+}
+
+// 注册中心按 metadata.machine 登记的远端机器，即使 DEPLOY_MACHINE_TARGETS 里用的是别的 id，
+// 只要 ssh host 对得上，也应出现在该服务的下拉里。
+func TestMachineCatalogScopeMatchesChannelByInstanceHost(t *testing.T) {
+	const snapshot = `{
+  "services": [{"namespace":"default","name":"home-agent-brain"}],
+  "instances": [
+    {"namespace":"default","service":"home-agent-brain","host":"127.0.0.1","port":4300},
+    {"namespace":"default","service":"home-agent-brain","host":"10.0.0.8","port":4300,"metadata":{"machine":"agent-oversea"}}
+  ]
+}`
+	cfg := Config{
+		DeployMachineTargets: map[string]MachineTarget{
+			"local": {ID: "local", Kind: "local"},
+			"gpu-node": {ID: "gpu-node", Kind: "ssh", SSHHost: "10.0.0.8", RuntimeHome: "/home/ubuntu/runtime"},
+		},
+	}
+	cat := NewMachineCatalog(cfg, fakeRegistry(t, snapshot, true))
+	ids, _, _ := cat.For(t.Context(), "home-agent-brain")
+	if strings.Join(ids, ",") != "local,agent-oversea" {
+		t.Fatalf("For(home-agent-brain) = %v, want local + registry 机器", ids)
+	}
+	if target, ok := cat.TargetForService(t.Context(), "home-agent-brain", "agent-oversea"); !ok || target.SSHHost != "10.0.0.8" {
+		t.Fatalf("agent-oversea 应匹配 gpu-node 通道，got %+v ok=%v", target, ok)
 	}
 }
 
