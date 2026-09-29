@@ -15,6 +15,8 @@ func TestLooksLikeNotRunning(t *testing.T) {
 		"Job is not running",
 		"service isn't running yet",
 		"unit not currently running",
+		"No such process",
+		"already stopped",
 	}
 	for _, s := range yes {
 		if !looksLikeNotRunning(s) {
