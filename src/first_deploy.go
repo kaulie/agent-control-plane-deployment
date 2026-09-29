@@ -17,29 +17,6 @@ var envExampleCandidates = []string{
 	".env.example",
 }
 
-// looksLikeNotRunning 判断 stop/restart 输出是不是「根本没有进程可停」。
-// 首次部署、以及服务已经异常退出时都会这样；stop 应 skip，不要让部署卡在这里。
-func looksLikeNotRunning(out string) bool {
-	s := strings.ToLower(out)
-	for _, p := range []string{
-		"没有运行中的",
-		"未在运行",
-		"未运行",
-		"not running",
-		"isn't running",
-		"is not running",
-		"no running",
-		"not currently running",
-		"no such process",
-		"already stopped",
-	} {
-		if strings.Contains(s, strings.ToLower(p)) {
-			return true
-		}
-	}
-	return false
-}
-
 // seedMissingBackendEnv 仅在 backend/.env 不存在时，从包里的 example 拷一份过去。
 // 已有文件绝不覆盖（那是这台机器自己的密钥）。返回用上的模板相对路径；没拷则 "".
 func seedMissingBackendEnv(runtimeDir string) (string, error) {
