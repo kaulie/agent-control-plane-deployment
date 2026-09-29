@@ -36,6 +36,8 @@ type MachineCatalog struct {
 	discovered []string
 	// byService 是「服务 → 它登记在案的机器」：列表按服务收窄时的数据源（来自注册中心的实例）。
 	byService map[string][]string
+	// serviceInstances 保留每个服务下「机器 id → 代表实例」，供按实例 host/metadata 解析部署通道。
+	serviceInstances map[string]map[string]RegistryInstance
 	// registryOK 记录这次刷新的注册中心**是否真的回答了**：false 时按服务收窄无从谈起
 	// （不知道服务跑在哪），列表只能是通道给的。
 	registryOK bool
@@ -51,7 +53,8 @@ const machineCacheTTL = 30 * time.Second
 
 func NewMachineCatalog(cfg Config, registry *ServiceRegistry) *MachineCatalog {
 	return &MachineCatalog{registry: registry, cfg: cfg, ttl: machineCacheTTL,
-		byService: map[string][]string{}, platforms: map[string]BuildPlatform{}}
+		byService: map[string][]string{}, serviceInstances: map[string]map[string]RegistryInstance{},
+		platforms: map[string]BuildPlatform{}}
 }
 
 // PlatformFor 返回注册中心给这台机器登记的平台（ok=false = 注册中心没登记/不知道这台机器）。
@@ -122,31 +125,29 @@ func (c *MachineCatalog) Scope(ctx context.Context, serviceID string) MachineSco
 		return out
 	}
 
-	// 本机恒在（控制面自己就跑在这台机器上，也是不选机器时的默认），其余取交集：
-	// 既是这个服务的机器，又有部署通道 —— 「绑定」只说明这台机器上有这个服务，
-	// 「通道」说明控制面能把部署送过去。
-	inScope := map[string]bool{defaultDeployMachine: true}
+	// 本机恒在（控制面自己就跑在这台机器上，也是不选机器时的默认），其余列出
+	// service_registry 上这个服务登记在案的全部机器（不再与 DEPLOY_MACHINE_TARGETS 求交）。
 	registered := append([]string(nil), svcMachines...)
-	for _, id := range svcMachines {
-		inScope[id] = true
-	}
-	ids := []string{}
-	for _, id := range c.deployable {
-		if inScope[id] {
-			ids = append(ids, id)
-		}
-	}
-	// 有该服务的实例、但没配通道的机器：说清它们为什么不在列表里。
-	channelLess := []string{}
+	ids := []string{defaultDeployMachine}
+	seen := map[string]bool{defaultDeployMachine: true}
 	for _, id := range registered {
-		if !containsID(ids, id) {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	// 仍解析不出部署通道的机器：在说明里点名（列表里可见，触发时会 400）。
+	channelLess := []string{}
+	for _, id := range ids {
+		if _, ok := c.targetForServiceLocked(serviceID, id); !ok {
 			channelLess = append(channelLess, id)
 		}
 	}
 	if len(channelLess) > 0 {
 		sort.Strings(channelLess)
-		out.Note = joinNotes("这些机器有 "+serviceID+" 的实例但没配部署通道，暂不可选："+
-			strings.Join(channelLess, ", ")+"（配 "+deployMachineTargetsEnv+" 后可部署）", c.note)
+		out.Note = joinNotes("这些机器在 service_registry 有实例但还解析不出部署通道："+
+			strings.Join(channelLess, ", ")+"（配 "+deployMachineTargetsEnv+" 或在实例 metadata 里登记 runtimeHome）", c.note)
 	} else {
 		out.Note = ""
 	}
@@ -205,18 +206,24 @@ func (c *MachineCatalog) TargetsFor(ctx context.Context, serviceID string) map[s
 	defer c.mu.Unlock()
 	out := map[string]MachineTarget{}
 	for _, id := range ids {
-		if t, ok := c.cfg.DeployMachineTargets[id]; ok {
+		if t, ok := c.targetForServiceLocked(serviceID, id); ok {
 			out[id] = t
 		}
 	}
 	return out
 }
 
-// Target 返回某台可部署机器的通道。
+// Target 返回某台可部署机器的通道（全局视图：只看显式 DEPLOY_MACHINE_TARGETS）。
 func (c *MachineCatalog) Target(ctx context.Context, id string) (MachineTarget, bool) {
-	targets := c.Targets(ctx)
-	t, ok := targets[id]
-	return t, ok
+	return c.TargetForService(ctx, "", id)
+}
+
+// TargetForService 返回某个服务上下文下一台机器的部署通道。
+func (c *MachineCatalog) TargetForService(ctx context.Context, serviceID, id string) (MachineTarget, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.refresh(ctx)
+	return c.targetForServiceLocked(serviceID, id)
 }
 
 // Known 判断某台机器当前是否可选（全局视图）。
@@ -264,6 +271,10 @@ func (c *MachineCatalog) ValidateForService(ctx context.Context, serviceID, sel 
 		return scope.Default, nil
 	}
 	if containsID(scope.IDs, sel) {
+		if _, ok := c.TargetForService(ctx, serviceID, sel); !ok {
+			return "", fmt.Errorf("deploy machine %q 还没有部署通道：在 %s（或 data/machine-targets）里给它配 `ssh [user@]host[:port] <remote-runtime-home>`，或在 service_registry 实例 metadata 里登记 runtimeHome；可选：%s",
+				sel, deployMachineTargetsEnv, strings.Join(scope.IDs, ", "))
+		}
 		return sel, nil
 	}
 	if svc := strings.TrimSpace(serviceID); svc != "" && c.Known(ctx, sel) {
@@ -319,6 +330,7 @@ func (c *MachineCatalog) refresh(ctx context.Context) {
 	var regErr error
 	platforms := map[string]BuildPlatform{}
 	byService := map[string][]string{}
+	serviceInstances := map[string]map[string]RegistryInstance{}
 	services := map[string]bool{}
 	if c.registry.Enabled() {
 		regServices, instances, err := c.registry.Snapshot(ctx)
@@ -340,8 +352,14 @@ func (c *MachineCatalog) refresh(ctx context.Context) {
 				if !m.Platform.IsZero() && platforms[m.ID].IsZero() {
 					platforms[m.ID] = m.Platform
 				}
-				if svc := strings.TrimSpace(inst.Service); svc != "" && !containsID(byService[svc], m.ID) {
-					byService[svc] = append(byService[svc], m.ID)
+				if svc := strings.TrimSpace(inst.Service); svc != "" {
+					if !containsID(byService[svc], m.ID) {
+						byService[svc] = append(byService[svc], m.ID)
+					}
+					if serviceInstances[svc] == nil {
+						serviceInstances[svc] = map[string]RegistryInstance{}
+					}
+					serviceInstances[svc][m.ID] = inst
 				}
 			}
 			for svc := range byService {
@@ -360,6 +378,7 @@ func (c *MachineCatalog) refresh(ctx context.Context) {
 	}
 	c.platforms = platforms
 	c.byService = byService
+	c.serviceInstances = serviceInstances
 	c.registryOK = regErr == nil
 	sort.Strings(fromRegistry)
 	known := map[string]bool{}
@@ -424,4 +443,100 @@ func (c *MachineCatalog) targetIDs() ([]string, string) {
 		source = "targets"
 	}
 	return ids, source
+}
+
+// targetForServiceLocked 解析部署通道（调用方已持 c.mu）。
+func (c *MachineCatalog) targetForServiceLocked(serviceID, id string) (MachineTarget, bool) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return MachineTarget{}, false
+	}
+	if t, ok := c.cfg.DeployMachineTargets[id]; ok {
+		if t.ID == "" {
+			t.ID = id
+		}
+		return t, true
+	}
+	serviceID = strings.TrimSpace(serviceID)
+	if serviceID == "" {
+		return MachineTarget{}, false
+	}
+	inst, ok := c.serviceInstances[serviceID][id]
+	if !ok {
+		return MachineTarget{}, false
+	}
+	if t, ok := c.matchConfiguredTargetByHost(inst); ok {
+		if t.ID == "" {
+			t.ID = id
+		}
+		return t, true
+	}
+	return targetFromRegistryInstance(id, inst, c.cfg)
+}
+
+func (c *MachineCatalog) matchConfiguredTargetByHost(inst RegistryInstance) (MachineTarget, bool) {
+	host := strings.ToLower(strings.TrimSpace(inst.Host))
+	if host == "" {
+		return MachineTarget{}, false
+	}
+	for id, t := range c.cfg.DeployMachineTargets {
+		if !t.Remote() {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(t.SSHHost), host) {
+			out := t
+			if out.ID == "" {
+				out.ID = id
+			}
+			return out, true
+		}
+	}
+	return MachineTarget{}, false
+}
+
+func targetFromRegistryInstance(id string, inst RegistryInstance, cfg Config) (MachineTarget, bool) {
+	if isLocalHost(inst.Host) {
+		return MachineTarget{ID: id, Kind: "local"}, true
+	}
+	home := instanceRuntimeHome(inst, cfg)
+	if home == "" {
+		return MachineTarget{}, false
+	}
+	return MachineTarget{
+		ID:          id,
+		Kind:        "ssh",
+		SSHHost:     strings.TrimSpace(inst.Host),
+		SSHUser:     instanceSSHUser(inst),
+		RuntimeHome: home,
+	}, true
+}
+
+func instanceRuntimeHome(inst RegistryInstance, cfg Config) string {
+	get := func(keys ...string) string {
+		for _, k := range keys {
+			for mk, mv := range inst.Metadata {
+				if strings.EqualFold(strings.TrimSpace(mk), k) {
+					if v := strings.TrimSpace(mv); v != "" {
+						return v
+					}
+				}
+			}
+		}
+		return ""
+	}
+	if v := get("runtimeHome", "runtime_home", "remoteRuntimeHome"); v != "" {
+		return v
+	}
+	return strings.TrimSpace(cfg.Home)
+}
+
+func instanceSSHUser(inst RegistryInstance) string {
+	for _, k := range []string{"sshUser", "ssh_user", "user"} {
+		for mk, mv := range inst.Metadata {
+			if strings.EqualFold(strings.TrimSpace(mk), k) {
+				return strings.TrimSpace(mv)
+			}
+		}
+	}
+	return ""
 }
