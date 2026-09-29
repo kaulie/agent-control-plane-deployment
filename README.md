@@ -349,7 +349,7 @@ macOS 上打的包（Mach-O）在 Linux 远端起不来，所以**打包时就�
   1. **预检**：能 `ssh` 登录、远端有 `curl`、目标 runtime 目录存在且像这个服务（没有 `scripts/restart.sh` 就拒绝 `rsync --delete`，不会误删别的东西；目录不存在则创建，首次部署不带 `--delete`）；
   2. **传制品**：本机下载后 `rsync -a --delete -e ssh` 推到远端 runtime（`backend/.env`、`backend/data/`、`data/`、`logs/`、`packages/`、`*.pid` 等运行态豁免，与本地同一套规则）；
   3. **graceful**：通知/轮询**在远端**发（契约里的 `restartNotifyUrl`/`restartPollUrl` 是 `127.0.0.1`，站在那台机器上问才对）；
-  4. **重启**：`ssh` 在远端 `cd` 到 runtime 跑契约的 `restartCmd`，注入 `SERVICE_PORT`/`PORT`/`APP_VERSION`/`DEPLOY_MACHINE`/`RUNTIME_DIR`；
+  4. **重启**：`ssh` 在远端 `cd` 到 runtime 跑契约的 `restartCmd`，注入 `SERVICE_PORT`/`PORT`/`APP_VERSION`/`DEPLOY_MACHINE`/`RUNTIME_DIR`。**第一次部署**时服务还没在跑，stop 常会报「没有运行中的 …」并让 `restart.sh`（`set -e`）非 0 退出 —— 平台会忽略这类错误并改跑 `startCmd`。rsync 不传 `backend/.env`（保护密钥），若远端还没有该文件，会从包里的 `backend/.env.example` / `server/.env.example` / `.env.example` 拷一份再启动（已有文件不覆盖）；
   5. **探活**：同样在远端 `curl` 契约的 `healthUrl`；失败即这次部署失败（**不会**静默退化成本机部署）。
   时间线每一步都标「远端 `<dest>:<dir>`」，成功那句是「部署成功：version=…（远端 `<machine>`：`<dest>:<dir>`）」。前置要求：控制面这台机器能免密 `ssh` 到目标（`~/.ssh/config` 的别名可用），目标机器上有 `curl`。
 - **远端安全网（实测踩过，都已补上）**：
