@@ -55,6 +55,23 @@ type shellResult struct {
 	Output string
 }
 
+// runServiceCmd 在目标机器的 runtime 目录里跑契约命令（start/stop/restart），
+// 注入与 restartCmd 相同的 SERVICE_PORT / PORT / APP_VERSION / DEPLOY_MACHINE / RUNTIME_DIR。
+// restartOverride 只给「通道 restart=」用；跑 startCmd 兜底时必须留空。
+func runServiceCmd(remote RemoteRunner, target MachineTarget, cmd string, service ServiceContract,
+	runtimeDir, hash, machine string, timeoutSec int, restartOverride string) (int, string) {
+	extra := map[string]string{"APP_VERSION": hash, "DEPLOY_MACHINE": machine, "RUNTIME_DIR": runtimeDir}
+	if target.Remote() {
+		remoteCmd := remoteRestartCmd(cmd, service, extra)
+		if strings.TrimSpace(restartOverride) != "" {
+			remoteCmd = remoteEnvPrefix(service, extra) + " && " + restartOverride
+		}
+		return remote.Run(target, remoteCmd, timeoutSec)
+	}
+	res := runShell(cmd, runtimeDir, serviceCmdEnv(service, runtimeDir, extra), timeoutSec)
+	return res.Code, res.Output
+}
+
 func runShell(cmdStr, cwd string, env []string, timeoutSec int) shellResult {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
 	defer cancel()
@@ -530,6 +547,10 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		return
 	}
 
+	// 新机器第一次部署：制品 rsync 不传 backend/.env，这里从 example 补一份，
+	// 避免 start.sh 因「缺少 .env」直接失败。已有文件不会被覆盖。
+	seedRuntimeEnvIfMissing(store, *job, target, remote, runtimeDir)
+
 	restartCmd := strings.TrimSpace(service.RestartCmd)
 	if restartCmd == "" {
 		restartCmd = fmt.Sprintf("bash %q", filepath.Join(runtimeDir, "scripts", "restart.sh"))
@@ -558,33 +579,35 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		job.RequestID, servicePort(*service), restartCmd)
 	_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
 		"执行 restartCmd（SERVICE_PORT="+servicePort(*service)+"，同时注入 PORT）："+restartCmd)
-	var restartCode int
-	var restartOut string
+	override := ""
 	if target.Remote() {
-		override := target.ExpandRestartCmd(job.ServiceID, hash, runtimeDir, runtimeDir, machine)
-		remoteCmd := remoteRestartCmd(restartCmd, *service, map[string]string{
-			"APP_VERSION": hash, "DEPLOY_MACHINE": machine, "RUNTIME_DIR": runtimeDir,
-		})
+		override = target.ExpandRestartCmd(job.ServiceID, hash, runtimeDir, runtimeDir, machine)
 		if override != "" {
-			// 这台机器有自己的一套（例如 systemd 管理的服务要走 systemctl）：
-			// 仍然先把运行目录 cd 过去、注入同样的环境，再跑它自己的命令。
-			remoteCmd = remoteEnvPrefix(*service, map[string]string{
-				"APP_VERSION": hash, "DEPLOY_MACHINE": machine, "RUNTIME_DIR": runtimeDir,
-			}) + " && " + override
 			_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
 				"使用该机器的 restart= 覆盖契约 restartCmd："+override)
 		}
+		shown := remoteRestartCmd(restartCmd, *service, map[string]string{
+			"APP_VERSION": hash, "DEPLOY_MACHINE": machine, "RUNTIME_DIR": runtimeDir,
+		})
+		if override != "" {
+			shown = remoteEnvPrefix(*service, map[string]string{
+				"APP_VERSION": hash, "DEPLOY_MACHINE": machine, "RUNTIME_DIR": runtimeDir,
+			}) + " && " + override
+		}
 		_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
-			"远端执行（"+target.SSHDest()+"）："+remoteCmd)
-		restartCode, restartOut = remote.Run(target, remoteCmd, cfg.DeployMaxSec)
-	} else {
-		restart := runShell(
-			restartCmd,
-			runtimeDir,
-			serviceCmdEnv(*service, runtimeDir, map[string]string{"APP_VERSION": hash, "DEPLOY_MACHINE": machine}),
-			cfg.DeployMaxSec,
-		)
-		restartCode, restartOut = restart.Code, restart.Output
+			"远端执行（"+target.SSHDest()+"）："+shown)
+	}
+	restartCode, restartOut := runServiceCmd(remote, target, restartCmd, *service,
+		runtimeDir, hash, machine, cfg.DeployMaxSec, override)
+	if restartCode != 0 && looksLikeNotRunning(restartOut) {
+		startCmd := strings.TrimSpace(service.StartCmd)
+		if startCmd != "" && startCmd != restartCmd {
+			fmt.Printf("[deploy] %s restart reported not-running; ignoring and running startCmd\n", job.RequestID)
+			_ = store.AddDeployEvent(job.RequestID, eventlevel.Warn,
+				"restart 报服务未在运行（首次部署常见），忽略并改跑 startCmd："+startCmd)
+			restartCode, restartOut = runServiceCmd(remote, target, startCmd, *service,
+				runtimeDir, hash, machine, cfg.DeployMaxSec, "")
+		}
 	}
 	if restartCode != 0 {
 		out := restartOut

@@ -34,6 +34,10 @@ type fakeRemote struct {
 	pushes []string
 	http   []string
 	fail   string // 非空 = 该关键字的调用返回失败（用于失败路径）
+	// failContains 更细：匹配到这段脚本时返回 failCode/failOutput（首次部署 restart 兜底用）。
+	failContains string
+	failCode     int
+	failOutput   string
 	// 预检里 uname 的回答（默认 linux/amd64，与测试包里的二进制平台一致）。
 	remoteOS   string
 	remoteArch string
@@ -47,6 +51,17 @@ func (f *fakeRemote) record(dst *[]string, v string) {
 
 func (f *fakeRemote) Run(target MachineTarget, script string, timeoutSec int) (int, string) {
 	f.record(&f.runs, script)
+	if f.failContains != "" && strings.Contains(script, f.failContains) {
+		code := f.failCode
+		if code == 0 {
+			code = 1
+		}
+		out := f.failOutput
+		if out == "" {
+			out = "boom: " + f.failContains
+		}
+		return code, out
+	}
 	if f.fail != "" && strings.Contains(script, f.fail) {
 		return 3, "boom: " + f.fail
 	}
@@ -401,4 +416,103 @@ func (authFailRemote) PushDir(target MachineTarget, src, dst string, deleteExtra
 
 func (authFailRemote) HTTP(target MachineTarget, method, rawURL, body string, timeoutSec int) (int, string) {
 	return 0, "Permission denied (publickey)."
+}
+
+// 新机器第一次部署：restart.sh 的 stop 报「没有运行中的 Brain」并非 0 退出。
+// 平台必须忽略这类错误、改跑 startCmd，部署才能成功。
+func TestExecuteDeployFirstDeployIgnoresNotRunningRestart(t *testing.T) {
+	store, cfg, storage, _, tag, _ := newRemoteDeployFixture(t)
+	cfg.DeployMachineTargets["10.0.0.8"] = MachineTarget{
+		ID: "10.0.0.8", Kind: "ssh", SSHUser: "ubuntu", SSHHost: "10.0.0.8",
+		RuntimeHome: "/home/ubuntu/runtime",
+	}
+	machines := NewMachineCatalog(cfg, nil)
+	svc, err := store.GetService("web-cursor")
+	if err != nil || svc == nil {
+		t.Fatalf("GetService: %v %v", svc, err)
+	}
+	svc.StartCmd = "bash scripts/start.sh"
+	svc.RestartCmd = "bash scripts/restart.sh"
+	if _, err := store.UpsertService(*svc); err != nil {
+		t.Fatalf("UpsertService: %v", err)
+	}
+	if _, err := store.CreateDeploy("deploy-first1", "web-cursor", tag, Identity{}, "queued", "10.0.0.8"); err != nil {
+		t.Fatalf("CreateDeploy: %v", err)
+	}
+	if _, err := store.ClaimNextQueued(); err != nil {
+		t.Fatalf("ClaimNextQueued: %v", err)
+	}
+
+	fake := &fakeRemote{
+		remoteOS:     "Linux",
+		remoteArch:   "x86_64",
+		failContains: "bash scripts/restart.sh",
+		failCode:     1,
+		failOutput:   "[restart] stop\n[stop] 没有运行中的 Brain\n[restart]\n",
+	}
+	executeDeploy(store, cfg, storage, &GracefulDrain{}, machines, fake, "deploy-first1")
+
+	job, _ := store.GetDeploy("deploy-first1")
+	if job == nil || job.State != StateSucceeded {
+		t.Fatalf("first deploy must succeed when stop only said not-running, got %+v", job)
+	}
+	runs, _, _ := fake.calls()
+	joined := strings.Join(runs, "\n---\n")
+	if !strings.Contains(joined, "bash scripts/restart.sh") {
+		t.Fatalf("must try restartCmd first, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "bash scripts/start.sh") {
+		t.Fatalf("must fall back to startCmd, got:\n%s", joined)
+	}
+	events, _ := store.ListDeployEvents("deploy-first1")
+	ev := ""
+	for _, e := range events {
+		ev += e.Message + "\n"
+	}
+	if !strings.Contains(ev, "restart 报服务未在运行") {
+		t.Fatalf("timeline must record the not-running fallback, got:\n%s", ev)
+	}
+}
+
+func TestExecuteDeployRestartCrashDoesNotFallbackToStart(t *testing.T) {
+	store, cfg, storage, _, tag, _ := newRemoteDeployFixture(t)
+	cfg.DeployMachineTargets["10.0.0.8"] = MachineTarget{
+		ID: "10.0.0.8", Kind: "ssh", SSHUser: "ubuntu", SSHHost: "10.0.0.8",
+		RuntimeHome: "/home/ubuntu/runtime",
+	}
+	machines := NewMachineCatalog(cfg, nil)
+	svc, _ := store.GetService("web-cursor")
+	svc.StartCmd = "bash scripts/start.sh"
+	svc.RestartCmd = "bash scripts/restart.sh"
+	if _, err := store.UpsertService(*svc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateDeploy("deploy-crash1", "web-cursor", tag, Identity{}, "queued", "10.0.0.8"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ClaimNextQueued(); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeRemote{
+		remoteOS:     "Linux",
+		remoteArch:   "x86_64",
+		failContains: "bash scripts/restart.sh",
+		failCode:     139,
+		failOutput:   "segmentation fault",
+	}
+	executeDeploy(store, cfg, storage, &GracefulDrain{}, machines, fake, "deploy-crash1")
+
+	job, _ := store.GetDeploy("deploy-crash1")
+	if job == nil || job.State != StateFailed {
+		t.Fatalf("a real restart crash must fail the deploy, got %+v", job)
+	}
+	if !strings.Contains(job.Error, "segmentation fault") {
+		t.Fatalf("error must keep the restart failure, got %q", job.Error)
+	}
+	runs, _, _ := fake.calls()
+	for _, r := range runs {
+		if strings.Contains(r, "bash scripts/start.sh") {
+			t.Fatalf("must not fall back to startCmd on a real crash, got %q", r)
+		}
+	}
 }
