@@ -247,6 +247,7 @@ test('service edit page: save sends PUT /api/services/:id with the form body', a
   assert.equal(body.stopCmd, 'stop');
   assert.equal(body.restartCmd, 'restart');
   assert.equal(body.gracefulRestartMaxWaitMs, 90000);
+  assert.equal(body.supervise, false, 'supervise checkbox defaults off');
   assert.ok(!('gitRepoUrl' in body), 'gitRepoUrl is registry-owned: never sent from the panel');
   assert.match(doc.querySelector('#svc-msg').textContent, /已保存/);
 });
@@ -318,7 +319,7 @@ test('service edit page: 端口唯一性（前端先拦，不发请求）', asyn
 
 // 字段按含义分区：十几个字段平铺成一坨很难读，页面按「标识 / 目录 / 接口 / 命令」分四区，
 // 每区「小标题 + 一行说明 + 字段网格」，提示跟着它解释的字段走。
-test('service edit page: 字段按含义分区（标识 / 运行目录 / 服务接口 / 启停命令）', async (t) => {
+test('service edit page: 字段按含义分区（标识 / 运行目录 / 服务接口 / 监督 / 启停命令）', async (t) => {
   const { dom, flush } = makePage('web-cursor');
   t.after(() => dom.window.close());
   const doc = dom.window.document;
@@ -327,11 +328,11 @@ test('service edit page: 字段按含义分区（标识 / 运行目录 / 服务�
   const sections = [...doc.querySelectorAll('.form-card > section.cfg')];
   assert.deepEqual(
     sections.map((s) => s.id),
-    ['cfg-identity', 'cfg-runtimedir', 'cfg-endpoints', 'cfg-commands'],
+    ['cfg-identity', 'cfg-runtimedir', 'cfg-endpoints', 'cfg-supervise', 'cfg-commands'],
   );
   assert.deepEqual(
     sections.map((s) => s.querySelector('.cfg__title').firstChild.textContent.trim()),
-    ['服务标识', '运行目录', '服务接口', '启停命令'],
+    ['服务标识', '运行目录', '服务接口', '本机监督', '启停命令'],
   );
   for (const s of sections) {
     assert.ok(s.querySelector('.cfg__desc').textContent.trim().length > 0, s.id + ' 要有分区说明');
@@ -355,6 +356,7 @@ test('service edit page: 字段按含义分区（标识 / 运行目录 / 服务�
     '#svc-restartPollUrl': 'cfg-endpoints',
     '#svc-gracefulRestartMaxWaitMs': 'cfg-endpoints',
     '#svc-url-hint': 'cfg-endpoints',
+    '#svc-supervise': 'cfg-supervise',
     '#svc-startCmd': 'cfg-commands',
     '#svc-stopCmd': 'cfg-commands',
     '#svc-restartCmd': 'cfg-commands',

@@ -203,6 +203,7 @@ type putServiceBody struct {
 	RestartNotifyURL  *string           `json:"restartNotifyUrl"`
 	RestartPollURL    *string           `json:"restartPollUrl"`
 	GracefulMaxWaitMs *int              `json:"gracefulRestartMaxWaitMs"`
+	Supervise         *bool             `json:"supervise"`
 }
 
 // handlePutService 配置/更新一个服务的**本机部署参数**。服务是否存在由
@@ -280,6 +281,7 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 	maxWaitMs := 0
 	gitRepoURL := ""
 	defaultBranch := "main"
+	supervise := false
 	if existing != nil {
 		if name == "" {
 			name = existing.Name
@@ -308,6 +310,7 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 		gitRepoURL = existing.GitRepoURL
 		port = existing.Port
 		defaultBranch = defaultBranchOrMain(existing.DefaultBranch)
+		supervise = existing.Supervise
 	}
 	// 服务端口：**必填**（1..65535）。它会在启动/停止/重启时注入 SERVICE_PORT。
 	// 缺省（不传）时沿用库里已有的端口；库里也没有（老契约 port=0）→ 400。
@@ -376,6 +379,9 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 	if body.DefaultBranch != nil {
 		defaultBranch = defaultBranchOrMain(*body.DefaultBranch)
 	}
+	if body.Supervise != nil {
+		supervise = *body.Supervise
+	}
 	if name == "" {
 		name = serviceID
 	}
@@ -406,6 +412,7 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 		RestartNotifyURL:  notifyURL,
 		RestartPollURL:    pollURL,
 		GracefulMaxWaitMs: maxWaitMs,
+		Supervise:         supervise,
 	})
 	if err != nil {
 		// 并发保存时可能绕过上面的检查、撞到 services.port 的唯一索引：同样给友好的 409。
@@ -421,6 +428,7 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 	if existing != nil {
 		status = http.StatusOK
 	}
+	notifyWatchdog(s.cfg.WatchdogURL)
 	writeJSON(w, status, svc)
 }
 

@@ -54,6 +54,7 @@ func seedACPService(store *Store, cfg Config) {
 		RestartCmd:       fmt.Sprintf("bash %q", filepath.Join(cfg.Home, "scripts", "restart.sh")),
 		RestartNotifyURL: "/restart/notify",
 		RestartPollURL:   "/restart/poll",
+		Supervise:        true,
 	})
 	if err != nil {
 		log.Printf("[seed] acp service failed: %v", err)

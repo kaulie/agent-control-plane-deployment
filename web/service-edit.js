@@ -131,6 +131,7 @@ function fillForm(svc) {
   $('#svc-restartNotifyUrl').value = svc.restartNotifyUrl || '';
   $('#svc-restartPollUrl').value = svc.restartPollUrl || '';
   $('#svc-gracefulRestartMaxWaitMs').value = svc.gracefulRestartMaxWaitMs || '';
+  $('#svc-supervise').checked = !!svc.supervise;
   setMessage(svc.registered
     ? ''
     : '⚠ service_registry 未返回该服务（未登记 / 注册中心不可用）：已配置的仍可编辑，新建会被拒绝。');
@@ -218,6 +219,7 @@ function serviceFormBody() {
       restartNotifyUrl: $('#svc-restartNotifyUrl').value.trim(),
       restartPollUrl: $('#svc-restartPollUrl').value.trim(),
       gracefulRestartMaxWaitMs: Number($('#svc-gracefulRestartMaxWaitMs').value) || 0,
+      supervise: $('#svc-supervise').checked,
     },
   };
 }
