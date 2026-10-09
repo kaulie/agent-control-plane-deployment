@@ -207,6 +207,8 @@ Notify 请求体示例：`{ serviceId, requestId, deployment, version, message }
 
 部署步骤：若已配置 graceful → notify + 轮询（或超时强制）→ rsync → `restartCmd` → 探活 `healthUrl`。
 
+**服务不可达时提前重启**：graceful 窗口原本只在「项目就绪」或「最长等待超时」两种情况下结束；现在项目**不可达**（连接被拒/重置、主机不可达、DNS 失败、SSH/curl 连不上等**连接层**失败）时不再白等到超时：① `restartNotifyUrl` 通知若确认不可达，直接跳过轮询进入重启；② 轮询**连续 3 次**不可达即直接重启。中间只要有一次应答（无论 `canRestart` 真假、或返回非 2xx/坏 JSON）就重置该连续计数——可达但未就绪仍然照旧等到超时，正常等待/轮询/重启行为不变。
+
 ACP 自己（自升级）的 `GET /restart/poll` 在 drain 期间统计**真正在途**的工作：`running` 的部署 + 正在打包（`packaging`）的流水线 + 部署**已开始跑**（`deploying` 且其 deploy 为 `running`）的流水线。**只是排了队还没开始的 deploy 不算在途** —— drain 期间 worker 不认领新任务，若把它算在途就会和 restart 窗口互相等待（轮询永远不 ready，队列里的 deploy 也永远不跑），只能等 `gracefulRestartMaxWaitMs` 超时强制重启；现在这种 deploy 直接留给重启后的新进程认领执行。
 
 ### 部署并发：同一运行目录串行，不同服务并行

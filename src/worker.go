@@ -590,7 +590,7 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 				"graceful：在远端 "+target.SSHHost+" 上发通知/轮询（用远端自己的 127.0.0.1 地址）")
 		}
 		if waitForGracefulRestartVia(store, *service, cfg, *job, hash, gracefulTransport) {
-			fmt.Printf("[deploy] %s proceeding after graceful force timeout\n", job.RequestID)
+			fmt.Printf("[deploy] %s graceful wait ended without readiness (force timeout or project unreachable); proceeding to restart\n", job.RequestID)
 		}
 	} else {
 		fmt.Printf("[deploy] %s no graceful endpoints in registry; direct restart\n", job.RequestID)
