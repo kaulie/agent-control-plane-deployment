@@ -428,7 +428,6 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 	if existing != nil {
 		status = http.StatusOK
 	}
-	notifyWatchdog(s.cfg.WatchdogURL)
 	writeJSON(w, status, svc)
 }
 
