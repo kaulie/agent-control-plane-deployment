@@ -482,14 +482,14 @@ function renderServiceContracts() {
   const tbody = $('#svc-table tbody');
   if (!tbody) return;
   if (servicesError) {
-    tbody.innerHTML = `<tr><td colspan="7" class="muted">加载失败：${esc(servicesError)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="muted">加载失败：${esc(servicesError)}</td></tr>`;
     return;
   }
   if (!services.length) {
     const empty = registryStatus && registryStatus.enabled && registryStatus.ok
       ? 'service_registry 里还没有已登记的服务（在注册中心登记后这里就会出现）'
       : '暂无服务';
-    tbody.innerHTML = `<tr><td colspan="7" class="muted">${empty}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="muted">${empty}</td></tr>`;
     return;
   }
   tbody.innerHTML = services.map((s) => {
@@ -509,6 +509,7 @@ function renderServiceContracts() {
       <td>${state}</td>
       <td class="mono">${esc(versionOwner)}</td>
       <td>${servicePortLabel(s)}</td>
+      <td>${s.supervise ? '<span class="badge badge--ok">监督</span>' : '<span class="muted">—</span>'}</td>
       <td>${esc(serviceGracefulLabel(s))}</td>
       <td class="cell-actions">${actions}</td>
     </tr>`;

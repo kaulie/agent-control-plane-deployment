@@ -86,7 +86,18 @@
         </div>
       </section>
 
-      <!-- ④ 启停命令：部署时执行的命令（SERVICE_PORT / APP_VERSION / DEPLOY_MACHINE / RUNTIME_DIR 会注入） -->
+      <!-- ④ 本机监督：watchdog 是否探活并拉起 -->
+      <section class="cfg" id="cfg-supervise">
+        <h3 class="cfg__title">本机监督<span class="cfg__note">agent-watchdog</span></h3>
+        <p class="cfg__desc">勾选后，本机 watchdog 按上面的端口 / healthUrl / 启停命令探活，DOWN 时执行 startCmd。不勾选则只部署、不自动拉起。</p>
+        <div class="form-grid">
+          <label>本机监督
+            <span><input type="checkbox" id="svc-supervise" /> 探活 + 自愈</span>
+          </label>
+        </div>
+      </section>
+
+      <!-- ⑤ 启停命令：部署时执行的命令（SERVICE_PORT / APP_VERSION / DEPLOY_MACHINE / RUNTIME_DIR 会注入） -->
       <section class="cfg" id="cfg-commands">
         <h3 class="cfg__title">启停命令<span class="cfg__note">在目标机器上执行</span></h3>
         <p class="cfg__desc">部署时在运行目录里执行 restartCmd，并注入 SERVICE_PORT / APP_VERSION / DEPLOY_MACHINE / RUNTIME_DIR。</p>

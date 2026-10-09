@@ -45,9 +45,23 @@ type ServiceContract struct {
 	RestartNotifyURL string `json:"restartNotifyUrl,omitempty"`
 	RestartPollURL   string `json:"restartPollUrl,omitempty"`
 	// 0 = use server default (GRACEFUL_RESTART_MAX_WAIT_MS).
-	GracefulMaxWaitMs int    `json:"gracefulRestartMaxWaitMs,omitempty"`
-	CreatedAt         string `json:"createdAt"`
-	UpdatedAt         string `json:"updatedAt"`
+	GracefulMaxWaitMs int `json:"gracefulRestartMaxWaitMs,omitempty"`
+	// Supervise: watchdog on this machine should probe and remediate the service.
+	// Stored in the existing watchdog_enabled column (historically written as 0
+	// and never exposed).
+	Supervise bool   `json:"supervise"`
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
+}
+
+// First-wave services that should be supervised after the one-shot migration
+// (watchdog_enabled was always written 0 and never shown in the API).
+var defaultSuperviseServiceIDs = []string{
+	"agent-control-plane",
+	"service_registry",
+	"agent-control-plane-deployment",
+	"home-agent-brain",
+	"home-agent-gateway",
 }
 
 type DeployJob struct {
@@ -173,6 +187,9 @@ func (s *Store) migrate() error {
 		return err
 	}
 	s.ensureServicePortUniqueIndex()
+	if err := s.migrateSuperviseDefaultsOnce(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -317,7 +334,7 @@ func (s *Store) UpsertService(input ServiceContract) (ServiceContract, error) {
 		  updated_at = excluded.updated_at`,
 		row.ServiceID, row.Name, row.RuntimeDir, encodeRuntimeDirs(row.RuntimeDirs),
 		row.HealthURL, normalizePort(row.Port),
-		row.StartCmd, row.StopCmd, row.RestartCmd, 0,
+		row.StartCmd, row.StopCmd, row.RestartCmd, boolToInt(row.Supervise),
 		row.RestartNotifyURL, row.RestartPollURL, row.GracefulMaxWaitMs,
 		row.GitRepoURL, defaultBranchOrMain(row.DefaultBranch),
 		row.CreatedAt, row.UpdatedAt,
@@ -587,7 +604,44 @@ func scanService(row scannable) (*ServiceContract, error) {
 	}
 	svc.DefaultBranch = defaultBranchOrMain(svc.DefaultBranch)
 	svc.RuntimeDirs = decodeRuntimeDirs(runtimeDirs)
+	svc.Supervise = watchdog != 0
 	return &svc, nil
+}
+
+// migrateSuperviseDefaultsOnce flips the leftover watchdog_enabled=0 rows for
+// the control-plane first wave. Later operator unchecks are kept.
+func (s *Store) migrateSuperviseDefaultsOnce() error {
+	if _, err := s.db.Exec(`
+		CREATE TABLE IF NOT EXISTS meta (
+		  k TEXT PRIMARY KEY,
+		  v TEXT NOT NULL
+		)`); err != nil {
+		return err
+	}
+	var existing string
+	err := s.db.QueryRow(`SELECT v FROM meta WHERE k = 'supervise_v1'`).Scan(&existing)
+	if err == nil {
+		return nil
+	}
+	if err != sql.ErrNoRows {
+		return err
+	}
+	placeholders := make([]string, len(defaultSuperviseServiceIDs))
+	args := make([]any, len(defaultSuperviseServiceIDs))
+	for i, id := range defaultSuperviseServiceIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	_, err = s.db.Exec(
+		`UPDATE services SET watchdog_enabled = 1 WHERE service_id IN (`+
+			strings.Join(placeholders, ",")+`)`,
+		args...,
+	)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`INSERT INTO meta (k, v) VALUES ('supervise_v1', ?)`, nowISO())
+	return err
 }
 
 func defaultBranchOrMain(s string) string {

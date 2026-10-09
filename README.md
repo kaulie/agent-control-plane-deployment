@@ -73,7 +73,7 @@ service-registry :4240  ──pull(GET /v1/services)──▶  本控制面 :422
 
 响应里还带 `registry: {url, enabled, ok, services, error}`，面板顶部据此显示「在线 · N 个服务 / 拉取失败」，**拉取失败不会伪装成"没有服务"**。
 
-本机只存注册中心没有的部署参数：`runtimeDir` / `healthUrl` / `port`（服务端口） / `startCmd` / `stopCmd` / `restartCmd` / 可选 graceful 端点 / `defaultBranch`。
+本机只存注册中心没有的部署参数：`runtimeDir` / `healthUrl` / `port`（服务端口） / `startCmd` / `stopCmd` / `restartCmd` / 可选 graceful 端点 / `defaultBranch` / `supervise`（本机 watchdog 是否探活并拉起）。
 
 **字段归属（重要）**：
 

@@ -75,6 +75,9 @@ type Config struct {
 	// Machine used when a trigger does not pick one (DEPLOY_DEFAULT_MACHINE).
 	// Empty = the first configured machine.
 	DefaultDeployMachine string
+	// WatchdogURL is the local agent-watchdog base (POST /api/sync after a
+	// contract save). Empty / "off" disables the notify. Default :4230.
+	WatchdogURL string
 }
 
 func expandHome(p string) string {
@@ -220,6 +223,14 @@ func loadConfig() Config {
 		defaultDeployMachine = deployMachines[0]
 	}
 
+	watchdogURL := strings.TrimSpace(os.Getenv("WATCHDOG_URL"))
+	switch strings.ToLower(watchdogURL) {
+	case "off", "disabled", "none":
+		watchdogURL = ""
+	case "":
+		watchdogURL = "http://127.0.0.1:4230"
+	}
+
 	return Config{
 		Host:                   host,
 		Port:                   port,
@@ -248,5 +259,6 @@ func loadConfig() Config {
 		DefaultDeployMachine:   defaultDeployMachine,
 		DeployMachineTargets:   machineTargets,
 		MachineTargetsError:    machineTargetsError,
+		WatchdogURL:            watchdogURL,
 	}
 }
