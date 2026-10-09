@@ -31,6 +31,8 @@ cd agent-control-plane-deployment
 ~/runtime/agent-control-plane-deployment/scripts/restart.sh
 ~/runtime/agent-control-plane-deployment/scripts/upgrader-start.sh
 ~/runtime/agent-control-plane-deployment/scripts/upgrader-stop.sh
+~/runtime/agent-control-plane-deployment/scripts/upgrader-restart.sh
+~/runtime/agent-control-plane-deployment/scripts/upgrader-status.sh
 ```
 
 ### 自身升级（ACP）
@@ -45,8 +47,10 @@ deployment **不**在 worker 内对自己执行 `restartCmd`。流程：
    - 任务保持 `running`，等待独立 upgrader
 3. `acp-upgrader`：`stop` → `start`（强制 `PORT=4220`）→ 探活；新进程 `reconcileOrphanDeploys` 收尾。
 
+本机由 **watchdog** 盯这条独立进程（不要和 `:4220` 共用契约）：`serviceId=acp-upgrader`，同一 `runtimeDir`，探活用 `bash scripts/upgrader-status.sh`（看 `upgrader.pid`），启停用 `upgrader-start.sh` / `upgrader-stop.sh` / `upgrader-restart.sh`。watchdog 里这条要 **pinned**，也不要写进可部署目录（没有单独 pipeline）。不要用 `scripts/start.sh`（那是 HTTP 服务）。
+
 ```bash
-# 需先有 upgrader
+# 需先有 upgrader（watchdog 挂了也会拉；也可手跑）
 ~/runtime/agent-control-plane-deployment/scripts/upgrader-start.sh
 
 curl -sS -X POST http://127.0.0.1:4220/api/deploys \
