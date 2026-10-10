@@ -204,6 +204,7 @@ type putServiceBody struct {
 	RestartPollURL    *string           `json:"restartPollUrl"`
 	GracefulMaxWaitMs *int              `json:"gracefulRestartMaxWaitMs"`
 	Supervise         *bool             `json:"supervise"`
+	IntervalSec       *int              `json:"intervalSec"`
 }
 
 // handlePutService 配置/更新一个服务的**本机部署参数**。服务是否存在由
@@ -282,6 +283,7 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 	gitRepoURL := ""
 	defaultBranch := "main"
 	supervise := false
+	intervalSec := defaultProbeIntervalSec
 	if existing != nil {
 		if name == "" {
 			name = existing.Name
@@ -311,6 +313,7 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 		port = existing.Port
 		defaultBranch = defaultBranchOrMain(existing.DefaultBranch)
 		supervise = existing.Supervise
+		intervalSec = normalizeIntervalSec(existing.IntervalSec)
 	}
 	// 服务端口：**必填**（1..65535）。它会在启动/停止/重启时注入 SERVICE_PORT。
 	// 缺省（不传）时沿用库里已有的端口；库里也没有（老契约 port=0）→ 400。
@@ -382,6 +385,16 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 	if body.Supervise != nil {
 		supervise = *body.Supervise
 	}
+	if body.IntervalSec != nil {
+		n := *body.IntervalSec
+		if n < minProbeIntervalSec || n > maxProbeIntervalSec {
+			writeError(w, http.StatusBadRequest,
+				fmt.Sprintf("intervalSec 必须在 %d..%d 秒之间（watchdog 探活周期）",
+					minProbeIntervalSec, maxProbeIntervalSec))
+			return
+		}
+		intervalSec = n
+	}
 	if name == "" {
 		name = serviceID
 	}
@@ -413,6 +426,7 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 		RestartPollURL:    pollURL,
 		GracefulMaxWaitMs: maxWaitMs,
 		Supervise:         supervise,
+		IntervalSec:       intervalSec,
 	})
 	if err != nil {
 		// 并发保存时可能绕过上面的检查、撞到 services.port 的唯一索引：同样给友好的 409。

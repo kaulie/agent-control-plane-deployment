@@ -77,14 +77,14 @@ service-registry :4240  ──pull(GET /v1/services)──▶  本控制面 :422
 
 响应里还带 `registry: {url, enabled, ok, services, error}`，面板顶部据此显示「在线 · N 个服务 / 拉取失败」，**拉取失败不会伪装成"没有服务"**。
 
-本机只存注册中心没有的部署参数：`runtimeDir` / `healthUrl` / `port`（服务端口） / `startCmd` / `stopCmd` / `restartCmd` / 可选 graceful 端点 / `defaultBranch` / `supervise`（本机 watchdog 是否探活并拉起）。
+本机只存注册中心没有的部署参数：`runtimeDir` / `healthUrl` / `port`（服务端口） / `startCmd` / `stopCmd` / `restartCmd` / 可选 graceful 端点 / `defaultBranch` / `supervise`（本机 watchdog 是否探活并拉起） / `intervalSec`（watchdog 探活周期，默认 30 秒）。
 
 **字段归属（重要）**：
 
 | 归属 | 字段 | 本机能否改 |
 |---|---|---|
 | **service_registry（同步过来的信息）** | `serviceId`、`gitRepoUrl`、`version`、`owner`、`description`、`tags`、API 端点 | **不能改** |
-| 本控制面（部署参数） | `runtimeDir`、`healthUrl`、**`port`（服务端口）**、`startCmd`、`stopCmd`、`restartCmd`、`restartNotifyUrl`/`restartPollUrl`、`gracefulRestartMaxWaitMs`、`defaultBranch`、`name`（本机显示名） | 可配置 |
+| 本控制面（部署参数） | `runtimeDir`、`healthUrl`、**`port`（服务端口）**、`startCmd`、`stopCmd`、`restartCmd`、`restartNotifyUrl`/`restartPollUrl`、`gracefulRestartMaxWaitMs`、`defaultBranch`、`name`（本机显示名）、`supervise`、`intervalSec`（探活周期） | 可配置 |
 
 `gitRepoUrl` 尤其**不可在本机修改**：它只有一个来源 —— service_registry。
 

@@ -89,10 +89,13 @@
       <!-- ④ 本机监督：watchdog 是否探活并拉起 -->
       <section class="cfg" id="cfg-supervise">
         <h3 class="cfg__title">本机监督<span class="cfg__note">agent-watchdog</span></h3>
-        <p class="cfg__desc">勾选后，本机 watchdog 按上面的端口 / healthUrl / 启停命令探活，DOWN 时执行 startCmd。不勾选则只部署、不自动拉起。</p>
+        <p class="cfg__desc">勾选后，本机 watchdog 按上面的端口 / healthUrl / 启停命令探活，DOWN 时执行 startCmd。探活周期由本页统一下发，watchdog 对账时覆盖本地默认值。不勾选则只部署、不自动拉起。</p>
         <div class="form-grid">
           <label>本机监督
             <span><input type="checkbox" id="svc-supervise" /> 探活 + 自愈</span>
+          </label>
+          <label>探活周期 intervalSec（秒）
+            <input type="number" id="svc-intervalSec" min="2" max="86400" step="1" value="30" />
           </label>
         </div>
       </section>

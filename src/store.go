@@ -49,10 +49,17 @@ type ServiceContract struct {
 	// Supervise: watchdog on this machine should probe and remediate the service.
 	// Stored in the existing watchdog_enabled column (historically written as 0
 	// and never exposed).
-	Supervise bool   `json:"supervise"`
-	CreatedAt string `json:"createdAt"`
-	UpdatedAt string `json:"updatedAt"`
+	Supervise bool `json:"supervise"`
+	// IntervalSec is how often watchdog probes this service. Watchdog syncs
+	// this from GET /api/services; 0 in memory is stored as the factory default.
+	IntervalSec int    `json:"intervalSec"`
+	CreatedAt   string `json:"createdAt"`
+	UpdatedAt   string `json:"updatedAt"`
 }
+
+const defaultProbeIntervalSec = 30
+const minProbeIntervalSec = 2
+const maxProbeIntervalSec = 86400
 
 // First-wave services that should be supervised after the one-shot migration
 // (watchdog_enabled was always written 0 and never shown in the API).
@@ -143,6 +150,7 @@ func (s *Store) migrate() error {
         stop_cmd TEXT NOT NULL,
         restart_cmd TEXT NOT NULL,
         watchdog_enabled INTEGER NOT NULL DEFAULT 1,
+        interval_sec INTEGER NOT NULL DEFAULT 30,
         restart_notify_url TEXT NOT NULL DEFAULT '',
         restart_poll_url TEXT NOT NULL DEFAULT '',
         graceful_max_wait_ms INTEGER NOT NULL DEFAULT 0,
@@ -214,7 +222,7 @@ func (s *Store) ServiceByPort(port int, excludeServiceID string) (*ServiceContra
 	}
 	row := s.db.QueryRow(`
 		SELECT service_id, name, runtime_dir, runtime_dirs, health_url, port,
-		       start_cmd, stop_cmd, restart_cmd, watchdog_enabled,
+		       start_cmd, stop_cmd, restart_cmd, watchdog_enabled, interval_sec,
 		       restart_notify_url, restart_poll_url, graceful_max_wait_ms,
 		       git_repo_url, default_branch,
 		       created_at, updated_at
@@ -237,6 +245,7 @@ func (s *Store) ensureServiceExtraColumns() error {
 		"port":                 `ALTER TABLE services ADD COLUMN port INTEGER NOT NULL DEFAULT 0`,
 		// 老库补列：按平台（darwin/linux）覆盖 runtimeDir。
 		"runtime_dirs": `ALTER TABLE services ADD COLUMN runtime_dirs TEXT NOT NULL DEFAULT '{}'`,
+		"interval_sec": `ALTER TABLE services ADD COLUMN interval_sec INTEGER NOT NULL DEFAULT 30`,
 	})
 }
 
@@ -307,15 +316,16 @@ func (s *Store) UpsertService(input ServiceContract) (ServiceContract, error) {
 		row.CreatedAt = ts
 	}
 	row.UpdatedAt = ts
+	row.IntervalSec = normalizeIntervalSec(row.IntervalSec)
 
 	_, err := s.db.Exec(`
 		INSERT INTO services (
 		  service_id, name, runtime_dir, runtime_dirs, health_url, port,
-		  start_cmd, stop_cmd, restart_cmd, watchdog_enabled,
+		  start_cmd, stop_cmd, restart_cmd, watchdog_enabled, interval_sec,
 		  restart_notify_url, restart_poll_url, graceful_max_wait_ms,
 		  git_repo_url, default_branch,
 		  created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(service_id) DO UPDATE SET
 		  name = excluded.name,
 		  runtime_dir = excluded.runtime_dir,
@@ -326,6 +336,7 @@ func (s *Store) UpsertService(input ServiceContract) (ServiceContract, error) {
 		  stop_cmd = excluded.stop_cmd,
 		  restart_cmd = excluded.restart_cmd,
 		  watchdog_enabled = excluded.watchdog_enabled,
+		  interval_sec = excluded.interval_sec,
 		  restart_notify_url = excluded.restart_notify_url,
 		  restart_poll_url = excluded.restart_poll_url,
 		  graceful_max_wait_ms = excluded.graceful_max_wait_ms,
@@ -335,6 +346,7 @@ func (s *Store) UpsertService(input ServiceContract) (ServiceContract, error) {
 		row.ServiceID, row.Name, row.RuntimeDir, encodeRuntimeDirs(row.RuntimeDirs),
 		row.HealthURL, normalizePort(row.Port),
 		row.StartCmd, row.StopCmd, row.RestartCmd, boolToInt(row.Supervise),
+		row.IntervalSec,
 		row.RestartNotifyURL, row.RestartPollURL, row.GracefulMaxWaitMs,
 		row.GitRepoURL, defaultBranchOrMain(row.DefaultBranch),
 		row.CreatedAt, row.UpdatedAt,
@@ -353,7 +365,7 @@ func normalizePort(p int) int {
 func (s *Store) GetService(serviceID string) (*ServiceContract, error) {
 	row := s.db.QueryRow(`
 		SELECT service_id, name, runtime_dir, runtime_dirs, health_url, port,
-		       start_cmd, stop_cmd, restart_cmd, watchdog_enabled,
+		       start_cmd, stop_cmd, restart_cmd, watchdog_enabled, interval_sec,
 		       restart_notify_url, restart_poll_url, graceful_max_wait_ms,
 		       git_repo_url, default_branch,
 		       created_at, updated_at
@@ -397,7 +409,7 @@ func (s *Store) NormalizeServiceURLs() (int, error) {
 func (s *Store) ListServices() ([]ServiceContract, error) {
 	rows, err := s.db.Query(`
 		SELECT service_id, name, runtime_dir, runtime_dirs, health_url, port,
-		       start_cmd, stop_cmd, restart_cmd, watchdog_enabled,
+		       start_cmd, stop_cmd, restart_cmd, watchdog_enabled, interval_sec,
 		       restart_notify_url, restart_poll_url, graceful_max_wait_ms,
 		       git_repo_url, default_branch,
 		       created_at, updated_at
@@ -594,7 +606,7 @@ func scanService(row scannable) (*ServiceContract, error) {
 	var runtimeDirs string
 	err := row.Scan(
 		&svc.ServiceID, &svc.Name, &svc.RuntimeDir, &runtimeDirs, &svc.HealthURL, &svc.Port,
-		&svc.StartCmd, &svc.StopCmd, &svc.RestartCmd, &watchdog,
+		&svc.StartCmd, &svc.StopCmd, &svc.RestartCmd, &watchdog, &svc.IntervalSec,
 		&svc.RestartNotifyURL, &svc.RestartPollURL, &svc.GracefulMaxWaitMs,
 		&svc.GitRepoURL, &svc.DefaultBranch,
 		&svc.CreatedAt, &svc.UpdatedAt,
@@ -605,7 +617,18 @@ func scanService(row scannable) (*ServiceContract, error) {
 	svc.DefaultBranch = defaultBranchOrMain(svc.DefaultBranch)
 	svc.RuntimeDirs = decodeRuntimeDirs(runtimeDirs)
 	svc.Supervise = watchdog != 0
+	svc.IntervalSec = normalizeIntervalSec(svc.IntervalSec)
 	return &svc, nil
+}
+
+func normalizeIntervalSec(n int) int {
+	if n < minProbeIntervalSec {
+		return defaultProbeIntervalSec
+	}
+	if n > maxProbeIntervalSec {
+		return maxProbeIntervalSec
+	}
+	return n
 }
 
 // migrateSuperviseDefaultsOnce flips the leftover watchdog_enabled=0 rows for
