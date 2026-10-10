@@ -248,6 +248,7 @@ test('service edit page: save sends PUT /api/services/:id with the form body', a
   assert.equal(body.restartCmd, 'restart');
   assert.equal(body.gracefulRestartMaxWaitMs, 90000);
   assert.equal(body.supervise, false, 'supervise checkbox defaults off');
+  assert.equal(body.intervalSec, 30, 'probe interval defaults to 30s');
   assert.ok(!('gitRepoUrl' in body), 'gitRepoUrl is registry-owned: never sent from the panel');
   assert.match(doc.querySelector('#svc-msg').textContent, /已保存/);
 });
@@ -357,6 +358,7 @@ test('service edit page: 字段按含义分区（标识 / 运行目录 / 服务�
     '#svc-gracefulRestartMaxWaitMs': 'cfg-endpoints',
     '#svc-url-hint': 'cfg-endpoints',
     '#svc-supervise': 'cfg-supervise',
+    '#svc-intervalSec': 'cfg-supervise',
     '#svc-startCmd': 'cfg-commands',
     '#svc-stopCmd': 'cfg-commands',
     '#svc-restartCmd': 'cfg-commands',

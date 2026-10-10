@@ -132,6 +132,7 @@ function fillForm(svc) {
   $('#svc-restartPollUrl').value = svc.restartPollUrl || '';
   $('#svc-gracefulRestartMaxWaitMs').value = svc.gracefulRestartMaxWaitMs || '';
   $('#svc-supervise').checked = !!svc.supervise;
+  $('#svc-intervalSec').value = Number(svc.intervalSec) > 0 ? svc.intervalSec : 30;
   setMessage(svc.registered
     ? ''
     : '⚠ service_registry 未返回该服务（未登记 / 注册中心不可用）：已配置的仍可编辑，新建会被拒绝。');
@@ -206,6 +207,11 @@ function serviceFormBody() {
   if (holder) {
     return { error: `端口 ${port} 已被服务 ${holder.serviceId} 占用；服务端口必须唯一，请换一个` };
   }
+  const intervalRaw = $('#svc-intervalSec').value.trim();
+  const intervalSec = intervalRaw === '' ? 30 : Number(intervalRaw);
+  if (!Number.isInteger(intervalSec) || intervalSec < 2 || intervalSec > 86400) {
+    return { error: '探活周期必须是 2..86400 的整数秒' };
+  }
   const runtimeDirs = {};
   if ($('#svc-runtimeDir-darwin').value.trim()) runtimeDirs.darwin = $('#svc-runtimeDir-darwin').value.trim();
   if ($('#svc-runtimeDir-linux').value.trim()) runtimeDirs.linux = $('#svc-runtimeDir-linux').value.trim();
@@ -220,6 +226,7 @@ function serviceFormBody() {
       restartPollUrl: $('#svc-restartPollUrl').value.trim(),
       gracefulRestartMaxWaitMs: Number($('#svc-gracefulRestartMaxWaitMs').value) || 0,
       supervise: $('#svc-supervise').checked,
+      intervalSec,
     },
   };
 }
