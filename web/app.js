@@ -956,6 +956,82 @@ function fieldRow(label, value, cls = '') {
     `<span class="detail-value mono ${cls}">${esc(value)}</span></div>`;
 }
 
+// ---- pipeline detail: 部署机器列表 -------------------------------------------
+// 流水线详情要展示「本地要部署机器的列表」：按这条流水线的服务从 /api/meta?serviceId=
+// 取回可部署机器（本机 + service_registry 登记在案的机器），并标出本次实际落到哪台
+// （job.targetMachine，空 = 默认机器）。
+function machineTargetLabel(id, targets) {
+  const t = targets[id];
+  if (!t || !t.kind) return '';
+  const plat = t.platform ? ' · ' + t.platform : '';
+  if (t.kind === 'ssh') {
+    const host = t.host || 'ssh';
+    const home = t.runtimeHome ? ' → ' + t.runtimeHome + '/<serviceId>' : '';
+    return '（远端 ' + host + home + plat + '）';
+  }
+  return '（本机' + plat + '）';
+}
+
+async function renderPipelineMachines(job) {
+  const wrap = $('#pipe-detail-machines-wrap');
+  const box = $('#pipe-detail-machines');
+  const hint = $('#pipe-detail-machines-hint');
+  if (!wrap || !box) return;
+  const serviceId = String((job && job.serviceId) || '').trim();
+  if (!serviceId) { wrap.hidden = true; return; }
+
+  let meta = null;
+  try {
+    meta = await apiGet('/api/meta?serviceId=' + encodeURIComponent(serviceId));
+    notePanelVersion(meta);
+  } catch (e) {
+    wrap.hidden = false;
+    box.innerHTML = `<div class="muted">机器列表加载失败：${esc(e.message)}</div>`;
+    if (hint) { hint.textContent = ''; hint.className = 'hint'; }
+    return;
+  }
+
+  const machines = Array.isArray(meta.deployMachines) ? meta.deployMachines.filter((id) => id) : [];
+  const targets = (meta.deployMachineTargets && typeof meta.deployMachineTargets === 'object') ? meta.deployMachineTargets : {};
+  const dflt = meta.defaultDeployMachine || '';
+  const blocked = typeof meta.deployMachineBlocked === 'string' ? meta.deployMachineBlocked : '';
+  const discovered = Array.isArray(meta.deployMachineDiscovered) ? meta.deployMachineDiscovered.filter((id) => id) : [];
+  const selected = String(job.targetMachine || '').trim();
+  const target = selected || dflt || (machines[0] || 'local');
+
+  wrap.hidden = false;
+  if (blocked) {
+    box.innerHTML = `<div class="detail-value detail-value--err">${esc(blocked)}</div>`;
+    if (hint) { hint.textContent = ''; hint.className = 'hint'; }
+    return;
+  }
+
+  // 列表永远先把目标机器放进视线：即使它已经不在这个服务当前的机器列表里（例如注册中心
+  // 上机器下线了），也要让人知道这条流水线当时是要落到哪台。
+  const list = machines.slice();
+  if (target && !list.includes(target)) list.push(target);
+
+  box.innerHTML = list.length
+    ? `<ul class="machine-list">` + list.map((id) => {
+        const label = machineTargetLabel(id, targets);
+        const isTarget = id === target;
+        return `<li class="machine-list__item${isTarget ? ' machine-list__item--target' : ''}">` +
+          `<span class="mono machine-list__id">${esc(id)}</span>` +
+          (label ? `<span class="muted">${esc(label)}</span>` : '') +
+          (isTarget ? `<span class="badge badge--ok">本次部署目标</span>` : '') +
+          `</li>`;
+      }).join('') + `</ul>`
+    : `<div class="muted">暂无可部署机器</div>`;
+
+  if (discovered.length) {
+    box.innerHTML += `<p class="hint">只登记但暂不可选：${esc(discovered.join(', '))}（配 DEPLOY_MACHINE_TARGETS 后自动可选）</p>`;
+  }
+  if (hint) {
+    hint.textContent = meta.deployMachineHint || '';
+    hint.className = 'hint';
+  }
+}
+
 async function openPipelineDetail(requestId) {
   pipeDetailID = requestId;
   $('#pipe-list-view').hidden = true;
@@ -981,6 +1057,7 @@ async function refreshPipelineDetail() {
     $('#pipe-detail-fields').innerHTML =
       `<div class="muted">加载失败：${esc(e.message)}</div>`;
     $('#pipe-detail-events').innerHTML = '';
+    $('#pipe-detail-machines-wrap').hidden = true;
     $('#pipe-detail-deploy-wrap').hidden = true;
     return;
   }
@@ -1024,6 +1101,8 @@ async function refreshPipelineDetail() {
         `<span class="detail-value detail-value--err">${esc(job.error)}</span></div>`
       : '',
   ].join('');
+
+  await renderPipelineMachines(job);
 
   const evList = $('#pipe-detail-events');
   if (!merged.length) {

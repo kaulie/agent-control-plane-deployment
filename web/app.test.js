@@ -47,6 +47,7 @@ function makePanel(options = {}) {
   };
   const historyPayloads = options.history || {};
   const metaPayload = options.meta || {};
+  const pipelineDetail = options.pipelineDetail || null;
   const inventoryPayload = options.inventory || {
     defaultDeployMachine: 'local',
     registry: { enabled: true, ok: true, services: 1 },
@@ -76,6 +77,12 @@ function makePanel(options = {}) {
     if (pathname === '/api/deploys') return { deploys: [], total: 0, page: 1, pageSize: 20 };
     if (pathname === '/api/pipelines') return { pipelines: [], total: 0, page: 1, pageSize: 20 };
     if (pathname === '/health') return { ok: true };
+    // Pipeline detail: single job + its event timeline (the deploy machines list
+    // comes from the usual /api/meta?serviceId=<服务> mock above).
+    let pm = /^\/api\/pipelines\/([^/]+)\/events$/.exec(pathname);
+    if (pm) return { events: options.pipelineEvents || [] };
+    pm = /^\/api\/pipelines\/([^/]+)$/.exec(pathname);
+    if (pm) return pipelineDetail || {};
     // 清除服务配置前的确认数据：GET /api/services/:id/history
     const m = /^\/api\/services\/([^/]+)\/history$/.exec(pathname);
     if (m) {
@@ -776,6 +783,46 @@ test('inventory tab: loads deployment-inventory and renders machine rows', async
   assert.match(root.textContent, /web-cursor/, '应渲染服务 id');
   assert.match(root.textContent, /v99/, '应渲染机器上的版本');
   assert.match(root.textContent, /不一致/, '版本漂移应高亮');
+});
+
+test('pipeline detail: shows the deploy machine list and marks the target machine', async (t) => {
+  const { dom, flush, requests } = makePanel({
+    pipelineDetail: {
+      requestId: 'pipeline-205900e8', serviceId: 'web-cursor', ref: 'main',
+      state: 'succeeded', targetMachine: 'gpu-2', deployment: 'deployment-abc', version: 'v1',
+    },
+    metaByService: {
+      'web-cursor': {
+        deployMachines: ['local', 'gpu-2'],
+        defaultDeployMachine: 'local',
+        deployMachineTargets: {
+          local: { kind: 'local', platform: 'darwin/arm64' },
+          'gpu-2': { kind: 'ssh', host: '10.0.0.8', runtimeHome: '/home/ubuntu/runtime', platform: 'linux/amd64' },
+        },
+        deployMachineHint: '「部署机器」按服务取自 service_registry：列出 web-cursor 在注册中心登记在案的全部机器 + 本机。',
+      },
+    },
+  });
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+  await flush();
+  // 历史列表里点某一行打开详情：给 tbody 放一行带 data-pipe-open 的记录再点它。
+  const tbody = doc.querySelector('#pipe-table tbody');
+  const tr = doc.createElement('tr');
+  tr.setAttribute('data-pipe-open', 'pipeline-205900e8');
+  tr.innerHTML = '<td>pipeline-205900e8</td>';
+  tbody.appendChild(tr);
+  tr.querySelector('td').click();
+  await flush();
+
+  const box = doc.querySelector('#pipe-detail-machines');
+  assert.match(box.textContent, /local/, '列表应包含本机');
+  assert.match(box.textContent, /gpu-2/, '列表应包含服务在注册中心登记在案的机器');
+  assert.match(box.textContent, /本次部署目标/, '应标出这条流水线实际落到的机器');
+  assert.match(box.textContent, /远端 10\.0\.0\.8/, '远端 ssh 机器应带主机说明');
+  assert.ok(doc.querySelector('.machine-list__item--target') !== null, '目标机器应有高亮行');
+  const metaCalls = requests.filter((r) => r.pathname === '/api/meta' && r.search.includes('serviceId=web-cursor'));
+  assert.ok(metaCalls.length >= 1, '详情页应按这条流水线的服务拉取机器列表');
 });
 
 

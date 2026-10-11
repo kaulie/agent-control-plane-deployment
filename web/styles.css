@@ -271,6 +271,26 @@ a.btn:hover { color: var(--text); }
 }
 .detail-section h3 { margin: 0 0 10px; font-size: 13px; color: var(--muted); font-weight: 600; }
 
+/* Pipeline detail: 部署机器列表 */
+.machine-list { list-style: none; margin: 0 0 10px; padding: 0; }
+.machine-list__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin-bottom: 6px;
+  background: var(--panel-2);
+  font-size: 13px;
+}
+.machine-list__item--target {
+  border-color: rgba(63,185,80,.4);
+  background: rgba(63,185,80,.06);
+}
+.machine-list__id { font-weight: 600; }
+
 .eventlog { list-style: none; margin: 0; padding: 0; }
 .evlog {
   display: grid;
