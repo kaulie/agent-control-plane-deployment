@@ -28,8 +28,23 @@ type sshRemoteRunner struct {
 	home string
 }
 
+// sshOptionArgs 是跑到部署机上的 ssh 选项。
+//
+// ServerAlive* 让「连接已经死了」在大约 10 分钟内失败，而不是把整个 rsync 预算
+// 耗完；数据还在流动时这些探测不会误伤慢传输。IPQoS=none 避开部分跨境链路上
+// 会丢弃非交互 SSH（rsync/scp 默认 throughput DSCP）的设备。
+func sshOptionArgs() []string {
+	return []string{
+		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=10",
+		"-o", "ServerAliveInterval=60",
+		"-o", "ServerAliveCountMax=10",
+		"-o", "IPQoS=none",
+	}
+}
+
 func (r sshRemoteRunner) sshArgs(target MachineTarget) []string {
-	args := []string{"ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"}
+	args := append([]string{"ssh"}, sshOptionArgs()...)
 	if target.SSHPort > 0 {
 		args = append(args, "-p", strconv.Itoa(target.SSHPort))
 	}
@@ -44,11 +59,14 @@ func (r sshRemoteRunner) Run(target MachineTarget, script string, timeoutSec int
 
 // remoteRsyncCmd 拼出「把本地目录推到远端目录」的命令行（抽出来是为了可测试）。
 func remoteRsyncCmd(target MachineTarget, src, dst string, deleteExtra bool) string {
-	sshCmd := "ssh -o BatchMode=yes -o ConnectTimeout=10"
+	sshCmd := "ssh " + strings.Join(sshOptionArgs(), " ")
 	if target.SSHPort > 0 {
 		sshCmd += " -p " + strconv.Itoa(target.SSHPort)
 	}
-	parts := []string{"rsync", "-a"}
+	// --partial：链路中断后续传，而不是把传了一半的大文件扔掉重来。
+	// --delay-updates：全部传完才换上，避免超时后 VERSION 已是新的、二进制还是旧的。
+	// --timeout：一段时间完全没有数据才放弃（慢但还在传的流不受影响）。
+	parts := []string{"rsync", "-a", "--partial", "--delay-updates", "--timeout=300"}
 	if deleteExtra {
 		parts = append(parts, "--delete")
 	}
@@ -117,6 +135,12 @@ var remotePreserved = []string{
 	"packages/",
 	"*.pid",
 	"upgrade-requests/",
+	// 运行时缓存，不是包内容。autonomy 的 start.sh 把 Node 依赖解到 .cache/，
+	// 并约定 rsync --delete 不碰它（self-deploy 已经排除了 .cache/ 和 Library/）。
+	// 漏掉的话，下一次部署会在慢链路上枚举/删掉几万个 node_modules 文件，
+	// 还没开始传二进制就超时。
+	".cache/",
+	"Library/",
 }
 
 // shellQuote 用单引号包住一段脚本/参数（内部的单引号按 POSIX 的转义写法处理）。

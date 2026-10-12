@@ -17,6 +17,11 @@ type Config struct {
 	DBPath       string
 	WebDir       string
 	DeployMaxSec int
+	// Max seconds for rsync of a built package onto a runtime dir.
+	// Separate from DeployMaxSec: a remote push of a few hundred MB over a
+	// slow cross-border link does not finish in the 120s command budget, and
+	// killing it there makes every retry fail at the same step.
+	RsyncMaxSec int
 	// Max seconds for git fetch + build.sh during packageFromGit.
 	ReleaseMaxSec int
 	// Default max wait for project graceful restart (notify + poll).
@@ -77,6 +82,18 @@ type Config struct {
 	DefaultDeployMachine string
 }
 
+// rsyncMaxSec is the budget for pushing a package tree. A zero value (tests
+// that build Config by hand) falls back to the short command budget.
+func (c Config) rsyncMaxSec() int {
+	if c.RsyncMaxSec > 0 {
+		return c.RsyncMaxSec
+	}
+	if c.DeployMaxSec > 0 {
+		return c.DeployMaxSec
+	}
+	return 120
+}
+
 func expandHome(p string) string {
 	if len(p) >= 2 && p[:2] == "~/" {
 		home, _ := os.UserHomeDir()
@@ -120,6 +137,20 @@ func loadConfig() Config {
 	}
 	if deployMax < 30 {
 		deployMax = 30
+	}
+
+	// 远端 rsync 不能跟「一条 shell 命令」共用 120s。autonomy 这类包里有上百 MB
+	// 的二进制和依赖 tarball；跨境链路慢的时候（实测约几十 KB/s）120s 连一个大
+	// 文件都传不完，进程被杀掉后重试会永远停在同一步。4 小时覆盖大约 300MB @
+	// 20KB/s，空闲链路上仍然几分钟就结束。RSYNC_MAX_SEC 可覆盖。
+	rsyncMax := 4 * 60 * 60
+	if p := os.Getenv("RSYNC_MAX_SEC"); p != "" {
+		if n, err := strconv.Atoi(p); err == nil {
+			rsyncMax = n
+		}
+	}
+	if rsyncMax < 120 {
+		rsyncMax = 120
 	}
 
 	releaseMax := 600
@@ -229,6 +260,7 @@ func loadConfig() Config {
 		WebDir:                 webDir,
 		DBPath:                 filepath.Join(dataDir, "deploy.sqlite"),
 		DeployMaxSec:           deployMax,
+		RsyncMaxSec:            rsyncMax,
 		ReleaseMaxSec:          releaseMax,
 		GracefulMaxWait:        gracefulMaxWait,
 		HealthCheckTimeout:     healthCheckTimeout,
