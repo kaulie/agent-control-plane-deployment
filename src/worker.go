@@ -607,11 +607,15 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 			"--filter='P backend/runtime.pid'",
 			"--filter='P backend/server.log'",
 			"--filter='P backend/.watchdog-paused'",
+			"--filter='P .cache/'",
+			"--filter='P Library/'",
 			"--exclude='backend/.env'",
 			"--exclude='backend/data/'",
 			"--exclude='backend/runtime.pid'",
 			"--exclude='backend/server.log'",
 			"--exclude='backend/.watchdog-paused'",
+			"--exclude='.cache/'",
+			"--exclude='Library/'",
 			"--exclude='.git/'",
 			fmt.Sprintf("%q", src+"/"),
 			fmt.Sprintf("%q", runtimeDir+"/"),
@@ -619,16 +623,24 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 	}
 
 	if target.Remote() {
-		fmt.Printf("[deploy] %s rsync %s → %s:%s\n", job.RequestID, tag, target.SSHDest(), runtimeDir)
-		code, out := remote.PushDir(target, src, runtimeDir, true, cfg.DeployMaxSec)
+		rsyncBudget := cfg.rsyncMaxSec()
+		fmt.Printf("[deploy] %s rsync %s → %s:%s (limit %ds)\n", job.RequestID, tag, target.SSHDest(), runtimeDir, rsyncBudget)
+		_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
+			fmt.Sprintf("开始远端 rsync：size=%s 上限=%d分钟（跨境慢链路传大文件会超过命令超时 %ds）",
+				humanBytes(dirSize(src)), rsyncBudget/60, cfg.DeployMaxSec))
+		code, out := remote.PushDir(target, src, runtimeDir, true, rsyncBudget)
 		if code != 0 {
 			if len(out) > 2000 {
 				out = out[len(out)-2000:]
 			}
 			_ = store.AddDeployEvent(job.RequestID, eventlevel.Error, "远端 rsync 失败："+out)
+			errText := "remote rsync failed: " + out
+			if strings.Contains(out, "timeout") {
+				errText = fmt.Sprintf("remote rsync failed: exceeded %ds (%s)", rsyncBudget, strings.TrimSpace(out))
+			}
 			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 				State: StateFailed,
-				Error: "remote rsync failed: " + out,
+				Error: errText,
 			})
 			return
 		}

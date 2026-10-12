@@ -15,7 +15,7 @@ func TestRemoteRsyncKeepsTargetRuntimeState(t *testing.T) {
 	target := MachineTarget{ID: "43.162.117.240", Kind: "ssh", SSHHost: "agent-oversea", RuntimeHome: "/home/ubuntu/runtime"}
 	cmd := remoteRsyncCmd(target, "/tmp/pkg", "/home/ubuntu/runtime/autonomy", true)
 	// 关键豁免必须同时有 P（防删）与 --exclude（防覆盖）。
-	for _, keep := range []string{"backend/.env", "backend/data/", "data/", "logs/", "backend/server.log", "backend/runtime.pid"} {
+	for _, keep := range []string{"backend/.env", "backend/data/", "data/", "logs/", "backend/server.log", "backend/runtime.pid", ".cache/", "Library/"} {
 		if !strings.Contains(cmd, "--filter='P "+keep+"'") {
 			t.Fatalf("rsync must protect %q from deletion:\n%s", keep, cmd)
 		}
@@ -23,8 +23,36 @@ func TestRemoteRsyncKeepsTargetRuntimeState(t *testing.T) {
 			t.Fatalf("rsync must EXCLUDE %q from the transfer (P alone does not stop an overwrite):\n%s", keep, cmd)
 		}
 	}
-	if !strings.Contains(cmd, "--delete") || !strings.Contains(cmd, "agent-oversea:/home/ubuntu/runtime/autonomy/") {
-		t.Fatalf("rsync must target the remote runtime dir with --delete:\n%s", cmd)
+	for _, flag := range []string{"--delete", "--partial", "--delay-updates", "--timeout=300", "ServerAliveInterval=60", "IPQoS=none", "agent-oversea:/home/ubuntu/runtime/autonomy/"} {
+		if !strings.Contains(cmd, flag) {
+			t.Fatalf("rsync command missing %q:\n%s", flag, cmd)
+		}
+	}
+}
+
+func TestRsyncBudgetCoversSlowCrossBorderPush(t *testing.T) {
+	if got := (Config{}).rsyncMaxSec(); got != 120 {
+		t.Fatalf("zero config budget = %d, want the short command fallback 120", got)
+	}
+	if got := (Config{DeployMaxSec: 90}).rsyncMaxSec(); got != 90 {
+		t.Fatalf("fallback budget = %d, want DeployMaxSec", got)
+	}
+	if got := (Config{DeployMaxSec: 120, RsyncMaxSec: 4 * 60 * 60}).rsyncMaxSec(); got != 4*60*60 {
+		t.Fatalf("explicit rsync budget = %d, want 4h", got)
+	}
+
+	t.Setenv("DEPLOYMENT_HOME", t.TempDir())
+	t.Setenv("RSYNC_MAX_SEC", "")
+	if got := loadConfig().RsyncMaxSec; got != 4*60*60 {
+		t.Fatalf("default RsyncMaxSec = %d, want 4h", got)
+	}
+	t.Setenv("RSYNC_MAX_SEC", "30")
+	if got := loadConfig().RsyncMaxSec; got != 120 {
+		t.Fatalf("RSYNC_MAX_SEC below 120 must clamp, got %d", got)
+	}
+	t.Setenv("RSYNC_MAX_SEC", "7200")
+	if got := loadConfig().RsyncMaxSec; got != 7200 {
+		t.Fatalf("RSYNC_MAX_SEC = %d, want 7200", got)
 	}
 }
 
