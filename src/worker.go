@@ -103,7 +103,16 @@ func runDeployRestart(store *Store, job DeployJob, cfg Config, service ServiceCo
 	}
 	override := ""
 	if target.Remote() {
-		override = target.ExpandRestartCmd(job.ServiceID, hash, runtimeDir, runtimeDir, machine)
+		rawRestart := strings.TrimSpace(target.RestartCmd)
+		if restartOverrideApplies(rawRestart, job.ServiceID) {
+			override = target.ExpandRestartCmd(job.ServiceID, hash, runtimeDir, runtimeDir, machine)
+		} else if units := foreignRestartUnits(rawRestart, job.ServiceID); len(units) > 0 {
+			// 通道上的 systemd 命令是给别的服务的（典型：autonomyd）。套到当前服务上
+			// 会把别人重启成功、自己却没 start，探活必然失败。
+			_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
+				"通道 restart= 指向别的 systemd 单元（"+strings.Join(units, ", ")+
+					"），本次 "+job.ServiceID+" 改用契约的 stop/start")
+		}
 	}
 	run := func(cmd, ov string) (int, string) {
 		return runServiceCmd(remote, target, cmd, service, runtimeDir, hash, machine, cfg.DeployMaxSec, ov)

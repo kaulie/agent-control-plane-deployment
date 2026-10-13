@@ -253,6 +253,49 @@ func TestExecuteDeployToRemoteMachine(t *testing.T) {
 	}
 }
 
+// 通道 restart= 点名了别的 systemd 单元时，不能拿去重启当前服务。
+// pipeline-81ec4250：knowledge-base 发到 agent-oversea，通道上写的是 autonomyd，
+// systemctl 成功返回后知识库根本没 start，探活 4360 失败。
+func TestExecuteDeploySkipsForeignSystemdRestart(t *testing.T) {
+	store, cfg, storage, machines, tag, _ := newRemoteDeployFixture(t)
+	target := cfg.DeployMachineTargets["10.0.0.7"]
+	target.RestartCmd = "sudo sed -i s/APP_VERSION=.*/APP_VERSION={version}/ /etc/systemd/system/autonomyd.service.d/version.conf && sudo systemctl daemon-reload && sudo systemctl restart autonomyd"
+	cfg.DeployMachineTargets["10.0.0.7"] = target
+
+	if _, err := store.CreateDeploy("deploy-remote-foreign", "web-cursor", tag, Identity{}, "queued", "10.0.0.7"); err != nil {
+		t.Fatalf("CreateDeploy: %v", err)
+	}
+	if _, err := store.ClaimNextQueued(); err != nil {
+		t.Fatalf("ClaimNextQueued: %v", err)
+	}
+	fake := &fakeRemote{remoteOS: "Linux", remoteArch: "x86_64"}
+	executeDeploy(store, cfg, storage, &GracefulDrain{}, machines, fake, "deploy-remote-foreign")
+
+	job, err := store.GetDeploy("deploy-remote-foreign")
+	if err != nil || job == nil {
+		t.Fatalf("GetDeploy: %v %v", job, err)
+	}
+	if job.State != StateSucceeded {
+		t.Fatalf("deploy state = %s error=%q, want succeeded via the contract start", job.State, job.Error)
+	}
+	runs, _, _ := fake.calls()
+	joinedRuns := strings.Join(runs, "\n")
+	if strings.Contains(joinedRuns, "systemctl restart autonomyd") || strings.Contains(joinedRuns, "autonomyd.service") {
+		t.Fatalf("a foreign systemd unit must not be restarted:\n%s", joinedRuns)
+	}
+	if !strings.Contains(joinedRuns, "&& true") {
+		t.Fatalf("the contract startCmd must run instead, got:\n%s", joinedRuns)
+	}
+	events, _ := store.ListDeployEvents("deploy-remote-foreign")
+	joined := ""
+	for _, e := range events {
+		joined += e.Message + "\n"
+	}
+	if !strings.Contains(joined, "指向别的 systemd 单元") || !strings.Contains(joined, "autonomyd") || !strings.Contains(joined, "web-cursor") {
+		t.Fatalf("timeline should explain the skipped override, got:\n%s", joined)
+	}
+}
+
 // 契约里按平台配了路径（runtimeDirs.linux）时，远端部署用**它**，而不是通道约定的
 // <remote-home>/<serviceId> —— 这就是「runtimeDir 按 mac/linux 两套路径」的落地。
 func TestExecuteDeployUsesPlatformRuntimeDir(t *testing.T) {

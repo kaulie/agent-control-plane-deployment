@@ -138,6 +138,16 @@ func TestMachineTargetRestartOverride(t *testing.T) {
 		t.Fatalf("restart override lost: %q", target.RestartCmd)
 	}
 	got := target.ExpandRestartCmd("autonomy", "66bf7a82", "/Users/gaolei/runtime/autonomy", "/home/ubuntu/runtime/autonomy", "43.162.117.240")
+	if !restartOverrideApplies(target.RestartCmd, "autonomy") {
+		t.Fatal("the autonomyd unit must still apply to the autonomy service")
+	}
+	if restartOverrideApplies(target.RestartCmd, "knowledge-base") {
+		t.Fatal("the autonomyd unit must not apply when deploying knowledge-base")
+	}
+	foreign := foreignRestartUnits(target.RestartCmd, "knowledge-base")
+	if len(foreign) != 1 || foreign[0] != "autonomyd" {
+		t.Fatalf("foreign units = %v, want [autonomyd]", foreign)
+	}
 	for _, want := range []string{"APP_VERSION=66bf7a82", "systemctl restart autonomyd", "{version}"} {
 		if want == "{version}" {
 			if strings.Contains(got, "{version}") {
@@ -148,5 +158,26 @@ func TestMachineTargetRestartOverride(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expanded restart cmd should contain %q, got %q", want, got)
 		}
+	}
+}
+
+func TestRestartOverrideScope(t *testing.T) {
+	const generic = "sudo systemctl daemon-reload && bash scripts/restart.sh"
+	if !restartOverrideApplies(generic, "knowledge-base") {
+		t.Fatal("a command that names no unit is machine-wide")
+	}
+	const templated = "sudo systemctl restart {serviceId}"
+	if !restartOverrideApplies(templated, "knowledge-base") {
+		t.Fatal("a {serviceId} template applies to every service")
+	}
+	const named = "sudo systemctl restart web-cursor-{machine}"
+	if !restartOverrideApplies(named, "web-cursor") {
+		t.Fatal("a unit that contains the service id applies to that service")
+	}
+	if restartOverrideApplies(named, "knowledge-base") {
+		t.Fatal("a unit named for another service must not apply")
+	}
+	if restartOverrideApplies("", "autonomy") {
+		t.Fatal("an empty restart= does not apply")
 	}
 }

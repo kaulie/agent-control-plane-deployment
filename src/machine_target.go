@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -34,9 +35,13 @@ type MachineTarget struct {
 	SSHHost     string
 	SSHPort     int
 	RuntimeHome string // 远端：服务 runtime 目录的父目录（服务目录 = <home>/<serviceId>）
-	// RestartCmd 覆盖契约里的 restartCmd（对这台机器专用）。远端经常有自己的一套：
-	// 例如 systemd 管理的服务要 `sudo systemctl restart autonomyd`，还要顺手更新 unit 里的
-	// APP_VERSION。支持占位符：{serviceId} {version} {runtimeDir} {remoteDir} {machine}。
+	// RestartCmd 覆盖契约里的 restartCmd。一条通道经常被这台机器上的多个服务共用，所以
+	// 不是无条件套用（见 restartOverrideApplies）：
+	//   - 命令含 {serviceId}，或没有点名具体 systemd 单元 → 每个服务都用它；
+	//   - 命令点名了具体单元（systemctl restart autonomyd，或 autonomyd.service 路径）→
+	//     只对单元名里包含该 serviceId 的服务生效。autonomyd 给 autonomy，不会在部署
+	//     knowledge-base 时把 autonomyd 重启一遍、再拿 knowledge-base 的端口探活。
+	// 支持占位符：{serviceId} {version} {runtimeDir} {remoteDir} {machine}。
 	// 形如 `id=ssh user@host /remote/home restart=<命令到条目结尾>`。
 	RestartCmd string
 }
@@ -72,6 +77,59 @@ func (t MachineTarget) ExpandRestartCmd(serviceID, version, runtimeDir, remoteDi
 		out = strings.ReplaceAll(out, k, v)
 	}
 	return strings.TrimSpace(out)
+}
+
+// systemctl 带单元的子命令。daemon-reload 这类不带单元的不在这里。
+var systemctlUnitRe = regexp.MustCompile(`\bsystemctl\s+(?:(?:--\S+)\s+)*(?:restart|start|stop|reload|try-restart|reload-or-restart|enable|disable)\s+(\S+)`)
+
+// unit 文件路径：/etc/systemd/system/autonomyd.service 或 …/autonomyd.service.d/…
+var systemdUnitFileRe = regexp.MustCompile(`(?:^|[^\w.@-])([\w.@-]+)\.service(?:\.d)?(?:[^\w.@-]|$)`)
+
+// systemdUnitNames 抽出命令里点名的 systemd 单元（去掉 .service 后缀与引号）。
+func systemdUnitNames(cmd string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(raw string) {
+		u := strings.Trim(strings.TrimSpace(raw), `"'`)
+		u = strings.TrimSuffix(u, ".service")
+		if u == "" || strings.HasPrefix(u, "-") || seen[u] {
+			return
+		}
+		seen[u] = true
+		out = append(out, u)
+	}
+	for _, m := range systemctlUnitRe.FindAllStringSubmatch(cmd, -1) {
+		add(m[1])
+	}
+	for _, m := range systemdUnitFileRe.FindAllStringSubmatch(cmd, -1) {
+		add(m[1])
+	}
+	return out
+}
+
+// foreignRestartUnits 是这条 restart= 点名、但并不属于 serviceID 的单元。
+// 命令含 {serviceId} 时视为每个服务的模板，不把任何单元当成「别人的」。
+func foreignRestartUnits(rawCmd, serviceID string) []string {
+	rawCmd = strings.TrimSpace(rawCmd)
+	if rawCmd == "" || strings.Contains(rawCmd, "{serviceId}") {
+		return nil
+	}
+	var foreign []string
+	for _, unit := range systemdUnitNames(rawCmd) {
+		if serviceID == "" || !strings.Contains(unit, serviceID) {
+			foreign = append(foreign, unit)
+		}
+	}
+	return foreign
+}
+
+// restartOverrideApplies 判断通道 restart= 能不能用在这次部署的服务上。
+// 空命令不适用。没有点名单元、或写了 {serviceId}、或每个单元名都包含 serviceId → 适用。
+func restartOverrideApplies(rawCmd, serviceID string) bool {
+	if strings.TrimSpace(rawCmd) == "" {
+		return false
+	}
+	return len(foreignRestartUnits(rawCmd, serviceID)) == 0
 }
 
 // Describe 给事件/日志用的一句话。
