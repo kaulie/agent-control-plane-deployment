@@ -122,7 +122,7 @@ service-registry :4240  ──pull(GET /v1/services)──▶  本控制面 :422
 
 - `start.sh` 用 `nohup 服务 >>backend/server.log 2>&1 &`（或等价后台启动），**不要 double-fork**，然后 `echo $! > "$RUNTIME_DIR/backend/runtime.pid"`。不要用前台 `exec`（`startCmd` 必须返回）。
 - 平台 stop：先杀 pidfile 里还活着的进程，再 `lsof` `SERVICE_PORT` 上 LISTEN 的进程；没有进程只记 warning。契约 `stopCmd` 仍会跑（额外清理），失败忽略。
-- 通道 `restart=systemctl …` 不走 pidfile，仍交给 systemd。
+- 通道 `restart=systemctl …` 在这条命令适用于当前服务时不走 pidfile，仍交给 systemd。命令点名了别的单元（例如 `autonomyd`）时，本次部署改走 pidfile stop + 契约 start。
 
 - **探活仍然走 `healthUrl`**（`port` 与 `healthUrl` 里的端口不一致时：探活按 `healthUrl`，脚本收到的 `SERVICE_PORT` 按 `port`）。
 - **端口必须唯一**（保存时校验）：同一个端口不能被两个服务用。`PUT` 撞到别人的端口 → `409 端口 4211 已被服务 "web-cursor" 占用；服务端口必须唯一，请换一个`（编辑自己不算冲突）；面板会先在本地拦一次、直接给出占用者。库层还有一条兜底：`CREATE UNIQUE INDEX ... ON services(port) WHERE port > 0`（0 = 未指定，不参与唯一性；目标库若已有重复端口，索引创建失败只记日志、不影响启动，仍由 API 层逐个校验）。
@@ -372,7 +372,7 @@ macOS 上打的包（Mach-O）在 Linux 远端起不来，所以**打包时就�
   1. **预检**：能 `ssh` 登录、远端有 `curl`、目标 runtime 目录存在且像这个服务（没有 `scripts/restart.sh` 就拒绝 `rsync --delete`，不会误删别的东西；目录不存在则创建，首次部署不带 `--delete`）；
   2. **传制品**：本机下载后 `rsync -a --delete -e ssh` 推到远端 runtime（`backend/.env`、`backend/data/`、`data/`、`logs/`、`packages/`、`*.pid` 等运行态豁免，与本地同一套规则）；
   3. **graceful**：通知/轮询**在远端**发（契约里的 `restartNotifyUrl`/`restartPollUrl` 是 `127.0.0.1`，站在那台机器上问才对）；
-  4. **重启**：平台按 `$RUNTIME_DIR/backend/runtime.pid` + `SERVICE_PORT` 停进程（没有实例只 warning），再跑契约 `stopCmd`（best-effort），然后 `startCmd`；成功后读 pidfile 记到时间线。`healthUrl` 只用于探活/是否在跑。rsync 不传 `backend/.env`；若远端还没有该文件，会从包里的 example 拷一份。通道配了 `restart=` 时仍跑那条覆盖命令（失败改跑 startCmd）；
+  4. **重启**：平台按 `$RUNTIME_DIR/backend/runtime.pid` + `SERVICE_PORT` 停进程（没有实例只 warning），再跑契约 `stopCmd`（best-effort），然后 `startCmd`；成功后读 pidfile 记到时间线。`healthUrl` 只用于探活/是否在跑。rsync 不传 `backend/.env`；若远端还没有该文件，会从包里的 example 拷一份。通道配了 `restart=` 且这条命令适用于当前服务时仍跑那条覆盖命令（失败改跑 startCmd）；点名了别的 systemd 单元则改走上面的契约 stop/start；
   5. **探活**：同样在远端 `curl` 契约的 `healthUrl`；失败即这次部署失败（**不会**静默退化成本机部署）。
   时间线每一步都标「远端 `<dest>:<dir>`」，成功那句是「部署成功：version=…（远端 `<machine>`：`<dest>:<dir>`）」。前置要求：控制面这台机器能免密 `ssh` 到目标（`~/.ssh/config` 的别名可用），目标机器上有 `curl`。
 - **远端安全网（实测踩过，都已补上）**：
@@ -382,7 +382,7 @@ macOS 上打的包（Mach-O）在 Linux 远端起不来，所以**打包时就�
     ```bash
     43.162.117.240=ssh agent-oversea /home/ubuntu/runtime restart=sudo systemctl restart autonomyd
     ```
-    执行前仍会 `cd` 到该服务的远端 runtime 并注入 `SERVICE_PORT`/`PORT`/`APP_VERSION`/`DEPLOY_MACHINE`/`RUNTIME_DIR`。
+    执行前仍会 `cd` 到该服务的远端 runtime 并注入 `SERVICE_PORT`/`PORT`/`APP_VERSION`/`DEPLOY_MACHINE`/`RUNTIME_DIR`。一条通道会被这台机器上的多个服务共用：命令写了 `{serviceId}`、或没有点名具体单元时，每个服务都用它；命令点名了具体单元（上面的 `autonomyd`）时，只对单元名里包含该 serviceId 的服务生效（`autonomy` 用这条 systemd 命令，`knowledge-base` 仍走自己的契约 stop/start）。否则会把别的单元重启成功、当前服务却没起来，探活失败。
 - **跨平台产物**：打包时已知目标机器 → 取它的平台（① 注册中心登记的平台 `metadata.platform` ② 通道里显式 `platform=linux/amd64` ③ 远端 `uname -s -m` 探测兜底）→ 给服务 `build.sh` 注入 `GOOS`/`GOARCH`，制品 tag 带平台后缀（`deployment-<hash>-linux-amd64`；本机平台仍是老形式），部署前再比对包里二进制与远端平台。服务自己的 `build.sh` 要按 `GOOS/GOARCH` 产**所有**平台相关的产物（例如下载物也要按目标平台取；autonomy 的 cursor bridge 已按此修好）。
 - **API**：`POST /api/deploy-notify {"serviceId": ..., "ref": ..., "targetMachine": "43.162.117.240"}`；`POST /api/deploys` 同样接受。非空机器必须是**这个服务**绑定的机器，否则 **400**：服务没绑定实例 → 「先在 service_registry 登记它的实例…」；别的服务的机器 → 「那台机器上没有它的实例登记」（附本服务允许列表）；已知但没通道 → 提示去配 `DEPLOY_MACHINE_TARGETS`。
 - **默认机器**：`DEPLOY_DEFAULT_MACHINE`；不配置则是 `local`。请求不带 `targetMachine` 时按默认机器处理 —— **默认行为不变**（本机部署路径与以前完全一致）。
