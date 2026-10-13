@@ -52,10 +52,22 @@ type ServiceContract struct {
 	Supervise bool `json:"supervise"`
 	// IntervalSec is how often watchdog probes this service. Watchdog syncs
 	// this from GET /api/services; 0 in memory is stored as the factory default.
-	IntervalSec int    `json:"intervalSec"`
-	CreatedAt   string `json:"createdAt"`
-	UpdatedAt   string `json:"updatedAt"`
+	IntervalSec int `json:"intervalSec"`
+	// RuntimeEnv 是启动 start/stop/restart 时额外注入的环境变量（键=变量名）。
+	// 平台固定注入 SERVICE_PORT / PORT / APP_VERSION / DEPLOY_MACHINE / RUNTIME_DIR，
+	// 同名键以平台为准，不能写进这里。空表示只注入平台变量。
+	RuntimeEnv map[string]string `json:"runtimeEnv,omitempty"`
+	CreatedAt  string            `json:"createdAt"`
+	UpdatedAt  string            `json:"updatedAt"`
 }
+
+// serviceColumns is the canonical SELECT list for services rows (shared by every
+// query so a new column is added in one place). Order matches scanService.
+const serviceColumns = `service_id, name, runtime_dir, runtime_dirs, health_url, port,
+	start_cmd, stop_cmd, restart_cmd, watchdog_enabled, interval_sec,
+	restart_notify_url, restart_poll_url, graceful_max_wait_ms,
+	git_repo_url, default_branch, runtime_env,
+	created_at, updated_at`
 
 const defaultProbeIntervalSec = 30
 const minProbeIntervalSec = 2
@@ -151,6 +163,7 @@ func (s *Store) migrate() error {
         restart_cmd TEXT NOT NULL,
         watchdog_enabled INTEGER NOT NULL DEFAULT 1,
         interval_sec INTEGER NOT NULL DEFAULT 30,
+        runtime_env TEXT NOT NULL DEFAULT '{}',
         restart_notify_url TEXT NOT NULL DEFAULT '',
         restart_poll_url TEXT NOT NULL DEFAULT '',
         graceful_max_wait_ms INTEGER NOT NULL DEFAULT 0,
@@ -221,11 +234,7 @@ func (s *Store) ServiceByPort(port int, excludeServiceID string) (*ServiceContra
 		return nil, nil
 	}
 	row := s.db.QueryRow(`
-		SELECT service_id, name, runtime_dir, runtime_dirs, health_url, port,
-		       start_cmd, stop_cmd, restart_cmd, watchdog_enabled, interval_sec,
-		       restart_notify_url, restart_poll_url, graceful_max_wait_ms,
-		       git_repo_url, default_branch,
-		       created_at, updated_at
+		SELECT `+serviceColumns+`
 		FROM services WHERE port = ? AND service_id <> ? ORDER BY service_id LIMIT 1`,
 		port, excludeServiceID)
 	svc, err := scanService(row)
@@ -246,6 +255,8 @@ func (s *Store) ensureServiceExtraColumns() error {
 		// 老库补列：按平台（darwin/linux）覆盖 runtimeDir。
 		"runtime_dirs": `ALTER TABLE services ADD COLUMN runtime_dirs TEXT NOT NULL DEFAULT '{}'`,
 		"interval_sec": `ALTER TABLE services ADD COLUMN interval_sec INTEGER NOT NULL DEFAULT 30`,
+		// 老库补列：启动时额外注入的运行时环境变量（JSON 对象，空 = 只注入平台变量）。
+		"runtime_env": `ALTER TABLE services ADD COLUMN runtime_env TEXT NOT NULL DEFAULT '{}'`,
 	})
 }
 
@@ -317,15 +328,20 @@ func (s *Store) UpsertService(input ServiceContract) (ServiceContract, error) {
 	}
 	row.UpdatedAt = ts
 	row.IntervalSec = normalizeIntervalSec(row.IntervalSec)
+	runtimeEnv, err := encodeRuntimeEnv(row.RuntimeEnv)
+	if err != nil {
+		return ServiceContract{}, err
+	}
+	row.RuntimeEnv = decodeRuntimeEnv(runtimeEnv)
 
-	_, err := s.db.Exec(`
+	_, err = s.db.Exec(`
 		INSERT INTO services (
 		  service_id, name, runtime_dir, runtime_dirs, health_url, port,
 		  start_cmd, stop_cmd, restart_cmd, watchdog_enabled, interval_sec,
 		  restart_notify_url, restart_poll_url, graceful_max_wait_ms,
-		  git_repo_url, default_branch,
+		  git_repo_url, default_branch, runtime_env,
 		  created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(service_id) DO UPDATE SET
 		  name = excluded.name,
 		  runtime_dir = excluded.runtime_dir,
@@ -342,13 +358,14 @@ func (s *Store) UpsertService(input ServiceContract) (ServiceContract, error) {
 		  graceful_max_wait_ms = excluded.graceful_max_wait_ms,
 		  git_repo_url = excluded.git_repo_url,
 		  default_branch = excluded.default_branch,
+		  runtime_env = excluded.runtime_env,
 		  updated_at = excluded.updated_at`,
 		row.ServiceID, row.Name, row.RuntimeDir, encodeRuntimeDirs(row.RuntimeDirs),
 		row.HealthURL, normalizePort(row.Port),
 		row.StartCmd, row.StopCmd, row.RestartCmd, boolToInt(row.Supervise),
 		row.IntervalSec,
 		row.RestartNotifyURL, row.RestartPollURL, row.GracefulMaxWaitMs,
-		row.GitRepoURL, defaultBranchOrMain(row.DefaultBranch),
+		row.GitRepoURL, defaultBranchOrMain(row.DefaultBranch), runtimeEnv,
 		row.CreatedAt, row.UpdatedAt,
 	)
 	return row, err
@@ -363,13 +380,7 @@ func normalizePort(p int) int {
 }
 
 func (s *Store) GetService(serviceID string) (*ServiceContract, error) {
-	row := s.db.QueryRow(`
-		SELECT service_id, name, runtime_dir, runtime_dirs, health_url, port,
-		       start_cmd, stop_cmd, restart_cmd, watchdog_enabled, interval_sec,
-		       restart_notify_url, restart_poll_url, graceful_max_wait_ms,
-		       git_repo_url, default_branch,
-		       created_at, updated_at
-		FROM services WHERE service_id = ?`, serviceID)
+	row := s.db.QueryRow(`SELECT `+serviceColumns+` FROM services WHERE service_id = ?`, serviceID)
 	svc, err := scanService(row)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -407,13 +418,7 @@ func (s *Store) NormalizeServiceURLs() (int, error) {
 }
 
 func (s *Store) ListServices() ([]ServiceContract, error) {
-	rows, err := s.db.Query(`
-		SELECT service_id, name, runtime_dir, runtime_dirs, health_url, port,
-		       start_cmd, stop_cmd, restart_cmd, watchdog_enabled, interval_sec,
-		       restart_notify_url, restart_poll_url, graceful_max_wait_ms,
-		       git_repo_url, default_branch,
-		       created_at, updated_at
-		FROM services ORDER BY name ASC`)
+	rows, err := s.db.Query(`SELECT ` + serviceColumns + ` FROM services ORDER BY name ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -603,12 +608,12 @@ type scannable interface {
 func scanService(row scannable) (*ServiceContract, error) {
 	var svc ServiceContract
 	var watchdog int
-	var runtimeDirs string
+	var runtimeDirs, runtimeEnv string
 	err := row.Scan(
 		&svc.ServiceID, &svc.Name, &svc.RuntimeDir, &runtimeDirs, &svc.HealthURL, &svc.Port,
 		&svc.StartCmd, &svc.StopCmd, &svc.RestartCmd, &watchdog, &svc.IntervalSec,
 		&svc.RestartNotifyURL, &svc.RestartPollURL, &svc.GracefulMaxWaitMs,
-		&svc.GitRepoURL, &svc.DefaultBranch,
+		&svc.GitRepoURL, &svc.DefaultBranch, &runtimeEnv,
 		&svc.CreatedAt, &svc.UpdatedAt,
 	)
 	if err != nil {
@@ -616,6 +621,7 @@ func scanService(row scannable) (*ServiceContract, error) {
 	}
 	svc.DefaultBranch = defaultBranchOrMain(svc.DefaultBranch)
 	svc.RuntimeDirs = decodeRuntimeDirs(runtimeDirs)
+	svc.RuntimeEnv = decodeRuntimeEnv(runtimeEnv)
 	svc.Supervise = watchdog != 0
 	svc.IntervalSec = normalizeIntervalSec(svc.IntervalSec)
 	return &svc, nil

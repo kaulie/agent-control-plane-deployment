@@ -99,40 +99,51 @@ func remotePlatformGuard(store *Store, job DeployJob, src, remotePlatform string
 
 // remoteEnvPrefix 是远端执行前的那段 `cd <runtime> && export …`（restart= 覆盖时复用）。
 func remoteEnvPrefix(service ServiceContract, extra map[string]string) string {
-	env := map[string]string{"SERVICE_PORT": servicePort(service), "PORT": servicePort(service)}
-	for k, v := range extra {
-		if strings.TrimSpace(v) != "" {
-			env[k] = v
-		}
-	}
-	keys := make([]string, 0, len(env))
-	for k := range env {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	assign := make([]string, 0, len(keys))
-	for _, k := range keys {
-		assign = append(assign, k+"="+shellQuote(env[k]))
-	}
-	cmd := "export " + strings.Join(assign, " ")
+	return remoteEnvPrefixMasked(service, extra, false)
+}
+
+// remoteEnvPrefixMasked 与 remoteEnvPrefix 相同；maskUser 时契约里的运行时环境变量
+// 值打成 ***（时间线用）。平台注入的 SERVICE_PORT 等仍原文显示。
+func remoteEnvPrefixMasked(service ServiceContract, extra map[string]string, maskUser bool) string {
+	cmd := shellExport(contractShellEnv(service, extra), maskedRuntimeEnvKeys(service, extra, maskUser))
 	if dir := strings.TrimSpace(extra["RUNTIME_DIR"]); dir != "" {
 		cmd = "cd " + shellQuote(dir) + " && " + cmd
 	}
 	return cmd
 }
 
-// remoteRestartCmd 把 restartCmd 包成一条在远端跑的 shell：cd 到 runtime，注入
-// SERVICE_PORT / PORT / APP_VERSION / DEPLOY_MACHINE / RUNTIME_DIR，再跑契约里的命令。
-func remoteRestartCmd(restartCmd string, service ServiceContract, extra map[string]string) string {
+// contractShellEnv 是远端 shell 要 export 的环境：契约 runtimeEnv，再盖上平台键。
+// extra 里的非空值最后写入（与原先「通道可以覆盖」的行为一致）。
+func contractShellEnv(service ServiceContract, extra map[string]string) map[string]string {
 	env := map[string]string{}
-	port := servicePort(service)
-	env["SERVICE_PORT"] = port
-	env["PORT"] = port
+	applyUserRuntimeEnv(env, service)
+	env["SERVICE_PORT"] = servicePort(service)
+	env["PORT"] = servicePort(service)
 	for k, v := range extra {
 		if strings.TrimSpace(v) != "" {
 			env[k] = v
 		}
 	}
+	return env
+}
+
+// maskedRuntimeEnvKeys 是需要在时间线里打码的键。maskUser=false 时为空（真去执行）。
+func maskedRuntimeEnvKeys(service ServiceContract, extra map[string]string, maskUser bool) map[string]bool {
+	if !maskUser {
+		return nil
+	}
+	keys := userRuntimeEnvKeys(service)
+	for k, v := range extra {
+		if strings.TrimSpace(v) != "" {
+			delete(keys, k)
+		}
+	}
+	delete(keys, "SERVICE_PORT")
+	delete(keys, "PORT")
+	return keys
+}
+
+func shellExport(env map[string]string, mask map[string]bool) string {
 	keys := make([]string, 0, len(env))
 	for k := range env {
 		keys = append(keys, k)
@@ -140,11 +151,26 @@ func remoteRestartCmd(restartCmd string, service ServiceContract, extra map[stri
 	sort.Strings(keys)
 	assign := make([]string, 0, len(keys))
 	for _, k := range keys {
-		assign = append(assign, k+"="+shellQuote(env[k]))
+		v := env[k]
+		if mask[k] {
+			v = "***"
+		}
+		assign = append(assign, k+"="+shellQuote(v))
 	}
+	return "export " + strings.Join(assign, " ")
+}
+
+// remoteRestartCmd 把 restartCmd 包成一条在远端跑的 shell：cd 到 runtime，注入
+// 契约 runtimeEnv 以及 SERVICE_PORT / PORT / APP_VERSION / DEPLOY_MACHINE / RUNTIME_DIR，
+// 再跑契约里的命令。
+func remoteRestartCmd(restartCmd string, service ServiceContract, extra map[string]string) string {
+	return remoteRestartCmdMasked(restartCmd, service, extra, false)
+}
+
+func remoteRestartCmdMasked(restartCmd string, service ServiceContract, extra map[string]string, maskUser bool) string {
 	// 本地那一路是 cwd=runtimeDir 跑 restartCmd；远端也一样先 cd 过去。
 	runtimeDir := strings.TrimSpace(extra["RUNTIME_DIR"])
-	cmd := "export " + strings.Join(assign, " ") + " && " + restartCmd
+	cmd := shellExport(contractShellEnv(service, extra), maskedRuntimeEnvKeys(service, extra, maskUser)) + " && " + restartCmd
 	if runtimeDir != "" {
 		cmd = "cd " + shellQuote(runtimeDir) + " && " + cmd
 	}

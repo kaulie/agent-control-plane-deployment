@@ -205,6 +205,9 @@ type putServiceBody struct {
 	GracefulMaxWaitMs *int              `json:"gracefulRestartMaxWaitMs"`
 	Supervise         *bool             `json:"supervise"`
 	IntervalSec       *int              `json:"intervalSec"`
+	// RuntimeEnv 启动时额外注入的环境变量。不传 = 沿用已有配置；{} = 清空。
+	// 平台键（SERVICE_PORT / PORT / APP_VERSION / DEPLOY_MACHINE / RUNTIME_DIR）不能写在这里。
+	RuntimeEnv map[string]string `json:"runtimeEnv"`
 }
 
 // handlePutService 配置/更新一个服务的**本机部署参数**。服务是否存在由
@@ -284,6 +287,7 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 	defaultBranch := "main"
 	supervise := false
 	intervalSec := defaultProbeIntervalSec
+	var runtimeEnv map[string]string
 	if existing != nil {
 		if name == "" {
 			name = existing.Name
@@ -314,6 +318,7 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 		defaultBranch = defaultBranchOrMain(existing.DefaultBranch)
 		supervise = existing.Supervise
 		intervalSec = normalizeIntervalSec(existing.IntervalSec)
+		runtimeEnv = existing.RuntimeEnv
 	}
 	// 服务端口：**必填**（1..65535）。它会在启动/停止/重启时注入 SERVICE_PORT。
 	// 缺省（不传）时沿用库里已有的端口；库里也没有（老契约 port=0）→ 400。
@@ -395,6 +400,15 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 		}
 		intervalSec = n
 	}
+	// 不传 runtimeEnv（nil）沿用库里的值；显式传入（含 {}）则整份替换。
+	if body.RuntimeEnv != nil {
+		normalized, envErr := NormalizeRuntimeEnv(body.RuntimeEnv)
+		if envErr != nil {
+			writeError(w, http.StatusBadRequest, envErr.Error())
+			return
+		}
+		runtimeEnv = normalized
+	}
 	if name == "" {
 		name = serviceID
 	}
@@ -427,6 +441,7 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 		GracefulMaxWaitMs: maxWaitMs,
 		Supervise:         supervise,
 		IntervalSec:       intervalSec,
+		RuntimeEnv:        runtimeEnv,
 	})
 	if err != nil {
 		// 并发保存时可能绕过上面的检查、撞到 services.port 的唯一索引：同样给友好的 409。

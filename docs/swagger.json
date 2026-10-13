@@ -1394,6 +1394,13 @@
                         "type": "string"
                     }
                 },
+                "runtimeEnv": {
+                    "description": "RuntimeEnv 是启动 start/stop/restart 时额外注入的环境变量（键=变量名）。\n平台固定注入 SERVICE_PORT / PORT / APP_VERSION / DEPLOY_MACHINE / RUNTIME_DIR，\n同名键以平台为准，不能写进这里。空表示只注入平台变量。",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
                 "serviceId": {
                     "type": "string"
                 },
@@ -1451,6 +1458,13 @@
                 },
                 "runtimeDirs": {
                     "description": "RuntimeDirs 按平台覆盖 runtimeDir（键归一成 darwin / linux）。部署时按**目标机器**\n的平台选（本机 = 控制面 GOOS，远端 = 预检 probe 的 uname）；没配的平台回落 RuntimeDir。",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "runtimeEnv": {
+                    "description": "RuntimeEnv 是启动 start/stop/restart 时额外注入的环境变量（键=变量名）。\n平台固定注入 SERVICE_PORT / PORT / APP_VERSION / DEPLOY_MACHINE / RUNTIME_DIR，\n同名键以平台为准，不能写进这里。空表示只注入平台变量。",
                     "type": "object",
                     "additionalProperties": {
                         "type": "string"
@@ -1561,6 +1575,13 @@
                 },
                 "runtimeDirs": {
                     "description": "RuntimeDirs 按平台覆盖 runtimeDir（darwin / linux）。",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "runtimeEnv": {
+                    "description": "RuntimeEnv 启动时额外注入的环境变量。不传 = 沿用已有配置；{} = 清空。\n平台键（SERVICE_PORT / PORT / APP_VERSION / DEPLOY_MACHINE / RUNTIME_DIR）不能写在这里。",
                     "type": "object",
                     "additionalProperties": {
                         "type": "string"

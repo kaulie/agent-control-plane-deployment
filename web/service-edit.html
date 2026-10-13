@@ -103,7 +103,7 @@
       <!-- ⑤ 启停命令：部署时执行的命令（SERVICE_PORT / APP_VERSION / DEPLOY_MACHINE / RUNTIME_DIR 会注入） -->
       <section class="cfg" id="cfg-commands">
         <h3 class="cfg__title">启停命令<span class="cfg__note">在目标机器上执行</span></h3>
-        <p class="cfg__desc">部署时在运行目录里执行 restartCmd，并注入 SERVICE_PORT / APP_VERSION / DEPLOY_MACHINE / RUNTIME_DIR。</p>
+        <p class="cfg__desc">部署时在运行目录里执行这些命令，并注入 SERVICE_PORT / APP_VERSION / DEPLOY_MACHINE / RUNTIME_DIR，以及下面配置的运行时环境变量。</p>
         <div class="form-grid">
           <label>startCmd
             <input type="text" id="svc-startCmd" placeholder="bash scripts/start.sh" />
@@ -114,6 +114,19 @@
           <label>restartCmd
             <input type="text" id="svc-restartCmd" placeholder="bash scripts/restart.sh" />
           </label>
+        </div>
+      </section>
+
+      <!-- ⑥ 运行时环境变量：启动时额外注入，平台固定变量不在这里配 -->
+      <section class="cfg" id="cfg-runtime-env">
+        <h3 class="cfg__title">运行时环境变量<span class="cfg__note">启动时注入</span></h3>
+        <p class="cfg__desc">startCmd / stopCmd / restartCmd 在目标机器上执行时，除平台变量外再注入这些键值。本机与远端同一份。不填则只注入平台变量。</p>
+        <div class="form-grid">
+          <div class="env-rows" id="svc-runtime-env-rows"></div>
+          <p class="hint cfg__hint" id="svc-runtime-env-hint"></p>
+          <div class="env-add">
+            <button type="button" class="btn btn--sm" id="svc-runtime-env-add">添加环境变量</button>
+          </div>
         </div>
       </section>
 

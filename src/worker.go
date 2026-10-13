@@ -81,10 +81,11 @@ func clipCmdOut(out string) string {
 
 func shownServiceCmd(cmd, override string, service ServiceContract, runtimeDir, hash, machine string) string {
 	extra := map[string]string{"APP_VERSION": hash, "DEPLOY_MACHINE": machine, "RUNTIME_DIR": runtimeDir}
+	// 时间线要能看出注入了哪些变量，但不能把值（可能是密钥）写进事件。
 	if strings.TrimSpace(override) != "" {
-		return remoteEnvPrefix(service, extra) + " && " + override
+		return remoteEnvPrefixMasked(service, extra, true) + " && " + override
 	}
-	return remoteRestartCmd(cmd, service, extra)
+	return remoteRestartCmdMasked(cmd, service, extra, true)
 }
 
 // runDeployRestart 是部署时的停再起。
@@ -178,10 +179,10 @@ func runDeployRestart(store *Store, job DeployJob, cfg Config, service ServiceCo
 	}
 
 	if startCmd != "" {
-		fmt.Printf("[deploy] %s start via contract (SERVICE_PORT=%s): %s\n",
-			job.RequestID, port, startCmd)
+		fmt.Printf("[deploy] %s start via contract (SERVICE_PORT=%s%s): %s\n",
+			job.RequestID, port, runtimeEnvEventSuffix(service), startCmd)
 		_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
-			"执行 startCmd（SERVICE_PORT="+port+"，同时注入 PORT）："+startCmd)
+			"执行 startCmd（SERVICE_PORT="+port+"，同时注入 PORT"+runtimeEnvEventSuffix(service)+"）:"+startCmd)
 		logRemote(startCmd, "")
 		code, out := run(startCmd, "")
 		if code != 0 {
@@ -192,10 +193,10 @@ func runDeployRestart(store *Store, job DeployJob, cfg Config, service ServiceCo
 		return ""
 	}
 
-	fmt.Printf("[deploy] %s restart via contract (SERVICE_PORT=%s): %s\n",
-		job.RequestID, port, restartCmd)
+	fmt.Printf("[deploy] %s restart via contract (SERVICE_PORT=%s%s): %s\n",
+		job.RequestID, port, runtimeEnvEventSuffix(service), restartCmd)
 	_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
-		"执行 restartCmd（SERVICE_PORT="+port+"，同时注入 PORT）："+restartCmd)
+		"执行 restartCmd（SERVICE_PORT="+port+"，同时注入 PORT"+runtimeEnvEventSuffix(service)+"）:"+restartCmd)
 	logRemote(restartCmd, "")
 	code, out := run(restartCmd, "")
 	if code != 0 {
@@ -333,6 +334,11 @@ func serviceCmdEnv(service ServiceContract, runtimeDir string, extra map[string]
 			envMap[e[:i]] = e[i+1:]
 		}
 	}
+	// 先剥掉控制面自己的 HOST / DEPLOYMENT_HOME，再写入契约里的运行时环境变量
+	// （运维显式配的 HOST 因此可以留下）。平台键最后写，始终盖过契约。
+	delete(envMap, "HOST")
+	delete(envMap, "DEPLOYMENT_HOME")
+	applyUserRuntimeEnv(envMap, service)
 	for k, v := range extra {
 		envMap[k] = v
 	}
@@ -344,8 +350,6 @@ func serviceCmdEnv(service ServiceContract, runtimeDir string, extra map[string]
 	envMap["RUNTIME_DIR"] = runtimeDir
 	envMap["SERVICE_PORT"] = port // 约定的正式字段名
 	envMap["PORT"] = port         // 兼容：老脚本读 PORT
-	delete(envMap, "HOST")
-	delete(envMap, "DEPLOYMENT_HOME")
 
 	out := make([]string, 0, len(envMap))
 	for k, v := range envMap {

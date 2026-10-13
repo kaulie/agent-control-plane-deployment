@@ -249,6 +249,7 @@ test('service edit page: save sends PUT /api/services/:id with the form body', a
   assert.equal(body.gracefulRestartMaxWaitMs, 90000);
   assert.equal(body.supervise, false, 'supervise checkbox defaults off');
   assert.equal(body.intervalSec, 30, 'probe interval defaults to 30s');
+  assert.deepEqual(body.runtimeEnv, {}, '没配运行时环境变量时提交空对象（保存即清空）');
   assert.ok(!('gitRepoUrl' in body), 'gitRepoUrl is registry-owned: never sent from the panel');
   assert.match(doc.querySelector('#svc-msg').textContent, /已保存/);
 });
@@ -320,7 +321,7 @@ test('service edit page: 端口唯一性（前端先拦，不发请求）', asyn
 
 // 字段按含义分区：十几个字段平铺成一坨很难读，页面按「标识 / 目录 / 接口 / 命令」分四区，
 // 每区「小标题 + 一行说明 + 字段网格」，提示跟着它解释的字段走。
-test('service edit page: 字段按含义分区（标识 / 运行目录 / 服务接口 / 监督 / 启停命令）', async (t) => {
+test('service edit page: 字段按含义分区（标识 / 运行目录 / 服务接口 / 监督 / 启停命令 / 运行时环境变量）', async (t) => {
   const { dom, flush } = makePage('web-cursor');
   t.after(() => dom.window.close());
   const doc = dom.window.document;
@@ -329,11 +330,11 @@ test('service edit page: 字段按含义分区（标识 / 运行目录 / 服务�
   const sections = [...doc.querySelectorAll('.form-card > section.cfg')];
   assert.deepEqual(
     sections.map((s) => s.id),
-    ['cfg-identity', 'cfg-runtimedir', 'cfg-endpoints', 'cfg-supervise', 'cfg-commands'],
+    ['cfg-identity', 'cfg-runtimedir', 'cfg-endpoints', 'cfg-supervise', 'cfg-commands', 'cfg-runtime-env'],
   );
   assert.deepEqual(
     sections.map((s) => s.querySelector('.cfg__title').firstChild.textContent.trim()),
-    ['服务标识', '运行目录', '服务接口', '本机监督', '启停命令'],
+    ['服务标识', '运行目录', '服务接口', '本机监督', '启停命令', '运行时环境变量'],
   );
   for (const s of sections) {
     assert.ok(s.querySelector('.cfg__desc').textContent.trim().length > 0, s.id + ' 要有分区说明');
@@ -362,6 +363,9 @@ test('service edit page: 字段按含义分区（标识 / 运行目录 / 服务�
     '#svc-startCmd': 'cfg-commands',
     '#svc-stopCmd': 'cfg-commands',
     '#svc-restartCmd': 'cfg-commands',
+    '#svc-runtime-env-rows': 'cfg-runtime-env',
+    '#svc-runtime-env-hint': 'cfg-runtime-env',
+    '#svc-runtime-env-add': 'cfg-runtime-env',
   };
   for (const [sel, want] of Object.entries(expected)) {
     assert.equal(owner(sel), want, sel + ' 应属于 ' + want);
@@ -381,5 +385,64 @@ test('service edit page: 字段按含义分区（标识 / 运行目录 / 服务�
   assert.match(css, /\.cfg__desc \{/);
   assert.match(css, /\.form-grid \.hint \{\s*grid-column: 1 \/ -1;/, '分区里的提示要横跨整行');
   assert.match(css, /\.form-card > \.form-actions \{/, '按钮区移到网格外后要有自己的样式');
+  assert.match(css, /\.env-row \{/, '运行时环境变量要有自己的一行布局');
+});
+
+test('service edit page: 运行时环境变量单独成区，保存时随部署配置提交', async (t) => {
+  const { dom, flush, puts } = makePage('web-cursor', {
+    payload: {
+      registry: { url: 'http://127.0.0.1:4240', enabled: true, ok: true, services: 1 },
+      services: [{
+        serviceId: 'web-cursor', name: 'Web Cursor', runtimeDir: '/tmp/web-cursor',
+        healthUrl: '/health', port: 4211,
+        startCmd: 'start', stopCmd: 'stop', restartCmd: 'restart',
+        runtimeEnv: { LOG_LEVEL: 'info', API_TOKEN: 's3cret' },
+        defaultBranch: 'main', registered: true, configured: true,
+      }],
+    },
+  });
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+  await flush();
+
+  const section = doc.querySelector('#cfg-runtime-env');
+  assert.ok(section, '编辑部署配置页要有运行时环境变量分区');
+  assert.match(section.querySelector('.cfg__desc').textContent, /启动|注入/);
+  const hint = doc.querySelector('#svc-runtime-env-hint').textContent;
+  assert.match(hint, /SERVICE_PORT/, '要说明平台变量不在这里配：' + hint);
+  assert.match(hint, /不记录值/, '要说明时间线不记值：' + hint);
+
+  const keys = [...doc.querySelectorAll('#svc-runtime-env-rows .env-key')].map((el) => el.value);
+  const values = [...doc.querySelectorAll('#svc-runtime-env-rows .env-value')].map((el) => el.value);
+  assert.deepEqual(keys, ['API_TOKEN', 'LOG_LEVEL'], '已保存的变量按名字排序填回表单');
+  assert.deepEqual(values, ['s3cret', 'info']);
+
+  // 平台保留名不能保存
+  doc.querySelector('#svc-runtime-env-add').click();
+  const rows = doc.querySelectorAll('#svc-runtime-env-rows .env-row');
+  const added = rows[rows.length - 1];
+  added.querySelector('.env-key').value = 'PORT';
+  added.querySelector('.env-value').value = '9';
+  const before = puts().length;
+  doc.querySelector('#svc-save').click();
+  await flush();
+  assert.equal(puts().length, before, '平台保留名不能发 PUT');
+  assert.match(doc.querySelector('#svc-msg').textContent, /PORT/);
+  assert.match(doc.querySelector('#svc-msg').textContent, /平台/);
+
+  // 删掉非法行，再加一项合法的，保存体里带上全部变量（值原样）
+  added.querySelector('.env-remove').click();
+  doc.querySelector('#svc-runtime-env-add').click();
+  const next = [...doc.querySelectorAll('#svc-runtime-env-rows .env-row')].at(-1);
+  next.querySelector('.env-key').value = 'AUTONOMY_HTTP_HOST';
+  next.querySelector('.env-value').value = '0.0.0.0';
+  doc.querySelector('#svc-save').click();
+  await flush();
+  const body = JSON.parse(puts().at(-1).body);
+  assert.deepEqual(body.runtimeEnv, {
+    API_TOKEN: 's3cret',
+    LOG_LEVEL: 'info',
+    AUTONOMY_HTTP_HOST: '0.0.0.0',
+  });
 });
 
