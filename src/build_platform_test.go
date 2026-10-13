@@ -71,7 +71,7 @@ func TestPackageFromGitBuildsForTargetPlatform(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 一个极小的「服务仓库」：build.sh 把 GOOS/GOARCH 写进 outputs/，方便断言。
-	buildSh := "#!/usr/bin/env bash\nset -euo pipefail\nmkdir -p outputs\necho \"${GOOS:-$(go env GOOS 2>/dev/null || echo none)}/${GOARCH:-none}\" > outputs/PLATFORM-PROBE\necho ok > outputs/PAYLOAD\n"
+	buildSh := "#!/usr/bin/env bash\nset -euo pipefail\nmkdir -p outputs\necho \"${GOOS:-$(go env GOOS 2>/dev/null || echo none)}/${GOARCH:-none}\" > outputs/PLATFORM-PROBE\necho \"${REGISTER_CONTRACT:-unset}\" > outputs/REGISTER-CONTRACT\necho ok > outputs/PAYLOAD\n"
 	mustWrite(t, filepath.Join(repo, "build.sh"), buildSh, 0o755)
 	mustWrite(t, filepath.Join(repo, "README.md"), "fixture\n", 0o644)
 	runGit(t, repo, "init", "-q", "-b", "main")
@@ -109,6 +109,11 @@ func TestPackageFromGitBuildsForTargetPlatform(t *testing.T) {
 	}
 	if strings.TrimSpace(string(probe)) != platform.String() {
 		t.Fatalf("build.sh saw GOOS/GOARCH = %q, want %q", strings.TrimSpace(string(probe)), platform)
+	}
+	// 打包不能让服务的契约登记把远端实例声明式摘掉。
+	reg, err := os.ReadFile(filepath.Join(pkgs, "svc-x", res.Tag, "REGISTER-CONTRACT"))
+	if err != nil || strings.TrimSpace(string(reg)) != "0" {
+		t.Fatalf("REGISTER_CONTRACT = %q err=%v, want 0", strings.TrimSpace(string(reg)), err)
 	}
 	// 包里带 PLATFORM，部署前据此判断
 	if b, err := os.ReadFile(filepath.Join(pkgs, "svc-x", res.Tag, "PLATFORM")); err != nil || strings.TrimSpace(string(b)) != platform.String() {

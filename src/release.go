@@ -207,7 +207,12 @@ func packageFromGit(serviceID, gitRepoURL, ref string, opts PackageOptions) (Pac
 	defer cancel()
 	buildCmd := exec.CommandContext(buildCtx, "/bin/bash", "./build.sh")
 	buildCmd.Dir = srcTree
-	buildEnv := []string{"APP_VERSION=" + hash}
+	// 服务的 build.sh 末尾会做契约登记，并且默认把实例集合声明成「只有本机」。
+	// 声明式同步会在打包中途摘掉已经登记的远端实例（pipeline-254d1615：
+	// 43.162.117.240 上的 agent-control-plane 在上传前被删掉，随后部署退回本机）。
+	// 平台打包只负责产物；实例归属仍以注册中心现有登记为准。服务仓库用
+	// REGISTER_CONTRACT=0 跳过这一步（本仓库 build.sh 与 agent-control-plane 都认这个开关）。
+	buildEnv := []string{"APP_VERSION=" + hash, "REGISTER_CONTRACT=0"}
 	if !platform.IsLocal() {
 		// 目标平台与本机不同：让服务的 build.sh 产出那一边的二进制（GOOS/GOARCH）。
 		buildEnv = append(buildEnv, "GOOS="+platform.OS, "GOARCH="+platform.Arch)
