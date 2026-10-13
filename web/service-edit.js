@@ -133,6 +133,7 @@ function fillForm(svc) {
   $('#svc-gracefulRestartMaxWaitMs').value = svc.gracefulRestartMaxWaitMs || '';
   $('#svc-supervise').checked = !!svc.supervise;
   $('#svc-intervalSec').value = Number(svc.intervalSec) > 0 ? svc.intervalSec : 30;
+  renderRuntimeEnvRows(svc.runtimeEnv);
   setMessage(svc.registered
     ? ''
     : '⚠ service_registry 未返回该服务（未登记 / 注册中心不可用）：已配置的仍可编辑，新建会被拒绝。');
@@ -185,6 +186,87 @@ function renderRuntimeDirHint() {
     '）：部署时按目标机器平台选 —— 远端优先用该平台的路径，没配才用部署通道里的 <远端家目录>/<serviceId>，最后才回落到默认。';
 }
 
+// 平台在启动时自己写的变量。这里再配同名键会被盖掉，所以保存时直接拒绝。
+const PLATFORM_ENV_KEYS = new Set(['SERVICE_PORT', 'PORT', 'APP_VERSION', 'DEPLOY_MACHINE', 'RUNTIME_DIR']);
+const RUNTIME_ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const MAX_RUNTIME_ENV = 64;
+const MAX_RUNTIME_ENV_VALUE = 8192;
+
+function renderRuntimeEnvRows(env) {
+  const box = $('#svc-runtime-env-rows');
+  if (!box) return;
+  box.replaceChildren();
+  const entries = Object.entries(env || {}).sort((a, b) => a[0].localeCompare(b[0]));
+  for (const [key, value] of entries) addRuntimeEnvRow(key, value);
+  renderRuntimeEnvHint();
+}
+
+function addRuntimeEnvRow(key, value) {
+  const box = $('#svc-runtime-env-rows');
+  const row = document.createElement('div');
+  row.className = 'env-row';
+  const keyInput = document.createElement('input');
+  keyInput.type = 'text';
+  keyInput.className = 'env-key';
+  keyInput.placeholder = '变量名，例如 LOG_LEVEL';
+  keyInput.spellcheck = false;
+  keyInput.setAttribute('aria-label', '变量名');
+  keyInput.value = key || '';
+  const valueInput = document.createElement('input');
+  valueInput.type = 'text';
+  valueInput.className = 'env-value';
+  valueInput.placeholder = '值';
+  valueInput.spellcheck = false;
+  valueInput.setAttribute('aria-label', '变量值');
+  valueInput.value = value ?? '';
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.className = 'btn btn--ghost btn--sm env-remove';
+  remove.textContent = '删除';
+  row.append(keyInput, valueInput, remove);
+  box.append(row);
+  return row;
+}
+
+function renderRuntimeEnvHint() {
+  const hint = $('#svc-runtime-env-hint');
+  if (!hint) return;
+  const n = document.querySelectorAll('#svc-runtime-env-rows .env-row').length;
+  hint.textContent = '启动时注入到目标机器的进程环境（本机部署与远端部署同一份）。' +
+    '平台另外固定写入 SERVICE_PORT、PORT、APP_VERSION、DEPLOY_MACHINE、RUNTIME_DIR，同名键以平台为准，不要在这里填。' +
+    '部署时间线只记录变量名，不记录值。' +
+    (n ? ' 当前 ' + n + ' 项。' : ' 不填则只注入平台变量。');
+}
+
+function collectRuntimeEnv() {
+  const rows = [...document.querySelectorAll('#svc-runtime-env-rows .env-row')];
+  const env = {};
+  const seen = new Set();
+  for (const row of rows) {
+    const key = row.querySelector('.env-key').value.trim();
+    const value = row.querySelector('.env-value').value;
+    if (!key && !String(value).trim()) continue;
+    if (!key) return { error: '运行时环境变量的名字不能为空' };
+    if (!RUNTIME_ENV_KEY.test(key)) {
+      return { error: `运行时环境变量 ${key} 无效：名字只能包含字母、数字和下划线，且不能以数字开头` };
+    }
+    if (PLATFORM_ENV_KEYS.has(key)) {
+      return { error: `运行时环境变量 ${key} 由平台在启动时注入，不能在这里配置` };
+    }
+    if (seen.has(key)) return { error: `运行时环境变量 ${key} 重复了` };
+    if (String(value).includes('\n') || String(value).includes('\r')) {
+      return { error: `运行时环境变量 ${key} 的值不能包含换行` };
+    }
+    if (String(value).length > MAX_RUNTIME_ENV_VALUE) {
+      return { error: `运行时环境变量 ${key} 的值过长（上限 ${MAX_RUNTIME_ENV_VALUE}）` };
+    }
+    seen.add(key);
+    env[key] = value;
+  }
+  if (seen.size > MAX_RUNTIME_ENV) return { error: `运行时环境变量最多 ${MAX_RUNTIME_ENV} 项` };
+  return { env };
+}
+
 function serviceFormBody() {
   const serviceID = $('#svc-serviceId').value.trim();
   const name = $('#svc-name').value.trim();
@@ -212,6 +294,8 @@ function serviceFormBody() {
   if (!Number.isInteger(intervalSec) || intervalSec < 2 || intervalSec > 86400) {
     return { error: '探活周期必须是 2..86400 的整数秒' };
   }
+  const collected = collectRuntimeEnv();
+  if (collected.error) return collected;
   const runtimeDirs = {};
   if ($('#svc-runtimeDir-darwin').value.trim()) runtimeDirs.darwin = $('#svc-runtimeDir-darwin').value.trim();
   if ($('#svc-runtimeDir-linux').value.trim()) runtimeDirs.linux = $('#svc-runtimeDir-linux').value.trim();
@@ -227,8 +311,29 @@ function serviceFormBody() {
       gracefulRestartMaxWaitMs: Number($('#svc-gracefulRestartMaxWaitMs').value) || 0,
       supervise: $('#svc-supervise').checked,
       intervalSec,
+      runtimeEnv: collected.env,
     },
   };
+}
+
+const runtimeEnvRows = $('#svc-runtime-env-rows');
+if (runtimeEnvRows) {
+  runtimeEnvRows.addEventListener('click', (e) => {
+    const btn = e.target.closest('.env-remove');
+    if (!btn) return;
+    btn.closest('.env-row').remove();
+    renderRuntimeEnvHint();
+  });
+  runtimeEnvRows.addEventListener('input', renderRuntimeEnvHint);
+}
+const runtimeEnvAdd = $('#svc-runtime-env-add');
+if (runtimeEnvAdd) {
+  runtimeEnvAdd.addEventListener('click', () => {
+    const row = addRuntimeEnvRow('', '');
+    renderRuntimeEnvHint();
+    const key = row.querySelector('.env-key');
+    if (key) key.focus();
+  });
 }
 
 for (const id of ['#svc-runtimeDir', '#svc-runtimeDir-darwin', '#svc-runtimeDir-linux']) {

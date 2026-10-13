@@ -77,14 +77,14 @@ service-registry :4240  ──pull(GET /v1/services)──▶  本控制面 :422
 
 响应里还带 `registry: {url, enabled, ok, services, error}`，面板顶部据此显示「在线 · N 个服务 / 拉取失败」，**拉取失败不会伪装成"没有服务"**。
 
-本机只存注册中心没有的部署参数：`runtimeDir` / `healthUrl` / `port`（服务端口） / `startCmd` / `stopCmd` / `restartCmd` / 可选 graceful 端点 / `defaultBranch` / `supervise`（本机 watchdog 是否探活并拉起） / `intervalSec`（watchdog 探活周期，默认 30 秒）。
+本机只存注册中心没有的部署参数：`runtimeDir` / `healthUrl` / `port`（服务端口） / `startCmd` / `stopCmd` / `restartCmd` / 可选 graceful 端点 / `defaultBranch` / `supervise`（本机 watchdog 是否探活并拉起） / `intervalSec`（watchdog 探活周期，默认 30 秒） / `runtimeEnv`（启动时额外注入的环境变量）。
 
 **字段归属（重要）**：
 
 | 归属 | 字段 | 本机能否改 |
 |---|---|---|
 | **service_registry（同步过来的信息）** | `serviceId`、`gitRepoUrl`、`version`、`owner`、`description`、`tags`、API 端点 | **不能改** |
-| 本控制面（部署参数） | `runtimeDir`、`healthUrl`、**`port`（服务端口）**、`startCmd`、`stopCmd`、`restartCmd`、`restartNotifyUrl`/`restartPollUrl`、`gracefulRestartMaxWaitMs`、`defaultBranch`、`name`（本机显示名）、`supervise`、`intervalSec`（探活周期） | 可配置 |
+| 本控制面（部署参数） | `runtimeDir`、`healthUrl`、**`port`（服务端口）**、`startCmd`、`stopCmd`、`restartCmd`、`restartNotifyUrl`/`restartPollUrl`、`gracefulRestartMaxWaitMs`、`defaultBranch`、`name`（本机显示名）、`supervise`、`intervalSec`（探活周期）、`runtimeEnv`（启动时额外注入的环境变量） | 可配置 |
 
 `gitRepoUrl` 尤其**不可在本机修改**：它只有一个来源 —— service_registry。
 
@@ -109,6 +109,14 @@ service-registry :4240  ──pull(GET /v1/services)──▶  本控制面 :422
 | `SERVICE_PORT` | 契约里的 `port`（**正式字段名**） |
 | `PORT` | 同一个值（兼容老脚本） |
 | `RUNTIME_DIR` | 该服务的 `runtimeDir` |
+| 契约 `runtimeEnv` 里的每一项 | 原样注入（见下） |
+
+契约还可以配 **`runtimeEnv`**（对象，键是变量名、值是字符串）：`startCmd` / `stopCmd` / `restartCmd` 执行时一并注入，本机与远端同一份。平台上表那些键**始终覆盖**同名的 `runtimeEnv`。
+
+- 不传 `runtimeEnv`：沿用库里已有的值。传 `{}`：清空（老契约没有这一列时就是空，行为与现在一样）。
+- 名字须匹配 `[A-Za-z_][A-Za-z0-9_]*`。`SERVICE_PORT` / `PORT` / `APP_VERSION` / `DEPLOY_MACHINE` / `RUNTIME_DIR` 不能写在这里（`PUT` → `400`）。值不能含换行，最多 64 项。
+- **部署时间线只记变量名、不记值**（值可能是密钥）。远端命令记在时间线上时，这些值显示成 `***`；真正执行的命令仍带原值。
+- 面板：配置页单独一个「运行时环境变量」区，可增删行。
 
 **进程约定**（平台据此 stop / 记 pid，业务方不用改 stop 文案）：
 
@@ -132,7 +140,8 @@ curl -sS -X PUT http://127.0.0.1:4220/api/services/web-cursor \
     "healthUrl": "http://127.0.0.1:4211/health",
     "startCmd": "bash scripts/start.sh",
     "stopCmd": "bash scripts/stop.sh",
-    "restartCmd": "bash scripts/restart.sh"
+    "restartCmd": "bash scripts/restart.sh",
+    "runtimeEnv": { "LOG_LEVEL": "info" }
   }'
 # gitRepoUrl 不在这里配置：它来自 service_registry，本机不能改（传了别的值 → 400）
 ```
@@ -308,16 +317,18 @@ macOS 上打的包（Mach-O）在 Linux 远端起不来，所以**打包时就�
 
 ### 配置服务页：字段按含义分区
 
-`/panel/service-edit.html?serviceId=…`（服务列表的「配置」按钮）不再是十几个字段平铺，而是按**字段含义**分成四个区（每区「小标题 + 一行说明 + 字段网格」，提示紧挨着它解释的字段）：
+`/panel/service-edit.html?serviceId=…`（服务列表的「配置」按钮）不再是十几个字段平铺，而是按**字段含义**分区（每区「小标题 + 一行说明 + 字段网格」，提示紧挨着它解释的字段）：
 
 | 分区 | 字段 | 含义 |
 |---|---|---|
-| ① 服务标识（来自 service_registry） | `serviceId`、`name`、`gitRepoUrl`、`defaultBranch` | 服务是谁、代码在哪；前两个与注册中心相关的字段只读 |
+| ① 服务标识（来自 service_registry） | `serviceId`、`name`、`gitRepoUrl`、`defaultBranch` | 服务是谁、代码在哪；与注册中心相关的字段只读 |
 | ② 运行目录（按目标机器平台选） | `runtimeDir` 默认 / macOS / Linux | 制品落到哪、`restartCmd` 在哪跑 |
 | ③ 服务接口（URL 只填路径） | `port`、健康检查路径、graceful 通知/轮询路径、最长等待 ms | 端口 + 探活/graceful 端点；host:port 部署时按目标机器拼 |
-| ④ 启停命令（在目标机器上执行） | `startCmd`、`stopCmd`、`restartCmd` | 部署时注入 `SERVICE_PORT` / `APP_VERSION` / `DEPLOY_MACHINE` / `RUNTIME_DIR` |
+| ④ 本机监督（agent-watchdog） | `supervise`、`intervalSec` | 本机 watchdog 是否探活并拉起，以及探活周期 |
+| ⑤ 启停命令（在目标机器上执行） | `startCmd`、`stopCmd`、`restartCmd` | 部署时注入平台变量，以及下一区的运行时环境变量 |
+| ⑥ 运行时环境变量（启动时注入） | `runtimeEnv` 键值行 | `start` / `stop` / `restart` 时额外注入；平台变量不在这里配 |
 
-「保存部署配置 / 返回服务列表」在所有分区之外（全页只有一组操作按钮）。控件 id 未变（`#svc-*`），分区容器是 `section.cfg#cfg-identity|cfg-runtimedir|cfg-endpoints|cfg-commands`；面板测试断言每个字段落在与含义相符的分区里、且全页只有一个控件（分组不是靠复制控件）。
+「保存部署配置 / 返回服务列表」在所有分区之外（全页只有一组操作按钮）。控件 id 未变（`#svc-*`），分区容器是 `section.cfg#cfg-identity|cfg-runtimedir|cfg-endpoints|cfg-supervise|cfg-commands|cfg-runtime-env`；面板测试断言每个字段落在与含义相符的分区里、且全页只有一个控件（分组不是靠复制控件）。
 
 ### 服务契约里的 URL：只填路径（host+port 部署时拼）
 
