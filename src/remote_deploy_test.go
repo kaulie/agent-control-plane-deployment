@@ -253,6 +253,40 @@ func TestExecuteDeployToRemoteMachine(t *testing.T) {
 	}
 }
 
+// 流水线按选定机器打好包之后，这台机器上的实例若被摘掉，部署必须失败在「没有实例」，
+// 不能退回本机再拿平台不符把原因盖掉（pipeline-254d1615）。
+func TestExecuteDeployDoesNotFallBackWhenRequestedMachineIsUnbound(t *testing.T) {
+	store, cfg, storage, _, tag, _ := newRemoteDeployFixture(t)
+	reg := fakeRegistry(t, `{
+	  "services":[{"namespace":"default","name":"web-cursor"}],
+	  "instances":[{"namespace":"default","service":"web-cursor","host":"127.0.0.1","port":4211}]
+	}`, true)
+	machines := NewMachineCatalog(cfg, reg)
+	if _, err := store.CreateDeploy("deploy-unbound", "web-cursor", tag, Identity{}, "queued", "10.0.0.7"); err != nil {
+		t.Fatalf("CreateDeploy: %v", err)
+	}
+	if _, err := store.ClaimNextQueued(); err != nil {
+		t.Fatalf("ClaimNextQueued: %v", err)
+	}
+	fake := &fakeRemote{remoteOS: "Linux", remoteArch: "x86_64"}
+	executeDeploy(store, cfg, storage, &GracefulDrain{}, machines, fake, "deploy-unbound")
+
+	job, err := store.GetDeploy("deploy-unbound")
+	if err != nil || job == nil {
+		t.Fatalf("GetDeploy: %v %v", job, err)
+	}
+	if job.State != StateFailed {
+		t.Fatalf("state = %s, want failed", job.State)
+	}
+	if !strings.Contains(job.Error, "没有服务") || !strings.Contains(job.Error, "web-cursor") || strings.Contains(job.Error, "制品平台与机器不符") {
+		t.Fatalf("error = %q, want the unbound-machine reason", job.Error)
+	}
+	_, pushes, _ := fake.calls()
+	if len(pushes) != 0 {
+		t.Fatalf("nothing may be pushed, got %v", pushes)
+	}
+}
+
 // 通道 restart= 点名了别的 systemd 单元时，不能拿去重启当前服务。
 // pipeline-81ec4250：knowledge-base 发到 agent-oversea，通道上写的是 autonomyd，
 // systemctl 成功返回后知识库根本没 start，探活 4360 失败。
