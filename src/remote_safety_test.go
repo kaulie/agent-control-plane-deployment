@@ -15,13 +15,17 @@ func TestRemoteRsyncKeepsTargetRuntimeState(t *testing.T) {
 	target := MachineTarget{ID: "43.162.117.240", Kind: "ssh", SSHHost: "agent-oversea", RuntimeHome: "/home/ubuntu/runtime"}
 	cmd := remoteRsyncCmd(target, "/tmp/pkg", "/home/ubuntu/runtime/autonomy", true)
 	// 关键豁免必须同时有 P（防删）与 --exclude（防覆盖）。
-	for _, keep := range []string{"backend/.env", "backend/data/", "data/", "logs/", "backend/server.log", "backend/runtime.pid", ".cache/", "Library/"} {
+	for _, keep := range []string{"backend/.env", "backend/data/", "/data/", "/logs/", "backend/server.log", "backend/runtime.pid", "/.cache/", "/Library/"} {
 		if !strings.Contains(cmd, "--filter='P "+keep+"'") {
 			t.Fatalf("rsync must protect %q from deletion:\n%s", keep, cmd)
 		}
 		if !strings.Contains(cmd, "--exclude='"+keep+"'") {
 			t.Fatalf("rsync must EXCLUDE %q from the transfer (P alone does not stop an overwrite):\n%s", keep, cmd)
 		}
+	}
+	// 未锚定的 logs/ 会把依赖包里的 logs 目录一起排除掉。
+	if strings.Contains(cmd, "--exclude='logs/'") || strings.Contains(cmd, "--exclude='data/'") {
+		t.Fatalf("preserve rules must be anchored at the runtime root:\n%s", cmd)
 	}
 	for _, flag := range []string{"--delete", "--partial", "--delay-updates", "--timeout=300", "ServerAliveInterval=60", "IPQoS=none", "agent-oversea:/home/ubuntu/runtime/autonomy/"} {
 		if !strings.Contains(cmd, flag) {

@@ -123,24 +123,28 @@ func (r sshRemoteRunner) HTTP(target MachineTarget, method, rawURL, body string,
 }
 
 // remotePreserved 是远端 runtime 里「属于那台机器、绝不能被本机覆盖」的路径。
+//
+// 没有斜杠的目录名（logs/、data/）会被 rsync 套到树的每一层。包里
+// node_modules/@opentelemetry/otlp-transformer/build/src/logs 因此没被传上去，
+// 远端 node 启动直接 MODULE_NOT_FOUND。runtime 根上的运行态用前导 / 锚住。
 var remotePreserved = []string{
 	"backend/.env",
 	"backend/data/",
 	"backend/runtime.pid",
 	"backend/server.log",
 	"backend/.watchdog-paused",
-	".env",
-	"data/",
-	"logs/",
-	"packages/",
+	"/.env",
+	"/data/",
+	"/logs/",
+	"/packages/",
 	"*.pid",
-	"upgrade-requests/",
-	// 运行时缓存，不是包内容。autonomy 的 start.sh 把 Node 依赖解到 .cache/，
+	"/upgrade-requests/",
+	// 运行时缓存，不是包内容。autonomy 的 start.sh 把 Node 依赖解到 runtime 根的 .cache/，
 	// 并约定 rsync --delete 不碰它（self-deploy 已经排除了 .cache/ 和 Library/）。
 	// 漏掉的话，下一次部署会在慢链路上枚举/删掉几万个 node_modules 文件，
-	// 还没开始传二进制就超时。
-	".cache/",
-	"Library/",
+	// 还没开始传二进制就超时。同样必须锚在根上，不能排除包里任意一层的 .cache/。
+	"/.cache/",
+	"/Library/",
 }
 
 // shellQuote 用单引号包住一段脚本/参数（内部的单引号按 POSIX 的转义写法处理）。
