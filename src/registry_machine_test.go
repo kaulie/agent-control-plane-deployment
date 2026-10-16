@@ -51,6 +51,39 @@ func TestRegisteredOSPrefersInstanceField(t *testing.T) {
 	}
 }
 
+func TestInstancePlatformFromOSAndArchFields(t *testing.T) {
+	linux := RegistryInstance{Host: "49.234.45.173", OS: "linux", Arch: "amd64"}
+	if got := InstancePlatform(linux).String(); got != "linux/amd64" {
+		t.Fatalf("os+arch = %q, want linux/amd64", got)
+	}
+	mac := RegistryInstance{Host: "127.0.0.1", OS: "mac", Arch: "arm64"}
+	if got := InstancePlatform(mac).String(); got != "darwin/arm64" {
+		t.Fatalf("mac+arm64 = %q, want darwin/arm64", got)
+	}
+	alias := RegistryInstance{OS: "Linux", Arch: "x86_64"}
+	if got := InstancePlatform(alias).String(); got != "linux/amd64" {
+		t.Fatalf("uname alias = %q, want linux/amd64", got)
+	}
+	// 只给 arch 时不要发明 os；metadata.platform 仍可用。
+	onlyArch := RegistryInstance{Arch: "amd64", Metadata: map[string]string{"platform": "linux/arm64"}}
+	if got := InstancePlatform(onlyArch).String(); got != "linux/arm64" {
+		t.Fatalf("arch without os = %q, want metadata linux/arm64", got)
+	}
+	// 顶层 os+arch 盖过 metadata.platform，避免两处不一致时仍按旧字段打包。
+	both := RegistryInstance{OS: "linux", Arch: "amd64", Metadata: map[string]string{"platform": "linux/arm64"}}
+	if got := InstancePlatform(both).String(); got != "linux/amd64" {
+		t.Fatalf("top-level fields = %q, want linux/amd64", got)
+	}
+	bad := RegistryInstance{OS: "linux", Arch: "sparc"}
+	if !InstancePlatform(bad).IsZero() {
+		t.Fatalf("invalid arch became %s", InstancePlatform(bad))
+	}
+	win := RegistryInstance{OS: "windows", Arch: "amd64"}
+	if !InstancePlatform(win).IsZero() {
+		t.Fatalf("windows is not a build platform, got %s", InstancePlatform(win))
+	}
+}
+
 func TestCatalogInstanceOSDoesNotInventBuildArch(t *testing.T) {
 	reg := fakeRegistry(t, `{
 	  "services":[{"namespace":"default","name":"agent-control-plane"}],
@@ -70,6 +103,25 @@ func TestCatalogInstanceOSDoesNotInventBuildArch(t *testing.T) {
 	}
 	if _, ok := cat.PlatformFor(t.Context(), "49.234.45.173"); ok {
 		t.Fatal("os=linux without arch must not be stored as a build platform")
+	}
+}
+
+func TestCatalogPlatformFromInstanceOSAndArch(t *testing.T) {
+	reg := fakeRegistry(t, `{
+	  "services":[{"namespace":"default","name":"agent-control-plane"}],
+	  "instances":[
+	    {"namespace":"default","service":"agent-control-plane","host":"127.0.0.1","port":4211,"os":"mac","arch":"arm64"},
+	    {"namespace":"default","service":"agent-control-plane","host":"49.234.45.173","port":4211,"os":"linux","arch":"amd64"}
+	  ]
+	}`, true)
+	cat := NewMachineCatalog(Config{DeployMachineTargets: map[string]MachineTarget{
+		"local": {ID: "local", Kind: "local"},
+	}}, reg)
+	if p, ok := cat.PlatformFor(t.Context(), "49.234.45.173"); !ok || p.String() != "linux/amd64" {
+		t.Fatalf("PlatformFor(linux host) = %s ok=%v", p, ok)
+	}
+	if p, ok := cat.PlatformFor(t.Context(), "local"); !ok || p.String() != "darwin/arm64" {
+		t.Fatalf("PlatformFor(local mac) = %s ok=%v", p, ok)
 	}
 }
 

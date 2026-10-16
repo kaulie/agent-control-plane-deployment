@@ -118,8 +118,9 @@ type RegistryInstance struct {
 	Host      string `json:"host"`
 	Port      int    `json:"port"`
 	// OS 是配置中心实例上的操作系统（linux / mac）。部署前用它判断该平台的 runtime 目录是否已配好。
-	// 它不是构建平台：没有架构，不能拿来代替 metadata.platform。
-	OS       string            `json:"os,omitempty"`
+	OS string `json:"os,omitempty"`
+	// Arch 是这台机器的 CPU 架构（amd64 / arm64 / 386 / arm）。和 OS 同时有值时才是构建平台。
+	Arch     string            `json:"arch,omitempty"`
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
@@ -189,8 +190,9 @@ type RegistryMachine struct {
 //
 //	id：`metadata.machine`（登记方给的友好名，如 gpu-2）优先，否则 host；
 //	    本机（loopback / localhost / 本机 hostname）统一成 local；
-//	平台：`metadata.platform`（如 linux/amd64），或 `metadata.os` + `metadata.arch`。
-//	实例顶层 os（linux / mac）只说明操作系统，见 RegistryInstance.RegisteredOS。
+//	平台：实例顶层 os + arch 都有值时用它们（mac → darwin）；否则回落
+//	    `metadata.platform`（如 linux/amd64），或 `metadata.os` + `metadata.arch`。
+//	只给 os、不给 arch 时不算构建平台，见 RegistryInstance.RegisteredOS。
 func MachineFromInstance(inst RegistryInstance) RegistryMachine {
 	out := RegistryMachine{ID: MachineIDForInstance(inst)}
 	out.Platform = InstancePlatform(inst)
@@ -198,7 +200,11 @@ func MachineFromInstance(inst RegistryInstance) RegistryMachine {
 }
 
 // InstancePlatform 读出实例登记的机器平台（没登记 → 零值）。
+// 顶层 os 与 arch 都有合法值时优先；缺一个就不要用本机 CPU 把另一个补上。
 func InstancePlatform(inst RegistryInstance) BuildPlatform {
+	if p, ok := platformFromRegisteredFields(inst.OS, inst.Arch); ok {
+		return p
+	}
 	meta := inst.Metadata
 	if len(meta) == 0 {
 		return BuildPlatform{}
@@ -230,6 +236,32 @@ func InstancePlatform(inst RegistryInstance) BuildPlatform {
 		return p
 	}
 	return BuildPlatform{}
+}
+
+// platformFromRegisteredFields 只用配置中心实例上的 os 与 arch。两者都齐才返回平台。
+func platformFromRegisteredFields(osName, arch string) (BuildPlatform, bool) {
+	osName = normalizeRuntimeOS(osName)
+	arch = normalizeRegisteredArch(arch)
+	if (osName != "linux" && osName != "darwin") || arch == "" {
+		return BuildPlatform{}, false
+	}
+	return BuildPlatform{OS: osName, Arch: arch}, true
+}
+
+// normalizeRegisteredArch 把登记的架构收成部署平台认得的四个值。认不出就当没登记。
+func normalizeRegisteredArch(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "amd64", "x86_64":
+		return "amd64"
+	case "arm64", "aarch64":
+		return "arm64"
+	case "386", "i386", "i686":
+		return "386"
+	case "arm", "armv7l":
+		return "arm"
+	default:
+		return ""
+	}
 }
 
 // RegisteredOS 是这台实例的操作系统（darwin / linux）。
