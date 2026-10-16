@@ -47,7 +47,7 @@
       <!-- ② 运行目录：部署落到哪台机器、哪个目录（按平台） -->
       <section class="cfg" id="cfg-runtimedir">
         <h3 class="cfg__title">运行目录<span class="cfg__note">按目标机器平台选</span></h3>
-        <p class="cfg__desc">部署把制品 rsync 到这里、在这里跑 restartCmd。默认给本机平台用；macOS / Linux 机器可以各配一份。</p>
+        <p class="cfg__desc">部署把制品 rsync 到这里、在这里跑 restartCmd。本机用默认目录。部署到 Linux 机器时，目录只认下面的 Linux 一项，要在发起部署前填好。</p>
         <div class="form-grid">
           <label>runtimeDir（默认：本机平台用）
             <input type="text" id="svc-runtimeDir" placeholder="/Users/gaolei/runtime/web-cursor" />
@@ -55,7 +55,7 @@
           <label>runtimeDir（macOS 机器，可选）
             <input type="text" id="svc-runtimeDir-darwin" placeholder="/Users/gaolei/runtime/web-cursor" />
           </label>
-          <label>runtimeDir（Linux 机器，可选）
+          <label>runtimeDir（Linux 机器，部署到 Linux 必填）
             <input type="text" id="svc-runtimeDir-linux" placeholder="/home/ubuntu/runtime/web-cursor" />
           </label>
           <p class="hint cfg__hint" id="svc-runtimeDir-hint"></p>

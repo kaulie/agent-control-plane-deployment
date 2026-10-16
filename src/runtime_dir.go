@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"runtime"
 	"strings"
@@ -52,15 +53,18 @@ func (c ServiceContract) RuntimeDirForOS(goos string) string {
 	return strings.TrimSpace(c.RuntimeDir)
 }
 
-// RuntimeDirForRemote 是**远端**部署时的目录优先级：
+// RuntimeDirForRemote 是**远端**部署时的目录。
 //
-//  1. 契约里该平台的显式配置（runtimeDirs.linux）—— 用户说的「分平台路径」；
-//  2. 部署通道约定的 <remote-runtime-home>/<serviceId>（那台机器自己的布局）；
-//  3. 契约默认 runtimeDir（最后兜底：只有契约没分平台、通道也没给家目录时才用）。
-//
-// 顺序有意如此：默认 runtimeDir 是「本机」语义的路径（/Users/...），直接拿去远端几乎一定是错的，
-// 所以先让机器自己的约定说了算，只有在没别的依据时才回落到它。
+// Linux：只认配置页上提前填好的 runtimeDirs.linux。通道的 <remote-home>/<serviceId>
+// 和本机默认 runtimeDir 都是隐含路径，不能拿去 Linux 机器。没配就返回空串，调用方拒绝部署。
+// 其它平台：该平台的显式路径优先，其次通道约定，最后才是默认 runtimeDir。
 func (c ServiceContract) RuntimeDirForRemote(goos, serviceID string, target MachineTarget) string {
+	if normalizeRuntimeOS(goos) == "linux" {
+		if dir, ok := c.PlatformRuntimeDir("linux"); ok {
+			return dir
+		}
+		return ""
+	}
 	if dir, ok := c.PlatformRuntimeDir(goos); ok {
 		return dir
 	}
@@ -68,6 +72,36 @@ func (c ServiceContract) RuntimeDirForRemote(goos, serviceID string, target Mach
 		return dir
 	}
 	return strings.TrimSpace(c.RuntimeDir)
+}
+
+// linuxRemoteRuntimeDirGate 在发起部署时拦住「已知是 Linux 远端、但配置页没填 Linux 目录」。
+// 平台还不知道（注册中心没登记）时放行，打包前的探测和部署预检会再查一次。
+func linuxRemoteRuntimeDirGate(ctx context.Context, cat *MachineCatalog, svc *ServiceContract, machine string) string {
+	if cat == nil || svc == nil {
+		return ""
+	}
+	if _, ok := svc.PlatformRuntimeDir("linux"); ok {
+		return ""
+	}
+	target, ok := cat.TargetForService(ctx, svc.ServiceID, machine)
+	if !ok || !target.Remote() {
+		return ""
+	}
+	p, ok := cat.PlatformFor(ctx, machine)
+	if !ok || normalizeRuntimeOS(p.OS) != "linux" {
+		return ""
+	}
+	return missingLinuxRuntimeDirError(svc.ServiceID)
+}
+
+// missingLinuxRuntimeDirError 告诉操作者去配置页填 Linux 目录。目录只认这一项。
+func missingLinuxRuntimeDirError(serviceID string) string {
+	id := strings.TrimSpace(serviceID)
+	if id == "" {
+		id = "该服务"
+	}
+	return "部署到 Linux 机器前，必须在部署配置页填好「runtimeDir（Linux 机器）」" +
+		"（/panel/service-edit.html?serviceId=" + id + "）。目录只认这一项"
 }
 
 // LocalRuntimeDir 是本机（控制面所在平台）上这个服务的 runtime 目录。

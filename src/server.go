@@ -747,6 +747,10 @@ func (s *apiServer) handleCreateDeploy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if msg := linuxRemoteRuntimeDirGate(r.Context(), s.machineCatalog(), svc, targetMachine); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
 	job, err := s.store.CreateDeploy(requestID, serviceID, deployment, by, "queued for deployment worker", targetMachine)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -905,6 +909,10 @@ func (s *apiServer) handleDeployNotify(w http.ResponseWriter, r *http.Request) {
 	targetMachine, err := s.machineCatalog().ValidateForService(r.Context(), serviceID, body.TargetMachine)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if msg := linuxRemoteRuntimeDirGate(r.Context(), s.machineCatalog(), svc, targetMachine); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
 	// Default: service defaultBranch (usually main) tip — latest code.

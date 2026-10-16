@@ -460,8 +460,7 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		return
 	}
 	// runtime 目录按**目标机器**的平台选：本机 = 控制面自己的 GOOS；远端 = 预检 probe 的
-	// uname。契约里 runtimeDirs{darwin,linux} 优先，没配这个平台就回落默认 runtimeDir；
-	// 远端再兜通道约定的 <remote-runtime-home>/<serviceId>。
+	// uname。Linux 远端只认配置页上的 runtimeDirs.linux，没有就拒绝。
 	remotePlatform := ""
 	remoteOS := ""
 	runtimeDir := ""
@@ -475,11 +474,12 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		remotePlatform = probe.platform
 		runtimeDir = service.RuntimeDirForRemote(probe.OS, job.ServiceID, target)
 		if runtimeDir == "" {
-			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
-				State: StateFailed,
-				Error: "no runtime dir for machine " + machine +
-					": set runtimeDir/runtimeDirs on the contract or a remote runtime home in the deploy channel",
-			})
+			msg := "no runtime dir for machine " + machine
+			if normalizeRuntimeOS(remoteOS) == "linux" {
+				msg = missingLinuxRuntimeDirError(job.ServiceID)
+			}
+			_ = store.AddDeployEvent(job.RequestID, eventlevel.Error, msg)
+			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{State: StateFailed, Error: msg})
 			return
 		}
 	} else {

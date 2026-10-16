@@ -155,11 +155,13 @@ func newRemoteDeployFixture(t *testing.T) (*Store, Config, ArtifactStorage, *Mac
 	svc := ServiceContract{
 		ServiceID:  "web-cursor",
 		RuntimeDir: filepath.Join(dir, "runtime-web-cursor"),
-		HealthURL:  "http://127.0.0.1:4211/health",
-		Port:       4211,
-		StartCmd:   "true",
-		StopCmd:    "true",
-		RestartCmd: "bash scripts/restart.sh",
+		// Linux 远端只认配置页上的这一项（通道家目录不再隐含成部署目录）。
+		RuntimeDirs: map[string]string{"linux": "/home/ubuntu/runtime/web-cursor"},
+		HealthURL:   "http://127.0.0.1:4211/health",
+		Port:        4211,
+		StartCmd:    "true",
+		StopCmd:     "true",
+		RestartCmd:  "bash scripts/restart.sh",
 		// graceful：远端部署时这两条要在远端问。
 		RestartNotifyURL: "http://127.0.0.1:4211/api/ops/restart-notify",
 		RestartPollURL:   "http://127.0.0.1:4211/api/ops/restart-status",
@@ -628,10 +630,42 @@ func TestExecuteDeployPlatformStopAndRecordsPid(t *testing.T) {
 	}
 }
 
+func TestExecuteDeployRejectsLinuxWithoutExplicitRuntimeDir(t *testing.T) {
+	store, cfg, storage, machines, tag, _ := newRemoteDeployFixture(t)
+	svc, err := store.GetService("web-cursor")
+	if err != nil || svc == nil {
+		t.Fatalf("GetService: %v %v", svc, err)
+	}
+	svc.RuntimeDirs = nil
+	if _, err := store.UpsertService(*svc); err != nil {
+		t.Fatalf("UpsertService: %v", err)
+	}
+	if _, err := store.CreateDeploy("deploy-nolinuxdir", "web-cursor", tag, Identity{}, "queued", "10.0.0.7"); err != nil {
+		t.Fatalf("CreateDeploy: %v", err)
+	}
+	if _, err := store.ClaimNextQueued(); err != nil {
+		t.Fatalf("ClaimNextQueued: %v", err)
+	}
+	fake := &fakeRemote{remoteOS: "Linux", remoteArch: "x86_64"}
+	executeDeploy(store, cfg, storage, &GracefulDrain{}, machines, fake, "deploy-nolinuxdir")
+
+	job, _ := store.GetDeploy("deploy-nolinuxdir")
+	if job == nil || job.State != StateFailed {
+		t.Fatalf("deploy = %+v, want failed", job)
+	}
+	if !strings.Contains(job.Error, "runtimeDir（Linux 机器）") || !strings.Contains(job.Error, "service-edit.html") {
+		t.Fatalf("error = %q, want the config-page hint", job.Error)
+	}
+	_, pushes, _ := fake.calls()
+	if len(pushes) != 0 {
+		t.Fatalf("nothing may be pushed without an explicit linux dir, got %v", pushes)
+	}
+}
+
 func TestRejectRemoteRuntimeDirBlocksMacPathOnLinux(t *testing.T) {
 	macPath := "/Users/gaolei/runtime/agent-control-plane-deployment/agent-control-plane"
 	msg := rejectRemoteRuntimeDir(macPath, "Linux")
-	if msg == "" || !strings.Contains(msg, "/Users") || !strings.Contains(msg, "runtimeDirs.linux") || !strings.Contains(msg, "runtimeHome") {
+	if msg == "" || !strings.Contains(msg, "/Users") || !strings.Contains(msg, "runtimeDir（Linux 机器）") {
 		t.Fatalf("linux + /Users must be rejected with a fix hint, got %q", msg)
 	}
 	if got := rejectRemoteRuntimeDir("/home/ubuntu/runtime/agent-control-plane", "linux"); got != "" {
