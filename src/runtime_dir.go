@@ -74,24 +74,45 @@ func (c ServiceContract) RuntimeDirForRemote(goos, serviceID string, target Mach
 	return strings.TrimSpace(c.RuntimeDir)
 }
 
-// linuxRemoteRuntimeDirGate 在发起部署时拦住「已知是 Linux 远端、但配置页没填 Linux 目录」。
-// 平台还不知道（注册中心没登记）时放行，打包前的探测和部署预检会再查一次。
-func linuxRemoteRuntimeDirGate(ctx context.Context, cat *MachineCatalog, svc *ServiceContract, machine string) string {
+// runtimeDirReadyGate 在部署开始前，按配置中心实例的 os 判断目录是否已经配完整。
+// os=linux 只认配置页上的绝对路径「runtimeDir（Linux 机器）」；os=mac 认本机/macOS 目录。
+// 实例没有 os（老注册中心）时不在这里拦，打包前的探测和部署预检再查。
+func runtimeDirReadyGate(ctx context.Context, cat *MachineCatalog, svc *ServiceContract, machine string) string {
 	if cat == nil || svc == nil {
 		return ""
 	}
-	if _, ok := svc.PlatformRuntimeDir("linux"); ok {
+	osName, ok := cat.InstanceOS(ctx, svc.ServiceID, machine)
+	if !ok {
 		return ""
 	}
-	target, ok := cat.TargetForService(ctx, svc.ServiceID, machine)
-	if !ok || !target.Remote() {
+	return runtimeDirGap(svc, osName)
+}
+
+// runtimeDirGap 是某个 OS 还缺的目录说明。目录完整 = 该 OS 对应的配置是绝对路径。
+func runtimeDirGap(svc *ServiceContract, osName string) string {
+	if svc == nil {
 		return ""
 	}
-	p, ok := cat.PlatformFor(ctx, machine)
-	if !ok || normalizeRuntimeOS(p.OS) != "linux" {
+	switch normalizeRuntimeOS(osName) {
+	case "linux":
+		if dir, ok := svc.PlatformRuntimeDir("linux"); ok && absoluteRuntimeDir(dir) {
+			return ""
+		}
+		return missingLinuxRuntimeDirError(svc.ServiceID)
+	case "darwin":
+		if absoluteRuntimeDir(svc.RuntimeDirForOS("darwin")) {
+			return ""
+		}
+		return missingDarwinRuntimeDirError(svc.ServiceID)
+	default:
 		return ""
 	}
-	return missingLinuxRuntimeDirError(svc.ServiceID)
+}
+
+// absoluteRuntimeDir 判断目录是不是绝对路径（完整，能直接落到目标机器上）。
+func absoluteRuntimeDir(dir string) bool {
+	dir = strings.TrimSpace(dir)
+	return strings.HasPrefix(dir, "/") || strings.HasPrefix(dir, "~")
 }
 
 // missingLinuxRuntimeDirError 告诉操作者去配置页填 Linux 目录。目录只认这一项。
@@ -100,8 +121,17 @@ func missingLinuxRuntimeDirError(serviceID string) string {
 	if id == "" {
 		id = "该服务"
 	}
-	return "部署到 Linux 机器前，必须在部署配置页填好「runtimeDir（Linux 机器）」" +
-		"（/panel/service-edit.html?serviceId=" + id + "）。目录只认这一项"
+	return "部署到 Linux 机器前，必须在部署配置页填好「runtimeDir（Linux 机器）」为绝对路径" +
+		"（/panel/service-edit.html?serviceId=" + id + "）。目录只认实例 OS 对应的这一项"
+}
+
+func missingDarwinRuntimeDirError(serviceID string) string {
+	id := strings.TrimSpace(serviceID)
+	if id == "" {
+		id = "该服务"
+	}
+	return "部署到 macOS 机器前，必须在部署配置页填好「runtimeDir（默认：本机平台用）」或「runtimeDir（macOS 机器）」为绝对路径" +
+		"（/panel/service-edit.html?serviceId=" + id + "）"
 }
 
 // LocalRuntimeDir 是本机（控制面所在平台）上这个服务的 runtime 目录。

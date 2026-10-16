@@ -29,6 +29,50 @@ func TestInstancePlatformFromRegistryMetadata(t *testing.T) {
 	}
 }
 
+func TestRegisteredOSPrefersInstanceField(t *testing.T) {
+	linuxOnly := RegistryInstance{Host: "49.234.45.173", OS: "linux"}
+	if osName, ok := linuxOnly.RegisteredOS(); !ok || osName != "linux" {
+		t.Fatalf("top-level os=linux → %q ok=%v", osName, ok)
+	}
+	if !InstancePlatform(linuxOnly).IsZero() {
+		t.Fatal("os without arch must not become a build platform")
+	}
+	mac := RegistryInstance{Host: "127.0.0.1", OS: "mac"}
+	if osName, ok := mac.RegisteredOS(); !ok || osName != "darwin" {
+		t.Fatalf("top-level os=mac → %q ok=%v, want darwin", osName, ok)
+	}
+	// 老实例没有顶层 os 时，仍认 metadata.platform 里的 OS。
+	legacy := RegistryInstance{Host: "10.0.0.7", Metadata: map[string]string{"platform": "linux/amd64"}}
+	if osName, ok := legacy.RegisteredOS(); !ok || osName != "linux" {
+		t.Fatalf("metadata.platform fallback = %q ok=%v", osName, ok)
+	}
+	if InstancePlatform(legacy).String() != "linux/amd64" {
+		t.Fatalf("build platform = %s, want linux/amd64", InstancePlatform(legacy))
+	}
+}
+
+func TestCatalogInstanceOSDoesNotInventBuildArch(t *testing.T) {
+	reg := fakeRegistry(t, `{
+	  "services":[{"namespace":"default","name":"agent-control-plane"}],
+	  "instances":[
+	    {"namespace":"default","service":"agent-control-plane","host":"127.0.0.1","port":4211,"os":"mac"},
+	    {"namespace":"default","service":"agent-control-plane","host":"49.234.45.173","port":4211,"os":"linux"}
+	  ]
+	}`, true)
+	cat := NewMachineCatalog(Config{DeployMachineTargets: map[string]MachineTarget{
+		"local": {ID: "local", Kind: "local"},
+	}}, reg)
+	if osName, ok := cat.InstanceOS(t.Context(), "agent-control-plane", "49.234.45.173"); !ok || osName != "linux" {
+		t.Fatalf("InstanceOS(linux host) = %q ok=%v", osName, ok)
+	}
+	if osName, ok := cat.InstanceOS(t.Context(), "agent-control-plane", "local"); !ok || osName != "darwin" {
+		t.Fatalf("InstanceOS(local mac) = %q ok=%v", osName, ok)
+	}
+	if _, ok := cat.PlatformFor(t.Context(), "49.234.45.173"); ok {
+		t.Fatal("os=linux without arch must not be stored as a build platform")
+	}
+}
+
 func TestMachineFromInstanceUsesMachineAndPlatformFields(t *testing.T) {
 	inst := RegistryInstance{
 		Service: "autonomy", Host: "43.162.117.240", Port: 4300,

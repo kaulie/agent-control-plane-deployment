@@ -747,7 +747,7 @@ func (s *apiServer) handleCreateDeploy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if msg := linuxRemoteRuntimeDirGate(r.Context(), s.machineCatalog(), svc, targetMachine); msg != "" {
+	if msg := runtimeDirReadyGate(r.Context(), s.machineCatalog(), svc, targetMachine); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
@@ -911,7 +911,7 @@ func (s *apiServer) handleDeployNotify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if msg := linuxRemoteRuntimeDirGate(r.Context(), s.machineCatalog(), svc, targetMachine); msg != "" {
+	if msg := runtimeDirReadyGate(r.Context(), s.machineCatalog(), svc, targetMachine); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}

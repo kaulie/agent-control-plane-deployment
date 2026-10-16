@@ -113,11 +113,14 @@ type registryListBody struct {
 // RegistryInstance is one service instance of the registry (only the fields that
 // say *which machine it runs on* matter here).
 type RegistryInstance struct {
-	Namespace string            `json:"namespace"`
-	Service   string            `json:"service"`
-	Host      string            `json:"host"`
-	Port      int               `json:"port"`
-	Metadata  map[string]string `json:"metadata,omitempty"`
+	Namespace string `json:"namespace"`
+	Service   string `json:"service"`
+	Host      string `json:"host"`
+	Port      int    `json:"port"`
+	// OS 是配置中心实例上的操作系统（linux / mac）。部署前用它判断该平台的 runtime 目录是否已配好。
+	// 它不是构建平台：没有架构，不能拿来代替 metadata.platform。
+	OS       string            `json:"os,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 // registrySnapshotBody mirrors service-registry's GET /v1/snapshot envelope: the
@@ -187,6 +190,7 @@ type RegistryMachine struct {
 //	id：`metadata.machine`（登记方给的友好名，如 gpu-2）优先，否则 host；
 //	    本机（loopback / localhost / 本机 hostname）统一成 local；
 //	平台：`metadata.platform`（如 linux/amd64），或 `metadata.os` + `metadata.arch`。
+//	实例顶层 os（linux / mac）只说明操作系统，见 RegistryInstance.RegisteredOS。
 func MachineFromInstance(inst RegistryInstance) RegistryMachine {
 	out := RegistryMachine{ID: MachineIDForInstance(inst)}
 	out.Platform = InstancePlatform(inst)
@@ -226,6 +230,20 @@ func InstancePlatform(inst RegistryInstance) BuildPlatform {
 		return p
 	}
 	return BuildPlatform{}
+}
+
+// RegisteredOS 是这台实例的操作系统（darwin / linux）。
+// 配置中心的顶层 os（mac / linux）优先；老数据没有该字段时，回落到 metadata.platform 里的 OS。
+func (inst RegistryInstance) RegisteredOS() (string, bool) {
+	if osName := normalizeRuntimeOS(inst.OS); osName == "linux" || osName == "darwin" {
+		return osName, true
+	}
+	if p := InstancePlatform(inst); !p.IsZero() {
+		if osName := normalizeRuntimeOS(p.OS); osName == "linux" || osName == "darwin" {
+			return osName, true
+		}
+	}
+	return "", false
 }
 
 // SnapshotMachines 返回注册中心里已知的机器（含各自登记的平台）。
