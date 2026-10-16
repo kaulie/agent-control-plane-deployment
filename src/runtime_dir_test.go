@@ -48,16 +48,21 @@ func TestRuntimeDirForRemotePrecedence(t *testing.T) {
 	if got := svc.RuntimeDirForRemote("linux", "web-cursor", target); got != "/opt/web-cursor" {
 		t.Fatalf("explicit linux dir must win, got %q", got)
 	}
-	// ② 没配该平台 → 用部署通道约定的 <remote-home>/<serviceId>
+	// Linux 没配 runtimeDirs.linux → 空。通道家目录和本机默认路径都不能拿去 Linux。
 	svc = ServiceContract{RuntimeDir: localDefault}
-	if got := svc.RuntimeDirForRemote("linux", "web-cursor", target); got != "/home/ubuntu/runtime/web-cursor" {
-		t.Fatalf("channel convention must be used, got %q", got)
+	if got := svc.RuntimeDirForRemote("linux", "web-cursor", target); got != "" {
+		t.Fatalf("linux without an explicit dir = %q, want empty", got)
 	}
-	// ③ 通道也没给家目录 → 最后才回落默认（本机语义的路径，文档里说明这是兜底）
-	svc = ServiceContract{RuntimeDir: localDefault}
 	bare := MachineTarget{ID: "x", Kind: "ssh", SSHHost: "x"}
-	if got := svc.RuntimeDirForRemote("linux", "web-cursor", bare); got != localDefault {
-		t.Fatalf("last resort = %q, want the default", got)
+	if got := svc.RuntimeDirForRemote("linux", "web-cursor", bare); got != "" {
+		t.Fatalf("linux last-resort default = %q, want empty", got)
+	}
+	// 非 Linux 远端仍可用通道约定，再回落默认。
+	if got := svc.RuntimeDirForRemote("darwin", "web-cursor", target); got != "/home/ubuntu/runtime/web-cursor" {
+		t.Fatalf("darwin channel convention = %q", got)
+	}
+	if got := svc.RuntimeDirForRemote("darwin", "web-cursor", bare); got != localDefault {
+		t.Fatalf("darwin last resort = %q, want the default", got)
 	}
 }
 
@@ -126,5 +131,46 @@ func TestRuntimeDirsColumnMigration(t *testing.T) {
 	}
 	if got := svc.RuntimeDirForOS("linux"); got != "/Users/gaolei/runtime/web-cursor" {
 		t.Fatalf("without a per-OS entry the default is used, got %q", got)
+	}
+}
+
+func TestDeployNotifyRequiresExplicitLinuxRuntimeDir(t *testing.T) {
+	srv, store := newTestIdentityServer(t, true)
+	reg := fakeRegistry(t, `{
+	  "services":[{"namespace":"default","name":"web-cursor"}],
+	  "instances":[
+	    {"namespace":"default","service":"web-cursor","host":"127.0.0.1","port":4211},
+	    {"namespace":"default","service":"web-cursor","host":"10.0.0.7","port":4211,"metadata":{"platform":"linux/amd64"}}
+	  ]
+	}`, true)
+	srv.cfg.DeployMachineTargets = map[string]MachineTarget{
+		"local":    {ID: "local", Kind: "local"},
+		"10.0.0.7": {ID: "10.0.0.7", Kind: "ssh", SSHUser: "ubuntu", SSHHost: "10.0.0.7", RuntimeHome: "/home/ubuntu/runtime"},
+	}
+	srv.registry = reg
+	srv.machines = NewMachineCatalog(srv.cfg, reg)
+	hdr := map[string]string{"identity_role": "user", "identity_id": "user_001"}
+
+	rec := postJSON(t, srv, "/api/deploy-notify", `{"serviceId":"web-cursor","targetMachine":"10.0.0.7"}`, hdr)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "runtimeDir（Linux 机器）") {
+		t.Fatalf("linux deploy without the config-page dir must be 400, status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = postJSON(t, srv, "/api/deploy-notify", `{"serviceId":"web-cursor","targetMachine":"local"}`, hdr)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("local deploy keeps the default runtimeDir, status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	svc, err := store.GetService("web-cursor")
+	if err != nil || svc == nil {
+		t.Fatalf("GetService: %v %v", svc, err)
+	}
+	svc.RuntimeDirs = map[string]string{"linux": "/opt/web-cursor"}
+	if _, err := store.UpsertService(*svc); err != nil {
+		t.Fatalf("UpsertService: %v", err)
+	}
+	rec = postJSON(t, srv, "/api/deploy-notify", `{"serviceId":"web-cursor","targetMachine":"10.0.0.7"}`, hdr)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("explicit linux dir must be accepted, status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }

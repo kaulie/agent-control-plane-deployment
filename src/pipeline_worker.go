@@ -116,6 +116,39 @@ func (w *PipelineWorker) platformFor(job *PipelineJob) BuildPlatform {
 	return p
 }
 
+// missingExplicitLinuxRuntimeDir 在打包之前确认 Linux 远端的目录已经写在配置页上。
+// 注册中心登记了平台就直接看；没登记则 ssh 探测（结果会被后续打包复用）。
+func (w *PipelineWorker) missingExplicitLinuxRuntimeDir(job *PipelineJob, svc *ServiceContract) string {
+	if svc == nil {
+		return ""
+	}
+	if _, ok := svc.PlatformRuntimeDir("linux"); ok {
+		return ""
+	}
+	machine := strings.TrimSpace(job.TargetMachine)
+	if machine == "" {
+		machine = w.machinesDefault()
+	}
+	target, ok := w.machineTarget(job, machine)
+	if !ok || !target.Remote() {
+		return ""
+	}
+	osName := ""
+	if w.machines != nil {
+		if p, known := w.machines.PlatformFor(context.Background(), machine); known {
+			osName = p.OS
+		}
+	}
+	if osName == "" && w.platforms != nil {
+		p, _ := w.platforms.Resolve(target)
+		osName = p.OS
+	}
+	if normalizeRuntimeOS(osName) != "linux" {
+		return ""
+	}
+	return missingLinuxRuntimeDirError(svc.ServiceID)
+}
+
 func (w *PipelineWorker) machineTarget(job *PipelineJob, machine string) (MachineTarget, bool) {
 	if w.machines == nil {
 		return MachineTarget{}, false
@@ -171,6 +204,11 @@ func (w *PipelineWorker) execute(job *PipelineJob) {
 		failPipeline(w.store, job.RequestID,
 			"service has no gitRepoUrl: register one in service_registry（gitRepoUrl 只能由注册中心登记，"+
 				"本机不能设置）")
+		return
+	}
+
+	if msg := w.missingExplicitLinuxRuntimeDir(job, svc); msg != "" {
+		failPipeline(w.store, job.RequestID, msg)
 		return
 	}
 

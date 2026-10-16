@@ -165,8 +165,7 @@ async function loadService() {
 }
 
 
-// runtimeDir 分平台：默认（本机）+ macOS / Linux 各自的路径。部署时按**目标机器**的平台选，
-// 远端的优先级是「该平台的路径 > 部署通道约定的 <remote-home>/<serviceId> > 默认」。
+// runtimeDir 分平台：默认给本机。Linux 机器只认配置页上的 Linux 目录，没填不能部署。
 function runtimeDirForPlatform(os) {
   const map = { darwin: '#svc-runtimeDir-darwin', linux: '#svc-runtimeDir-linux' };
   const v = $(map[os]) ? $(map[os]).value.trim() : '';
@@ -182,8 +181,8 @@ function renderRuntimeDirHint() {
     const v = runtimeDirForPlatform(os);
     if (v) parts.push(v);
   }
-  hint.textContent = 'runtimeDir 可按平台分开配（' + parts.join(' · ') +
-    '）：部署时按目标机器平台选 —— 远端优先用该平台的路径，没配才用部署通道里的 <远端家目录>/<serviceId>，最后才回落到默认。';
+  hint.textContent = 'runtimeDir 按平台分开配（' + parts.join(' · ') +
+    '）。本机用默认目录。部署到 Linux 机器必须先填「runtimeDir（Linux 机器）」，目录只认这一项；没填则拒绝部署。';
 }
 
 // 平台在启动时自己写的变量。这里再配同名键会被盖掉，所以保存时直接拒绝。

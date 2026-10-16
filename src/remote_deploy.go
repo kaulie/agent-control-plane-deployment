@@ -60,7 +60,7 @@ func remoteProbe(store *Store, job DeployJob, target MachineTarget, remote Remot
 //
 //	mkdir: cannot create directory '/Users': Permission denied
 //
-// 那条信息看不出该改契约的 runtimeDirs.linux，还是改机器的 runtimeHome。
+// 配置页上的 Linux 目录如果写成了 /Users/...，同样在 mkdir 之前拒绝。
 func rejectRemoteRuntimeDir(runtimeDir, remoteOS string) string {
 	dir := strings.TrimSpace(runtimeDir)
 	if dir == "" {
@@ -75,9 +75,7 @@ func rejectRemoteRuntimeDir(runtimeDir, remoteOS string) string {
 	}
 	return "remote runtime dir " + dir + " is a macOS path (/Users/...) and cannot be created on linux " +
 		"(mkdir: cannot create directory '/Users': Permission denied). " +
-		"Set runtimeDirs.linux on the service, or set this machine's remote runtime home " +
-		"(service_registry metadata.runtimeHome, or machine-targets `ssh <host> <remote-home>`) " +
-		"to a directory on that host, for example /home/ubuntu/runtime/<serviceId>"
+		"在部署配置页把「runtimeDir（Linux 机器）」改成这台 Linux 主机上的目录"
 }
 
 // remoteDirCheck 是第二段：目标 runtime 目录存在且像这个服务（没有 scripts/restart.sh 就
