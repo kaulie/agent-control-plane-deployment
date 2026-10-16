@@ -473,11 +473,13 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		remoteOS = probe.OS
 		remotePlatform = probe.platform
 		runtimeDir = service.RuntimeDirForRemote(probe.OS, job.ServiceID, target)
+		if msg := runtimeDirGap(service, remoteOS); msg != "" {
+			_ = store.AddDeployEvent(job.RequestID, eventlevel.Error, msg)
+			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{State: StateFailed, Error: msg})
+			return
+		}
 		if runtimeDir == "" {
 			msg := "no runtime dir for machine " + machine
-			if normalizeRuntimeOS(remoteOS) == "linux" {
-				msg = missingLinuxRuntimeDirError(job.ServiceID)
-			}
 			_ = store.AddDeployEvent(job.RequestID, eventlevel.Error, msg)
 			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{State: StateFailed, Error: msg})
 			return

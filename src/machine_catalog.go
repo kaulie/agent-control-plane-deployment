@@ -57,6 +57,19 @@ func NewMachineCatalog(cfg Config, registry *ServiceRegistry) *MachineCatalog {
 		platforms: map[string]BuildPlatform{}}
 }
 
+// InstanceOS 返回这个服务在这台机器上的实例 OS（darwin / linux）。
+// 来自配置中心实例的 os 字段；没有该字段时回落到 metadata.platform 的 OS。
+func (c *MachineCatalog) InstanceOS(ctx context.Context, serviceID, machineID string) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.refresh(ctx)
+	inst, ok := c.serviceInstances[strings.TrimSpace(serviceID)][strings.TrimSpace(machineID)]
+	if !ok {
+		return "", false
+	}
+	return inst.RegisteredOS()
+}
+
 // PlatformFor 返回注册中心给这台机器登记的平台（ok=false = 注册中心没登记/不知道这台机器）。
 func (c *MachineCatalog) PlatformFor(ctx context.Context, id string) (BuildPlatform, bool) {
 	c.mu.Lock()

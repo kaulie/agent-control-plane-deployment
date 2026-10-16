@@ -174,3 +174,53 @@ func TestDeployNotifyRequiresExplicitLinuxRuntimeDir(t *testing.T) {
 		t.Fatalf("explicit linux dir must be accepted, status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestDeployNotifyUsesInstanceOSField(t *testing.T) {
+	srv, store := newTestIdentityServer(t, true)
+	reg := fakeRegistry(t, `{
+	  "services":[{"namespace":"default","name":"web-cursor"}],
+	  "instances":[
+	    {"namespace":"default","service":"web-cursor","host":"127.0.0.1","port":4211,"os":"mac"},
+	    {"namespace":"default","service":"web-cursor","host":"49.234.45.173","port":4211,"os":"linux"}
+	  ]
+	}`, true)
+	srv.cfg.DeployMachineTargets = map[string]MachineTarget{
+		"local":         {ID: "local", Kind: "local"},
+		"49.234.45.173": {ID: "49.234.45.173", Kind: "ssh", SSHUser: "ubuntu", SSHHost: "49.234.45.173", RuntimeHome: "/home/ubuntu/runtime"},
+	}
+	srv.registry = reg
+	srv.machines = NewMachineCatalog(srv.cfg, reg)
+	hdr := map[string]string{"identity_role": "user", "identity_id": "user_001"}
+
+	rec := postJSON(t, srv, "/api/deploy-notify", `{"serviceId":"web-cursor","targetMachine":"49.234.45.173"}`, hdr)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "runtimeDir（Linux 机器）") {
+		t.Fatalf("os=linux without a linux dir must be 400, status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	svc, err := store.GetService("web-cursor")
+	if err != nil || svc == nil {
+		t.Fatalf("GetService: %v %v", svc, err)
+	}
+	svc.RuntimeDirs = map[string]string{"linux": "runtime/web-cursor"}
+	if _, err := store.UpsertService(*svc); err != nil {
+		t.Fatalf("UpsertService: %v", err)
+	}
+	rec = postJSON(t, srv, "/api/deploy-notify", `{"serviceId":"web-cursor","targetMachine":"49.234.45.173"}`, hdr)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "绝对路径") {
+		t.Fatalf("a relative linux dir is not complete, status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	svc.RuntimeDirs = map[string]string{"linux": "/home/ubuntu/runtime/web-cursor"}
+	if _, err := store.UpsertService(*svc); err != nil {
+		t.Fatalf("UpsertService: %v", err)
+	}
+	rec = postJSON(t, srv, "/api/deploy-notify", `{"serviceId":"web-cursor","targetMachine":"49.234.45.173"}`, hdr)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("absolute linux dir must be accepted, status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = postJSON(t, srv, "/api/deploy-notify", `{"serviceId":"web-cursor","targetMachine":"local"}`, hdr)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("os=mac with an absolute default runtimeDir must be accepted, status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}

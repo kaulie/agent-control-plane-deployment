@@ -307,7 +307,7 @@ macOS 上打的包（Mach-O）在 Linux 远端起不来，所以**打包时就�
 ```
 
 - **部署时按目标机器的平台选**：本机 = 控制面自己的 `GOOS`；远端 = 预检 probe 出来的 `uname -s`（键名归一：`macOS`/`mac` → `darwin`）。
-- **Linux 远端**：目录只认配置页上的 `runtimeDirs.linux`（「runtimeDir（Linux 机器）」）。没填就拒绝部署（已知平台时在触发接口拒绝，否则在打包前 / 部署预检拒绝）。通道的 `<remote-runtime-home>/<serviceId>` 和本机默认 `runtimeDir` 都不拿去 Linux。
+- **按实例 OS 判断目录是否完整**（配置中心实例的顶层 `os`：`linux` / `mac`；没有该字段时回落到 `metadata.platform` 里的 OS）：`linux` 只认配置页上的绝对路径 `runtimeDirs.linux`；`mac` 认默认目录或 `runtimeDirs.darwin`。不完整就在触发接口拒绝。OS 还不知道时，在打包前探测或部署预检再查。通道的 `<remote-runtime-home>/<serviceId>` 和本机默认 `runtimeDir` 都不拿去 Linux。`os` 不含架构，构建平台仍只认 `metadata.platform`。
 - **其它远端平台**：该平台的显式路径优先，其次是部署通道约定的 `<remote-runtime-home>/<serviceId>`，最后才是默认 `runtimeDir`。
 - 选定后的目录会用于：制品 rsync 落点、`VERSION`/`DEPLOYMENT` 标记、`restartCmd` 的工作目录、注入的 `RUNTIME_DIR`/`SERVICE_PORT`、watchdog 暂停标记（本机），以及部署并发单元（同一目录不并发）。
 - **面板**：配置页「运行目录」区里有三个字段 —— `runtimeDir（默认：本机平台用）`、`runtimeDir（macOS 机器，可选）`、`runtimeDir（Linux 机器，部署到 Linux 必填）`，下面一行说明当前生效的组合。

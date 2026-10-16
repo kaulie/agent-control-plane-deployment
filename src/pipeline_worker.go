@@ -116,18 +116,20 @@ func (w *PipelineWorker) platformFor(job *PipelineJob) BuildPlatform {
 	return p
 }
 
-// missingExplicitLinuxRuntimeDir 在打包之前确认 Linux 远端的目录已经写在配置页上。
-// 注册中心登记了平台就直接看；没登记则 ssh 探测（结果会被后续打包复用）。
+// missingExplicitLinuxRuntimeDir 在打包之前按实例 os 确认目录已经配完整。
+// 配置中心给了 os 就直接判断；没有该字段时才 ssh 探测是不是 Linux。
 func (w *PipelineWorker) missingExplicitLinuxRuntimeDir(job *PipelineJob, svc *ServiceContract) string {
 	if svc == nil {
-		return ""
-	}
-	if _, ok := svc.PlatformRuntimeDir("linux"); ok {
 		return ""
 	}
 	machine := strings.TrimSpace(job.TargetMachine)
 	if machine == "" {
 		machine = w.machinesDefault()
+	}
+	if w.machines != nil {
+		if osName, ok := w.machines.InstanceOS(context.Background(), svc.ServiceID, machine); ok {
+			return runtimeDirGap(svc, osName)
+		}
 	}
 	target, ok := w.machineTarget(job, machine)
 	if !ok || !target.Remote() {
@@ -146,7 +148,7 @@ func (w *PipelineWorker) missingExplicitLinuxRuntimeDir(job *PipelineJob, svc *S
 	if normalizeRuntimeOS(osName) != "linux" {
 		return ""
 	}
-	return missingLinuxRuntimeDirError(svc.ServiceID)
+	return runtimeDirGap(svc, "linux")
 }
 
 func (w *PipelineWorker) machineTarget(job *PipelineJob, machine string) (MachineTarget, bool) {
