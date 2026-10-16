@@ -627,3 +627,17 @@ func TestExecuteDeployPlatformStopAndRecordsPid(t *testing.T) {
 		t.Fatalf("timeline must record pid from pidfile, got:\n%s", ev)
 	}
 }
+
+func TestRejectRemoteRuntimeDirBlocksMacPathOnLinux(t *testing.T) {
+	macPath := "/Users/gaolei/runtime/agent-control-plane-deployment/agent-control-plane"
+	msg := rejectRemoteRuntimeDir(macPath, "Linux")
+	if msg == "" || !strings.Contains(msg, "/Users") || !strings.Contains(msg, "runtimeDirs.linux") || !strings.Contains(msg, "runtimeHome") {
+		t.Fatalf("linux + /Users must be rejected with a fix hint, got %q", msg)
+	}
+	if got := rejectRemoteRuntimeDir("/home/ubuntu/runtime/agent-control-plane", "linux"); got != "" {
+		t.Fatalf("linux path on linux must be allowed, got %q", got)
+	}
+	if got := rejectRemoteRuntimeDir(macPath, "darwin"); got != "" {
+		t.Fatalf("mac path on darwin must be allowed, got %q", got)
+	}
+}

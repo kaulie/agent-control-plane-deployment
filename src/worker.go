@@ -463,6 +463,7 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 	// uname。契约里 runtimeDirs{darwin,linux} 优先，没配这个平台就回落默认 runtimeDir；
 	// 远端再兜通道约定的 <remote-runtime-home>/<serviceId>。
 	remotePlatform := ""
+	remoteOS := ""
 	runtimeDir := ""
 	if target.Remote() {
 		probe, perr := remoteProbe(store, *job, target, remote)
@@ -470,6 +471,7 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{State: StateFailed, Error: perr.Error()})
 			return
 		}
+		remoteOS = probe.OS
 		remotePlatform = probe.platform
 		runtimeDir = service.RuntimeDirForRemote(probe.OS, job.ServiceID, target)
 		if runtimeDir == "" {
@@ -506,6 +508,12 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 	if target.Remote() {
 		_ = store.AddDeployEvent(job.RequestID, eventlevel.Info,
 			"远端部署："+target.Describe()+" → runtime="+runtimeDir+"（平台 "+remotePlatform+"）")
+		// 本机路径（/Users/...）拿去 Linux 上 mkdir 只会得到 Permission denied，先说清怎么改。
+		if msg := rejectRemoteRuntimeDir(runtimeDir, remoteOS); msg != "" {
+			_ = store.AddDeployEvent(job.RequestID, eventlevel.Error, msg)
+			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{State: StateFailed, Error: msg})
+			return
+		}
 		// 目录预检：不像这个服务的 runtime 就拒绝 rsync --delete；不存在则建（首次部署）。
 		if code, out := remoteDirCheck(store, *job, target, remote, runtimeDir); code != 0 {
 			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{State: StateFailed, Error: out})

@@ -471,7 +471,7 @@ func (c *MachineCatalog) targetForServiceLocked(serviceID, id string) (MachineTa
 		}
 		return t, true
 	}
-	return targetFromRegistryInstance(id, inst, c.cfg)
+	return targetFromRegistryInstance(id, inst)
 }
 
 func (c *MachineCatalog) matchConfiguredTargetByHost(inst RegistryInstance) (MachineTarget, bool) {
@@ -494,11 +494,11 @@ func (c *MachineCatalog) matchConfiguredTargetByHost(inst RegistryInstance) (Mac
 	return MachineTarget{}, false
 }
 
-func targetFromRegistryInstance(id string, inst RegistryInstance, cfg Config) (MachineTarget, bool) {
+func targetFromRegistryInstance(id string, inst RegistryInstance) (MachineTarget, bool) {
 	if isLocalHost(inst.Host) {
 		return MachineTarget{ID: id, Kind: "local"}, true
 	}
-	home := instanceRuntimeHome(inst, cfg)
+	home := instanceRuntimeHome(inst)
 	if home == "" {
 		return MachineTarget{}, false
 	}
@@ -511,23 +511,25 @@ func targetFromRegistryInstance(id string, inst RegistryInstance, cfg Config) (M
 	}, true
 }
 
-func instanceRuntimeHome(inst RegistryInstance, cfg Config) string {
-	get := func(keys ...string) string {
-		for _, k := range keys {
-			for mk, mv := range inst.Metadata {
-				if strings.EqualFold(strings.TrimSpace(mk), k) {
-					if v := strings.TrimSpace(mv); v != "" {
-						return v
-					}
+// instanceRuntimeHome 只认实例 metadata 里显式写的远端 runtime 父目录。
+//
+// 不要回落到控制面自己的 cfg.Home：那是本机数据目录（macOS 上是 /Users/...）。
+// 拿去当远端 <remote-runtime-home> 时，Linux 上 mkdir 会失败成
+// "mkdir: cannot create directory '/Users': Permission denied"
+// （pipeline-bf8d6d68：49.234.45.173 没有 metadata.runtimeHome，通道被合成成
+// /Users/gaolei/runtime/agent-control-plane-deployment/agent-control-plane）。
+// 没写 runtimeHome 就当没有通道，触发时直接说明要配 machine-targets 或 metadata.runtimeHome。
+func instanceRuntimeHome(inst RegistryInstance) string {
+	for _, k := range []string{"runtimeHome", "runtime_home", "remoteRuntimeHome"} {
+		for mk, mv := range inst.Metadata {
+			if strings.EqualFold(strings.TrimSpace(mk), k) {
+				if v := strings.TrimSpace(mv); v != "" {
+					return v
 				}
 			}
 		}
-		return ""
 	}
-	if v := get("runtimeHome", "runtime_home", "remoteRuntimeHome"); v != "" {
-		return v
-	}
-	return strings.TrimSpace(cfg.Home)
+	return ""
 }
 
 func instanceSSHUser(inst RegistryInstance) string {

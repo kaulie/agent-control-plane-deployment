@@ -234,13 +234,31 @@ func TestMachineCatalogScopeNamesChannellessMachines(t *testing.T) {
 	if strings.Join(ids, ",") != "local,10.0.0.5" {
 		t.Fatalf("web-cursor 的列表 = %v, want [local 10.0.0.5]（registry 上的全部机器）", ids)
 	}
-	if target, ok := cat.TargetForService(t.Context(), "web-cursor", "10.0.0.5"); !ok || !target.Remote() || target.SSHHost != "10.0.0.5" {
-		t.Fatalf("registry 实例应能解析出 ssh 通道，got %+v ok=%v", target, ok)
+	// 没写 metadata.runtimeHome 时不能拿控制面本机 home（/Users/...）去当远端目录。
+	if target, ok := cat.TargetForService(t.Context(), "web-cursor", "10.0.0.5"); ok {
+		t.Fatalf("没配 runtimeHome 的实例不能合成远端通道（否则会 mkdir 本机路径），got %+v", target)
 	}
-	if _, err := cat.ValidateForService(t.Context(), "web-cursor", "10.0.0.5"); err != nil {
-		t.Fatalf("有 registry 通道的机器应可选，got %v", err)
+	if !strings.Contains(note, "10.0.0.5") || !strings.Contains(note, "runtimeHome") {
+		t.Fatalf("说明里要点名这台机器以及如何补 runtimeHome，got %q", note)
 	}
-	_ = note
+	if _, err := cat.ValidateForService(t.Context(), "web-cursor", "10.0.0.5"); err == nil || !strings.Contains(err.Error(), "runtimeHome") {
+		t.Fatalf("没通道的机器必须在触发时被拒并说明补 runtimeHome，got %v", err)
+	}
+}
+
+func TestInstanceRuntimeHomeIgnoresControlPlaneHome(t *testing.T) {
+	bare := RegistryInstance{Host: "49.234.45.173"}
+	if got := instanceRuntimeHome(bare); got != "" {
+		t.Fatalf("missing runtimeHome = %q, want empty (do not invent the local control-plane home)", got)
+	}
+	withHome := RegistryInstance{Host: "49.234.45.173", Metadata: map[string]string{"runtime_home": "/home/ubuntu/runtime"}}
+	if got := instanceRuntimeHome(withHome); got != "/home/ubuntu/runtime" {
+		t.Fatalf("metadata runtime_home = %q", got)
+	}
+	target, ok := targetFromRegistryInstance("49.234.45.173", withHome)
+	if !ok || target.RuntimeHome != "/home/ubuntu/runtime" || target.SSHHost != "49.234.45.173" {
+		t.Fatalf("explicit runtime home should still open an ssh channel, got %+v ok=%v", target, ok)
+	}
 }
 
 // 注册中心按 metadata.machine 登记的远端机器，即使 DEPLOY_MACHINE_TARGETS 里用的是别的 id，
