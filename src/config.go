@@ -1,20 +1,26 @@
 package main
 
 import (
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kaulie/agent-control-plane-deployment/pgdb"
 )
 
 type Config struct {
-	Host         string
-	Port         int
-	Home         string
-	PackagesDir  string
-	DataDir      string
-	DBPath       string
+	Host        string
+	Port        int
+	Home        string
+	PackagesDir string
+	DataDir     string
+	// PostgresDSN is the connection string for the deployment database
+	// (DEPLOYMENT_POSTGRES_DSN, or data/postgres.env, or
+	// ~/database/deployment/pg.env).
+	PostgresDSN  string
 	WebDir       string
 	DeployMaxSec int
 	// Max seconds for rsync of a built package onto a runtime dir.
@@ -251,6 +257,11 @@ func loadConfig() Config {
 		defaultDeployMachine = deployMachines[0]
 	}
 
+	postgresDSN, err := pgdb.LoadDSN()
+	if err != nil {
+		log.Printf("[config] postgres DSN: %v", err)
+	}
+
 	return Config{
 		Host:                   host,
 		Port:                   port,
@@ -258,7 +269,7 @@ func loadConfig() Config {
 		PackagesDir:            packagesDir,
 		DataDir:                dataDir,
 		WebDir:                 webDir,
-		DBPath:                 filepath.Join(dataDir, "deploy.sqlite"),
+		PostgresDSN:            postgresDSN,
 		DeployMaxSec:           deployMax,
 		RsyncMaxSec:            rsyncMax,
 		ReleaseMaxSec:          releaseMax,

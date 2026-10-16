@@ -19,7 +19,7 @@ import (
 //	service-registry :4240 ◀──pull── this control plane :4220
 //	(契约 + API + 实例，唯一真源)      (只存"部署参数"，不再自建服务)
 //
-// The local SQLite table keeps only the deployment settings the registry does
+// The local PostgreSQL tables keep only the deployment settings the registry does
 // not model: runtimeDir / healthUrl / start-stop-restart commands / graceful
 // endpoints / defaultBranch. Service ids, names, versions, owners, tags and
 // gitRepoUrl come from the registry (gitRepoUrl falls back to the registry

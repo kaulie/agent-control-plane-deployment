@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"net/http"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -11,12 +10,7 @@ import (
 
 func newPortTestStore(t *testing.T) *Store {
 	t.Helper()
-	s, err := NewStore(filepath.Join(t.TempDir(), "port.sqlite"))
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	return s
+	return newTestStore(t)
 }
 
 // 部署契约「服务端口」：单独一项，写库/读库都保留；越界直接 400。

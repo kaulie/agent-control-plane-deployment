@@ -4,12 +4,10 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/kaulie/agent-control-plane-deployment/pgdb"
 )
 
 type DeployState string
@@ -117,24 +115,19 @@ func (j *DeployJob) setIdentity(id Identity) {
 }
 
 type Store struct {
-	db *sql.DB
+	db *pgdb.DB
 }
 
 func nowISO() string {
 	return time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 }
 
-func NewStore(dbPath string) (*Store, error) {
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
-		return nil, err
-	}
-	db, err := sql.Open("sqlite", dbPath)
+// NewStore opens the PostgreSQL database at dsn and creates any missing tables.
+// dsn is a postgres URL (DEPLOYMENT_POSTGRES_DSN). Tests pass the same URL
+// with a search_path query parameter so each test gets its own schema.
+func NewStore(dsn string) (*Store, error) {
+	db, err := pgdb.Open(dsn)
 	if err != nil {
-		return nil, err
-	}
-	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(`PRAGMA journal_mode = WAL;`); err != nil {
-		_ = db.Close()
 		return nil, err
 	}
 	s := &Store{db: db}
@@ -281,17 +274,16 @@ func identityColumnDDL(table string) map[string]string {
 // ensureColumns ALTERs in any of cols missing from table (idempotent).
 func (s *Store) ensureColumns(table string, cols map[string]string) error {
 	existing := map[string]bool{}
-	rows, err := s.db.Query(`PRAGMA table_info(` + table + `)`)
+	rows, err := s.db.Query(
+		`SELECT column_name FROM information_schema.columns
+		 WHERE table_schema = current_schema() AND table_name = ?`, table)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var cid int
-		var name, ctype string
-		var notnull, pk int
-		var dflt sql.NullString
-		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+		var name string
+		if err := rows.Scan(&name); err != nil {
 			return err
 		}
 		existing[name] = true
@@ -729,7 +721,7 @@ func firstNonEmptyArg(vals []string) string {
 	return ""
 }
 
-// boolToInt stores a Go bool in a SQLite INTEGER column (0/1).
+// boolToInt stores a Go bool in an INTEGER column (0/1).
 func boolToInt(b bool) int {
 	if b {
 		return 1

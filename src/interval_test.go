@@ -3,16 +3,11 @@ package main
 import (
 	"encoding/json"
 	"net/http"
-	"path/filepath"
 	"testing"
 )
 
 func TestIntervalSecDefaultsAndPersists(t *testing.T) {
-	store, err := NewStore(filepath.Join(t.TempDir(), "interval.sqlite"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store := newTestStore(t)
 
 	svc := localConfig("event-center", "")
 	saved, err := store.UpsertService(svc)
@@ -52,11 +47,7 @@ func TestIntervalSecDefaultsAndPersists(t *testing.T) {
 }
 
 func TestPutServiceKeepsIntervalWhenOmitted(t *testing.T) {
-	store, err := NewStore(filepath.Join(t.TempDir(), "keep-interval.sqlite"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store := newTestStore(t)
 	svc := localConfig("event-center", "")
 	svc.IntervalSec = 45
 	if _, err := store.UpsertService(svc); err != nil {
@@ -77,11 +68,7 @@ func TestPutServiceKeepsIntervalWhenOmitted(t *testing.T) {
 }
 
 func TestPutServiceRejectsInvalidInterval(t *testing.T) {
-	store, err := NewStore(filepath.Join(t.TempDir(), "bad-interval.sqlite"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store := newTestStore(t)
 	if _, err := store.UpsertService(localConfig("event-center", "")); err != nil {
 		t.Fatal(err)
 	}

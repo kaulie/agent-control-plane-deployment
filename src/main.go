@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"github.com/kaulie/agent-control-plane-deployment/pgdb"
 )
 
 func seedDefaultService(store *Store) {
@@ -104,11 +106,23 @@ func seedACPService(store *Store, cfg Config) {
 // @tag.description  graceful 重启（drain 通知与轮询）
 func main() {
 	cfg := loadConfig()
-	store, err := NewStore(cfg.DBPath)
+	if cfg.PostgresDSN == "" {
+		log.Fatal("db: DEPLOYMENT_POSTGRES_DSN is empty (set it, or write data/postgres.env or ~/database/deployment/pg.env)")
+	}
+	log.Printf("[store] postgres %s", pgdb.RedactedTarget(cfg.PostgresDSN))
+	store, err := NewStore(cfg.PostgresDSN)
 	if err != nil {
 		log.Fatalf("db: %v", err)
 	}
 	defer store.Close()
+	legacySQLite := filepath.Join(cfg.DataDir, "deploy.sqlite")
+	imported, err := store.ImportLegacySQLite(legacySQLite)
+	if err != nil {
+		log.Fatalf("import legacy sqlite: %v", err)
+	}
+	if imported {
+		log.Printf("[store] imported legacy sqlite %s", legacySQLite)
+	}
 
 	storage, err := NewArtifactStorage(cfg)
 	if err != nil {

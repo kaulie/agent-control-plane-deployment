@@ -1,6 +1,6 @@
 # agent-control-plane-deployment
 
-独立部署控制面：HTTP API + SQLite 服务契约，与 app（web-cursor）进程/目录完全解耦。
+独立部署控制面：HTTP API + PostgreSQL 服务契约，与 app（web-cursor）进程/目录完全解耦。
 
 ## 本机布局
 
@@ -8,11 +8,12 @@
 |---|---|
 | `~/runtime/agent-control-plane-deployment` | 本服务安装与数据根（`DEPLOYMENT_HOME`） |
 | `$HOME/packages/<serviceId>/deployment-*` | 发版包（按服务名 serviceId 隔离） |
-| `$HOME/data/deploy.sqlite` | 服务契约 + 部署任务 |
+| PostgreSQL `49.234.45.173:5432` / 库 `deployment` | 服务契约 + 部署任务。连接串 `DEPLOYMENT_POSTGRES_DSN`（`data/postgres.env` 或 `~/database/deployment/pg.env`） |
+| `$HOME/data/deploy.sqlite` | 切换前的旧库。PostgreSQL 还是空的时候，第一次启动会导入一次，之后不再读 |
 | `$HOME/upgrade-requests/` | ACP 自身升级请求（供 `acp-upgrader`） |
 | HTTP `127.0.0.1:4220` | 部署 API |
 
-被部署的应用（例如 web-cursor）仍使用自己的 runtime（如 `~/runtime/web-cursor`），由 SQLite 里的 **service contract** 描述启停方式。
+被部署的应用（例如 web-cursor）仍使用自己的 runtime（如 `~/runtime/web-cursor`），由 PostgreSQL 里的 **service contract** 描述启停方式。
 
 ## 安装 / 启停（本服务）
 
@@ -156,6 +157,7 @@ curl -sS -X PUT http://127.0.0.1:4220/api/services/web-cursor \
 
 | 环境变量 | 默认 | 说明 |
 |---|---|---|
+| `DEPLOYMENT_POSTGRES_DSN` | 无（必填） | PostgreSQL 连接串，库在 `49.234.45.173:5432`，库名 `deployment`。未导出时依次读 `data/postgres.env`、`~/database/deployment/pg.env` |
 | `SERVICE_REGISTRY_URL` | `http://127.0.0.1:4240` | 服务目录来源；`off` / `disabled` / `none` = 关闭拉取 |
 | `SERVICE_REGISTRY_TOKEN` | 空 | 注册中心读令牌（`REGISTRY_READ_AUTH=token` 时用） |
 | `SERVICE_REGISTRY_TIMEOUT_SEC` | `5` | 单次拉取超时（秒） |

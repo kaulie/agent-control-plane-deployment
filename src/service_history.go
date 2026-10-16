@@ -4,12 +4,14 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"github.com/kaulie/agent-control-plane-deployment/pgdb"
 )
 
 // ServiceHistoryCounts 是一个 serviceId 名下历史记录的条数。迁移/清除旧契约前
 // 用它给调用方（面板）一个明确的确认依据，也用它拦住在途任务。
 //
-// 背景：服务目录以 service_registry 为唯一真源，本机 SQLite 只是「部署配置」。
+// 背景：服务目录以 service_registry 为唯一真源，本机 PostgreSQL 只是「部署配置」。
 // 但流水线 / 部署 / 制品索引都是按 serviceId 存的 —— 早期（注册中心接入前）本机
 // 自建的契约（如 web-cursor）和注册中心里的服务（如 agent-control-plane）是同一个
 // 服务的两个 id。把旧契约的历史迁到新 id 上，才能既删掉旧契约、又不丢历史。
@@ -147,7 +149,7 @@ func (s *Store) MoveServiceHistory(from, to string, deleteSourceContract bool) (
 // moveArtifactIndex 把制品索引行挂到目标服务上。artifacts 有 UNIQUE(service_id, tag)：
 // 目标已经有同一个 tag 的索引行时跳过（那两行指的是同一个制品，下载走的是行里存的
 // accessPath）—— 跳过行保留、不做破坏性删除，只把它计入 skipped。
-func moveArtifactIndex(tx *sql.Tx, from, to string) (moved, skipped int, err error) {
+func moveArtifactIndex(tx *pgdb.Tx, from, to string) (moved, skipped int, err error) {
 	rows, err := tx.Query(`SELECT id, tag FROM artifacts WHERE service_id = ?`, from)
 	if err != nil {
 		return 0, 0, err

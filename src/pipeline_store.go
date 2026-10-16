@@ -213,7 +213,7 @@ func scanPipeline(row scannable) (*PipelineJob, error) {
 	var job PipelineJob
 	var deployment, deployID, version, errStr, message, started, finished sql.NullString
 	var state string
-	// use_proxy 在 SQLite 里是 INTEGER；扫进 int 再转 bool（老行是 0）。
+	// use_proxy 是 INTEGER；扫进 int 再转 bool（老行是 0）。
 	var useProxy int
 	err := row.Scan(
 		&job.RequestID, &job.ServiceID, &job.Ref, &state, &useProxy,

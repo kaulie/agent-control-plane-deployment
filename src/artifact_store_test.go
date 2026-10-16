@@ -2,33 +2,27 @@ package main
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 )
 
 func TestArtifactRecordGetList(t *testing.T) {
-	dir := t.TempDir()
-	s, err := NewStore(filepath.Join(dir, "test.sqlite"))
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	defer s.Close()
+	s := newTestStore(t)
 
 	a := Artifact{
 		ServiceID:          "web-cursor",
 		Tag:                "deployment-94ad00da",
-		Version:             "94ad00da",
-		Commit:              "94ad00da2f4c8b97a279324d745a050a5a6bf574",
-		GitRepoURL:          "https://github.com/kaulie/agent-control-plane",
-		RepoSlug:            "kaulie/agent-control-plane",
-		AssetName:           "package.tar.gz",
-		AssetID:             42,
-		AssetURL:            "https://api.github.com/repos/kaulie/agent-control-plane/releases/assets/42",
-		BrowserDownloadURL:  "https://github.com/kaulie/agent-control-plane/releases/download/deployment-94ad00da/package.tar.gz",
-		ReleaseURL:          "https://github.com/kaulie/agent-control-plane/releases/tag/deployment-94ad00da",
-		Size:                95149824,
-		Storage:             "github_release",
-		CreatedAt:           "2026-09-13T11:00:00.000Z",
+		Version:            "94ad00da",
+		Commit:             "94ad00da2f4c8b97a279324d745a050a5a6bf574",
+		GitRepoURL:         "https://github.com/kaulie/agent-control-plane",
+		RepoSlug:           "kaulie/agent-control-plane",
+		AssetName:          "package.tar.gz",
+		AssetID:            42,
+		AssetURL:           "https://api.github.com/repos/kaulie/agent-control-plane/releases/assets/42",
+		BrowserDownloadURL: "https://github.com/kaulie/agent-control-plane/releases/download/deployment-94ad00da/package.tar.gz",
+		ReleaseURL:         "https://github.com/kaulie/agent-control-plane/releases/tag/deployment-94ad00da",
+		Size:               95149824,
+		Storage:            "github_release",
+		CreatedAt:          "2026-09-13T11:00:00.000Z",
 	}
 	if err := s.RecordArtifact(a); err != nil {
 		t.Fatalf("RecordArtifact: %v", err)

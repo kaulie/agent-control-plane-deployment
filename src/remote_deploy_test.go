@@ -108,11 +108,7 @@ func (f *fakeRemote) calls() (runs, pushes, http []string) {
 func newRemoteDeployFixture(t *testing.T) (*Store, Config, ArtifactStorage, *MachineCatalog, string, string) {
 	t.Helper()
 	dir := t.TempDir()
-	store, err := NewStore(filepath.Join(dir, "test.sqlite"))
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	t.Cleanup(func() { store.Close() })
+	store := newTestStore(t)
 
 	pkgs := filepath.Join(dir, "packages")
 	hash := "abc12345"

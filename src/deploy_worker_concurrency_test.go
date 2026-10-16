@@ -1,7 +1,6 @@
 package main
 
 import (
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -9,12 +8,7 @@ import (
 
 func newDeployWorkerTestStore(t *testing.T) *Store {
 	t.Helper()
-	store, err := NewStore(filepath.Join(t.TempDir(), "deploys.sqlite"))
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	return store
+	return newTestStore(t)
 }
 
 func mustService(t *testing.T, store *Store, id, runtimeDir string) {

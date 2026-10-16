@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -102,12 +101,7 @@ func TestServiceRegistryErrors(t *testing.T) {
 
 func newCatalogTestStore(t *testing.T) *Store {
 	t.Helper()
-	s, err := NewStore(filepath.Join(t.TempDir(), "catalog.sqlite"))
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	return s
+	return newTestStore(t)
 }
 
 func localConfig(id string, gitURL string) ServiceContract {

@@ -5,17 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 )
 
 func newDrainTestServer(t *testing.T) (*Store, *GracefulDrain, *httptest.Server) {
 	t.Helper()
-	dir := t.TempDir()
-	store, err := NewStore(filepath.Join(dir, "test.sqlite"))
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	store := newTestStore(t)
 	drain := &GracefulDrain{}
 	api := &apiServer{store: store, cfg: Config{}, drain: drain}
 	srv := httptest.NewServer(api.routes())

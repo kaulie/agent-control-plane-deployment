@@ -1,9 +1,7 @@
 package main
 
 import (
-	"database/sql"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -92,12 +90,8 @@ func TestRuntimeDirsStoreAndAPI(t *testing.T) {
 
 // 老库（services 表没有 runtime_dirs 列）打开时自动补列。
 func TestRuntimeDirsColumnMigration(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "old.sqlite")
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	if _, err := db.Exec(`
+	raw, dsn := openTestSchema(t)
+	if _, err := raw.Exec(`
 		CREATE TABLE services (
 		  service_id TEXT PRIMARY KEY, name TEXT NOT NULL, runtime_dir TEXT NOT NULL,
 		  health_url TEXT NOT NULL, port INTEGER NOT NULL DEFAULT 0,
@@ -113,11 +107,7 @@ func TestRuntimeDirsColumnMigration(t *testing.T) {
 		  'true','true','true','2026-09-01T00:00:00.000Z','2026-09-01T00:00:00.000Z');`); err != nil {
 		t.Fatalf("seed old schema: %v", err)
 	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-
-	store, err := NewStore(dbPath)
+	store, err := NewStore(dsn)
 	if err != nil {
 		t.Fatalf("NewStore (migration): %v", err)
 	}
