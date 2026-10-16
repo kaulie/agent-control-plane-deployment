@@ -267,8 +267,7 @@ curl -sS http://127.0.0.1:4220/api/pipelines/<requestId>
 
 macOS 上打的包（Mach-O）在 Linux 远端起不来，所以**打包时就按目标机器的平台构建**，而不是把本机产物推过去：
 
-- **平台是机器的一个字段，真源在 service_registry**：机器（= 某个服务实例所在的主机）在注册中心登记时带上
-  `metadata.platform`（如 `linux/amd64`；也认 `metadata.os` + `metadata.arch`）。控制面只是**同步**它
+- **平台是机器的一个字段，真源在 service_registry**：实例顶层 `os` 与 `arch` 都有值时（`linux`/`mac` + `amd64`/`arm64`/`386`/`arm`，`mac` 收成 darwin），控制面用它们作为构建平台。只登记了其中一个时**不用本机 CPU 补另一个**。都没有时回落 `metadata.platform`（如 `linux/amd64`；也认 `metadata.os` + `metadata.arch`）。控制面只是**同步**它
   （`/api/meta` 的 `deployMachineTargets[].platform`），不在部署通道里另配、也不需要触发时额外传字段 ——
   触发时选中部署机器，平台就随之确定。
   注册中心没登记时，才用 `ssh uname -s -m` 探测兜底（时间线里会写明「注册中心没登记平台，探测兜底」）。
@@ -279,8 +278,8 @@ macOS 上打的包（Mach-O）在 Linux 远端起不来，所以**打包时就�
   curl -sS -X PUT http://127.0.0.1:4240/v1/namespaces/default/services/autonomy/instances \
     -H 'content-type: application/json' \
     -d '{"instances":[
-          {"host":"127.0.0.1","port":4300},
-          {"host":"43.162.117.240","port":4300,"metadata":{"platform":"linux/amd64"}}
+          {"host":"127.0.0.1","port":4300,"os":"mac","arch":"arm64"},
+          {"host":"43.162.117.240","port":4300,"os":"linux","arch":"amd64"}
         ]}'
   ```
   通道里**不再**需要（也不接受）`platform=`：那是机器的字段，不是部署配置。
@@ -307,7 +306,7 @@ macOS 上打的包（Mach-O）在 Linux 远端起不来，所以**打包时就�
 ```
 
 - **部署时按目标机器的平台选**：本机 = 控制面自己的 `GOOS`；远端 = 预检 probe 出来的 `uname -s`（键名归一：`macOS`/`mac` → `darwin`）。
-- **按实例 OS 判断目录是否完整**（配置中心实例的顶层 `os`：`linux` / `mac`；没有该字段时回落到 `metadata.platform` 里的 OS）：`linux` 只认配置页上的绝对路径 `runtimeDirs.linux`；`mac` 认默认目录或 `runtimeDirs.darwin`。不完整就在触发接口拒绝。OS 还不知道时，在打包前探测或部署预检再查。通道的 `<remote-runtime-home>/<serviceId>` 和本机默认 `runtimeDir` 都不拿去 Linux。`os` 不含架构，构建平台仍只认 `metadata.platform`。
+- **按实例 OS 判断目录是否完整**（配置中心实例的顶层 `os`：`linux` / `mac`；没有该字段时回落到构建平台里的 OS）：`linux` 只认配置页上的绝对路径 `runtimeDirs.linux`；`mac` 认默认目录或 `runtimeDirs.darwin`。不完整就在触发接口拒绝。OS 还不知道时，在打包前探测或部署预检再查。通道的 `<remote-runtime-home>/<serviceId>` 和本机默认 `runtimeDir` 都不拿去 Linux。构建平台认顶层 `os` + `arch`（两者都有才算），否则才是 `metadata.platform`。
 - **其它远端平台**：该平台的显式路径优先，其次是部署通道约定的 `<remote-runtime-home>/<serviceId>`，最后才是默认 `runtimeDir`。
 - 选定后的目录会用于：制品 rsync 落点、`VERSION`/`DEPLOYMENT` 标记、`restartCmd` 的工作目录、注入的 `RUNTIME_DIR`/`SERVICE_PORT`、watchdog 暂停标记（本机），以及部署并发单元（同一目录不并发）。
 - **面板**：配置页「运行目录」区里有三个字段 —— `runtimeDir（默认：本机平台用）`、`runtimeDir（macOS 机器，可选）`、`runtimeDir（Linux 机器，部署到 Linux 必填）`，下面一行说明当前生效的组合。
@@ -381,7 +380,7 @@ macOS 上打的包（Mach-O）在 Linux 远端起不来，所以**打包时就�
     43.162.117.240=ssh agent-oversea /home/ubuntu/runtime restart=sudo systemctl restart autonomyd
     ```
     执行前仍会 `cd` 到该服务的远端 runtime 并注入 `SERVICE_PORT`/`PORT`/`APP_VERSION`/`DEPLOY_MACHINE`/`RUNTIME_DIR`。一条通道会被这台机器上的多个服务共用：命令写了 `{serviceId}`、或没有点名具体单元时，每个服务都用它；命令点名了具体单元（上面的 `autonomyd`）时，只对单元名里包含该 serviceId 的服务生效（`autonomy` 用这条 systemd 命令，`knowledge-base` 仍走自己的契约 stop/start）。否则会把别的单元重启成功、当前服务却没起来，探活失败。
-- **跨平台产物**：打包时已知目标机器 → 取它的平台（① 注册中心登记的平台 `metadata.platform` ② 通道里显式 `platform=linux/amd64` ③ 远端 `uname -s -m` 探测兜底）→ 给服务 `build.sh` 注入 `GOOS`/`GOARCH`，制品 tag 带平台后缀（`deployment-<hash>-linux-amd64`；本机平台仍是老形式），部署前再比对包里二进制与远端平台。服务自己的 `build.sh` 要按 `GOOS/GOARCH` 产**所有**平台相关的产物（例如下载物也要按目标平台取；autonomy 的 cursor bridge 已按此修好）。
+- **跨平台产物**：打包时已知目标机器 → 取它的平台（① 注册中心实例的 `os` + `arch`，否则 `metadata.platform` ② 远端 `uname -s -m` 探测兜底）→ 给服务 `build.sh` 注入 `GOOS`/`GOARCH`，制品 tag 带平台后缀（`deployment-<hash>-linux-amd64`；本机平台仍是老形式），部署前再比对包里二进制与远端平台。服务自己的 `build.sh` 要按 `GOOS/GOARCH` 产**所有**平台相关的产物（例如下载物也要按目标平台取；autonomy 的 cursor bridge 已按此修好）。
 - **API**：`POST /api/deploy-notify {"serviceId": ..., "ref": ..., "targetMachine": "43.162.117.240"}`；`POST /api/deploys` 同样接受。非空机器必须是**这个服务**绑定的机器，否则 **400**：服务没绑定实例 → 「先在 service_registry 登记它的实例…」；别的服务的机器 → 「那台机器上没有它的实例登记」（附本服务允许列表）；已知但没通道 → 提示去配 `DEPLOY_MACHINE_TARGETS`。
 - **默认机器**：`DEPLOY_DEFAULT_MACHINE`；不配置则是 `local`。请求不带 `targetMachine` 时按默认机器处理 —— **默认行为不变**（本机部署路径与以前完全一致）。
 - **随任务转发**：机器记在流水线上（`GET /api/pipelines/:id` 的 `targetMachine`）并转发给部署任务（`GET /api/deploys/:id`）；部署事件里带 `部署机器=<machine>`，并作为 `DEPLOY_MACHINE` 注入服务重启时的环境。

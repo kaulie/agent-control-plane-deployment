@@ -187,9 +187,9 @@ func parseMachineTargetSpec(id, spec string) (MachineTarget, error) {
 		spec = strings.TrimSpace(spec[:i])
 	}
 	if i := strings.Index(spec, "platform="); i >= 0 {
-		// 平台的唯一来源是注册中心：机器在注册中心登记的实例 metadata.platform。
+		// 平台的唯一来源是注册中心：实例的 os + arch，或老的 metadata.platform。
 		return target, fmt.Errorf("%s 的 %q：不要在部署通道里写 platform= —— 机器的平台由"+
-			"service_registry 上该机器的实例登记（metadata.platform，如 linux/amd64），控制面同步它",
+			"service_registry 上该机器的实例登记（os + arch，或 metadata.platform，如 linux/amd64），控制面同步它",
 			deployMachineTargetsEnv, id)
 	}
 	fields = strings.Fields(spec)

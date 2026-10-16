@@ -337,7 +337,7 @@ func (c *MachineCatalog) refresh(ctx context.Context) {
 	c.deployable, c.source = c.targetIDs()
 
 	// 发现：注册中心的实例主机（数据源统一在注册中心）+ DEPLOY_MACHINES 补充。
-	// 顺带同步每台机器登记的平台（实例 metadata.platform）——打包时按它构建 ——
+	// 顺带同步每台机器登记的平台（实例 os + arch，否则 metadata.platform）——打包时按它构建 ——
 	// 以及「服务 → 机器」：面板下拉与触发校验据此按服务收窄。
 	var fromRegistry []string
 	var regErr error

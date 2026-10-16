@@ -87,7 +87,7 @@ func (w *PipelineWorker) packageOptions(job *PipelineJob, events PackageEventFun
 
 // platformFor 决定这次打包按哪个平台构建。平台是**机器的字段**：
 //
-//	① service_registry 上这台机器的实例登记的 metadata.platform（真源，控制面同步）；
+//	① service_registry 上这台机器的实例登记的 os + arch（两者都有才算；否则 metadata.platform）；
 //	② 注册中心没登记 → ssh 探测该机器（uname -s -m）兜底；
 //	③ 本机机器 → 控制面自己的平台（tag 保持 deployment-<hash>，与历史一致）。
 //
