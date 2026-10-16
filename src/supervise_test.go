@@ -3,16 +3,11 @@ package main
 import (
 	"encoding/json"
 	"net/http"
-	"path/filepath"
 	"testing"
 )
 
 func TestSupervisePersistsAndSeedsFirstWave(t *testing.T) {
-	store, err := NewStore(filepath.Join(t.TempDir(), "deploy.sqlite"))
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	defer store.Close()
+	store := newTestStore(t)
 
 	if _, err := store.UpsertService(localConfig("home-agent-brain", "")); err != nil {
 		t.Fatalf("UpsertService: %v", err)
@@ -64,11 +59,7 @@ func TestSupervisePersistsAndSeedsFirstWave(t *testing.T) {
 }
 
 func TestPutServiceKeepsSuperviseWhenOmitted(t *testing.T) {
-	store, err := NewStore(filepath.Join(t.TempDir(), "keep.sqlite"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store := newTestStore(t)
 	svc := localConfig("event-center", "")
 	svc.Supervise = true
 	if _, err := store.UpsertService(svc); err != nil {

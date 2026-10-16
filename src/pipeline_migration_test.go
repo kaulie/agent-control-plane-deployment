@@ -1,21 +1,13 @@
 package main
 
-import (
-	"database/sql"
-	"path/filepath"
-	"testing"
-)
+import "testing"
 
 // 老库（pipelines 表还没有 use_proxy 列）打开时必须自动补列，并且和
 // pipelineColumns 的 SELECT 列表对得上 —— 否则升级后所有流水线读取都会失败。
 func TestPipelineMigrationAddsUseProxyColumn(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "old.sqlite")
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
+	raw, dsn := openTestSchema(t)
 	// 升级前的表结构（没有 use_proxy）+ 一条老记录。
-	if _, err := db.Exec(`
+	if _, err := raw.Exec(`
       CREATE TABLE pipelines (
         request_id TEXT PRIMARY KEY,
         service_id TEXT NOT NULL,
@@ -37,11 +29,8 @@ func TestPipelineMigrationAddsUseProxyColumn(t *testing.T) {
     `); err != nil {
 		t.Fatalf("seed old schema: %v", err)
 	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
 
-	store, err := NewStore(dbPath)
+	store, err := NewStore(dsn)
 	if err != nil {
 		t.Fatalf("NewStore (migration): %v", err)
 	}

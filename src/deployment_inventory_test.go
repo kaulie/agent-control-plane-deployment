@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 )
 
@@ -34,11 +33,7 @@ func TestDeploymentInventoryMergesRegistryAndDeploys(t *testing.T) {
 		  {"namespace":"default","service":"web-cursor","host":"10.0.0.8","port":4211,"metadata":{"machine":"gpu-2"}}
 		]}`)
 	reg := registryClientFor(srv.URL)
-	store, err := NewStore(filepath.Join(t.TempDir(), "d.db"))
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
+	store := newTestStore(t)
 	if _, err := store.UpsertService(ServiceContract{ServiceID: "web-cursor", Name: "Web", RuntimeDir: "/tmp/w"}); err != nil {
 		t.Fatalf("UpsertService: %v", err)
 	}

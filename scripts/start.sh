@@ -17,6 +17,9 @@ fi
 
 cd "${HOME_DIR}"
 export DEPLOYMENT_HOME="${HOME_DIR}"
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/postgres-env.sh"
+load_deployment_postgres_env
 # Never inherit app PORT (e.g. web-cursor 4211). Only DEPLOYMENT_PORT overrides.
 export PORT="${DEPLOYMENT_PORT:-4220}"
 export HOST="${DEPLOYMENT_HOST:-127.0.0.1}"

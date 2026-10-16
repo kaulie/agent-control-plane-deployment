@@ -71,11 +71,7 @@ func TestIdentityStringAndKnown(t *testing.T) {
 func newTestIdentityServer(t *testing.T, enforce bool) (*apiServer, *Store) {
 	t.Helper()
 	dir := t.TempDir()
-	store, err := NewStore(filepath.Join(dir, "test.sqlite"))
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	t.Cleanup(func() { store.Close() })
+	store := newTestStore(t)
 
 	pkgs := filepath.Join(dir, "packages")
 	pkgDir := filepath.Join(pkgs, "web-cursor", "deployment-abc12345")

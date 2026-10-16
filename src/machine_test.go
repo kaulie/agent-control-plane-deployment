@@ -1,10 +1,8 @@
 package main
 
 import (
-	"database/sql"
 	"encoding/json"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -149,12 +147,8 @@ func TestMetaReportsDeployMachines(t *testing.T) {
 
 // 老库（pipelines / deploys 都没有 target_machine 列）打开时自动补列，老行读到空串。
 func TestDeployMachineColumnMigration(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "old.sqlite")
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	if _, err := db.Exec(`
+	raw, dsn := openTestSchema(t)
+	if _, err := raw.Exec(`
       CREATE TABLE pipelines (
         request_id TEXT PRIMARY KEY, service_id TEXT NOT NULL, ref TEXT NOT NULL,
         state TEXT NOT NULL, deployment TEXT, deploy_request_id TEXT, version TEXT,
@@ -174,11 +168,7 @@ func TestDeployMachineColumnMigration(t *testing.T) {
     `); err != nil {
 		t.Fatalf("seed old schema: %v", err)
 	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-
-	store, err := NewStore(dbPath)
+	store, err := NewStore(dsn)
 	if err != nil {
 		t.Fatalf("NewStore (migration): %v", err)
 	}

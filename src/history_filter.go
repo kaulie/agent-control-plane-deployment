@@ -61,10 +61,11 @@ func (w *wb) eq(col, val string) {
 	}
 }
 
-// like adds "<col> LIKE %val%" when val is non-empty (contains match).
+// like adds "<col> ILIKE %val%" when val is non-empty (contains match).
+// ILIKE keeps the ASCII case-insensitive contains match the panel had on SQLite.
 func (w *wb) like(col, val string) {
 	if val != "" {
-		w.add(col+" LIKE ?", "%"+val+"%")
+		w.add(col+" ILIKE ?", "%"+val+"%")
 	}
 }
 
@@ -77,7 +78,7 @@ func (w *wb) keyword(cols []string, kw string) {
 	args := make([]any, 0, len(cols))
 	like := "%" + kw + "%"
 	for _, c := range cols {
-		parts = append(parts, "COALESCE("+c+",'') LIKE ?")
+		parts = append(parts, "COALESCE("+c+",'') ILIKE ?")
 		args = append(args, like)
 	}
 	w.add("("+strings.Join(parts, " OR ")+")", args...)

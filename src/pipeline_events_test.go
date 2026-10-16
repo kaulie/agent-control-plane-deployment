@@ -1,21 +1,10 @@
 package main
 
 import (
-	"path/filepath"
 	"testing"
 
 	"github.com/kaulie/agent-control-plane-deployment/eventlevel"
 )
-
-func newTestStore(t *testing.T) *Store {
-	t.Helper()
-	dir := t.TempDir()
-	s, err := NewStore(filepath.Join(dir, "test.sqlite"))
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	return s
-}
 
 func TestPipelineEvents(t *testing.T) {
 	s := newTestStore(t)

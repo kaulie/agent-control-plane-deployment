@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,7 +14,7 @@ import (
 	"time"
 
 	"github.com/kaulie/agent-control-plane-deployment/eventlevel"
-	_ "modernc.org/sqlite"
+	"github.com/kaulie/agent-control-plane-deployment/pgdb"
 )
 
 // UpgradeRequest is dropped by deployment-server after artifacts are staged.
@@ -42,12 +41,13 @@ func main() {
 
 	logf("acp-upgrader watching %s (home=%s)", reqDir, home)
 
-	dbPath := filepath.Join(home, "data", "deploy.sqlite")
-	db, err := openEventsDB(dbPath)
+	db, err := openEventsDB()
 	if err != nil {
 		logf("event db open failed (events will be skipped): %v", err)
+		db = nil
+	} else {
+		defer db.Close()
 	}
-	defer db.Close()
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
@@ -68,7 +68,7 @@ func main() {
 	}
 }
 
-func processOnce(home, reqDir string, db *sql.DB) error {
+func processOnce(home, reqDir string, db *pgdb.DB) error {
 	entries, err := os.ReadDir(reqDir)
 	if err != nil {
 		return err
@@ -92,7 +92,7 @@ func processOnce(home, reqDir string, db *sql.DB) error {
 	return nil
 }
 
-func handleRequest(home, path string, db *sql.DB) error {
+func handleRequest(home, path string, db *pgdb.DB) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -152,24 +152,23 @@ func handleRequest(home, path string, db *sql.DB) error {
 	return fmt.Errorf("health check failed after start: %s", healthURL)
 }
 
-// openEventsDB opens the shared SQLite db (WAL) so the upgrader can append
-// deploy events alongside the server. Returns a usable *sql.DB; callers must
-// tolerate a nil db (events skipped) if open failed.
-func openEventsDB(dbPath string) (*sql.DB, error) {
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
-		return nil, err
-	}
-	db, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
+// openEventsDB opens the shared PostgreSQL database so the upgrader can append
+// deploy events alongside the server. Callers must tolerate a nil db (events
+// skipped) if open failed.
+func openEventsDB() (*pgdb.DB, error) {
+	dsn, err := pgdb.LoadDSN()
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1)
-	return db, nil
+	if dsn == "" {
+		return nil, fmt.Errorf("DEPLOYMENT_POSTGRES_DSN is empty")
+	}
+	return pgdb.Open(dsn)
 }
 
 // addEvent appends a deploy_events row. Failures are logged but never fatal.
 // Level names are normalized to the canonical eventlevel set before writing.
-func addEvent(db *sql.DB, requestID string, level eventlevel.Level, message string) {
+func addEvent(db *pgdb.DB, requestID string, level eventlevel.Level, message string) {
 	if db == nil || requestID == "" {
 		return
 	}

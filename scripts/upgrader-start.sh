@@ -23,6 +23,9 @@ fi
 
 cd "${HOME_DIR}"
 export DEPLOYMENT_HOME="${HOME_DIR}"
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/postgres-env.sh"
+load_deployment_postgres_env
 nohup "${BIN}" >>"${LOG_FILE}" 2>&1 &
 echo $! > "${PID_FILE}"
 sleep 0.3

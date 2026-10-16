@@ -28,11 +28,7 @@ func TestReconcileProbesComposedHealthURL(t *testing.T) {
 	}
 	port, _ := strconv.Atoi(u.Port())
 
-	store, err := NewStore(filepath.Join(t.TempDir(), "test.sqlite"))
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	defer store.Close()
+	store := newTestStore(t)
 
 	runtimeDir := t.TempDir()
 	hash := "abc12345"
@@ -80,11 +76,7 @@ func TestReconcileProbesComposedHealthURL(t *testing.T) {
 
 // 健康检查真的不通时，错误信息里要出现**拼好的**地址（而不是裸路径）。
 func TestReconcileHealthFailureNamesComposedURL(t *testing.T) {
-	store, err := NewStore(filepath.Join(t.TempDir(), "test.sqlite"))
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	defer store.Close()
+	store := newTestStore(t)
 	runtimeDir := t.TempDir()
 	hash := "deadbeef"
 	if err := os.WriteFile(filepath.Join(runtimeDir, "VERSION"), []byte(hash+"\n"), 0o644); err != nil {

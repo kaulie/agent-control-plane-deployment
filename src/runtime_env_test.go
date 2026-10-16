@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -39,11 +38,7 @@ func TestNormalizeRuntimeEnv(t *testing.T) {
 }
 
 func TestRuntimeEnvPersistsAndPutSemantics(t *testing.T) {
-	store, err := NewStore(filepath.Join(t.TempDir(), "runtime-env.sqlite"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store := newTestStore(t)
 
 	svc := localConfig("event-center", "")
 	svc.Port = 4438

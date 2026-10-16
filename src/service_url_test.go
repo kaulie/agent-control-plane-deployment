@@ -2,7 +2,6 @@ package main
 
 import (
 	"net/http"
-	"path/filepath"
 	"testing"
 )
 
@@ -81,12 +80,7 @@ func TestNormalizeServiceContractKeepsPort(t *testing.T) {
 
 // 老库迁移：URL 里带 host+port、port 列为空 → 拆成路径 + 补端口；幂等。
 func TestServiceURLMigrationFromFullURLs(t *testing.T) {
-	dir := t.TempDir()
-	store, err := NewStore(filepath.Join(dir, "test.sqlite"))
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	defer store.Close()
+	store := newTestStore(t)
 
 	// 直接写一条「老形态」的契约（绕过 UpsertService 的归一）：模拟升级前的库。
 	if _, err := store.db.Exec(`
