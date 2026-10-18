@@ -271,8 +271,8 @@ func (w *PipelineWorker) execute(job *PipelineJob) {
 	if existing, _ := w.store.GetDeploy(deployID); existing != nil {
 		deployID = "deploy-req-" + uuid.NewString()[:8]
 	}
-	_, err = w.store.CreateDeploy(deployID, job.ServiceID, pkg.Tag, job.Identity(),
-		"queued after package (graceful notify+poll before restart)", job.TargetMachine)
+	_, err = w.store.CreateDeployForPlatform(deployID, job.ServiceID, pkg.Tag, job.Identity(),
+		"queued after package (graceful notify+poll before restart)", pkg.Platform, job.TargetMachine)
 	if err != nil {
 		failPipeline(w.store, job.RequestID, "enqueue deploy failed: "+err.Error())
 		return

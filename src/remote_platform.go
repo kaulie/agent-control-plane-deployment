@@ -123,6 +123,30 @@ func assertPackageMatchesRemote(dir string, remoteOS, remoteArch string) error {
 		strings.Join(bad, ", "), strings.SplitN(bad[0], "=", 2)[1], remoteOS, remoteArch, remoteOS, remoteArch)
 }
 
+// solePackagePlatform 在包里所有可执行文件都是同一平台时返回该平台。
+// 没有二进制，或混了多个平台 → ok=false（调用方再决定是放行还是拒绝）。
+func solePackagePlatform(dir string) (BuildPlatform, bool) {
+	bins := packageBinaries(dir)
+	if len(bins) == 0 {
+		return BuildPlatform{}, false
+	}
+	got := ""
+	for _, plat := range bins {
+		if got == "" {
+			got = plat
+			continue
+		}
+		if plat != got {
+			return BuildPlatform{}, false
+		}
+	}
+	p, err := ParseBuildPlatform(got)
+	if err != nil || p.IsZero() {
+		return BuildPlatform{}, false
+	}
+	return p, true
+}
+
 // assertPackageMatchesPlatform 校验**打包出来的包**里的可执行文件与目标平台一致。
 //
 // 典型场景：服务的 build.sh 在构建机（macOS）上按 uname 下载了平台相关的工具，于是

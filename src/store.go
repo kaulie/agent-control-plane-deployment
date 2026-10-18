@@ -100,6 +100,11 @@ type DeployJob struct {
 	TriggeredByRole string `json:"triggeredByRole,omitempty"`
 	TriggeredByID   string `json:"triggeredById,omitempty"`
 	TriggeredBy     string `json:"triggeredBy,omitempty"`
+	// ArtifactPlatform 是打包时确定的产物平台（darwin/amd64 这种）。
+	// 本机平台的 tag 不带后缀（deployment-<hash>），多台控制面共用一个队列时，
+	// 不能再把「没有后缀」理解成「执行者自己的平台」——否则 Linux 控制面会把
+	// macOS 打的包当成自己的本机包，rsync 到 Linux runtime 后二进制起不来。
+	ArtifactPlatform string `json:"artifactPlatform,omitempty"`
 }
 
 // Identity returns the recorded caller identity (zero value = unidentified).
@@ -259,6 +264,8 @@ func (s *Store) ensureDeployExtraColumns() error {
 	cols := identityColumnDDL("deploys")
 	// 老库补列：本次部署的「部署机器」。
 	cols["target_machine"] = `ALTER TABLE deploys ADD COLUMN target_machine TEXT NOT NULL DEFAULT ''`
+	// 老库补列：打包时的产物平台。空 = 老任务（只看 tag 后缀，没有就仍按执行者本机理解）。
+	cols["artifact_platform"] = `ALTER TABLE deploys ADD COLUMN artifact_platform TEXT NOT NULL DEFAULT ''`
 	return s.ensureColumns("deploys", cols)
 }
 
@@ -442,32 +449,73 @@ func (s *Store) DeleteService(serviceID string) (bool, error) {
 // query so a new column is added in one place).
 const deployColumns = `request_id, service_id, deployment, target_machine, state, requested_at,
 	started_at, finished_at, version, error, message,
-	triggered_by_role, triggered_by_id`
+	triggered_by_role, triggered_by_id, artifact_platform`
 
 // CreateDeploy records a queued deploy. targetMachine is optional (variadic so
 // existing call sites stay unchanged): the first value is the deploy machine;
 // empty/omitted = the default.
 func (s *Store) CreateDeploy(requestID, serviceID, deployment string, by Identity, message string, targetMachine ...string) (DeployJob, error) {
+	return s.createDeploy(requestID, serviceID, deployment, by, message, "", firstNonEmptyArg(targetMachine))
+}
+
+// CreateDeployForPlatform 与 CreateDeploy 相同，并记下打包时的产物平台
+// （darwin/amd64）。流水线入队时必须带上：本机 tag 没有平台后缀，执行部署的
+// 控制面不能靠自己的 GOOS 去猜。
+func (s *Store) CreateDeployForPlatform(requestID, serviceID, deployment string, by Identity, message, artifactPlatform string, targetMachine ...string) (DeployJob, error) {
+	return s.createDeploy(requestID, serviceID, deployment, by, message, artifactPlatform, firstNonEmptyArg(targetMachine))
+}
+
+func (s *Store) createDeploy(requestID, serviceID, deployment string, by Identity, message, artifactPlatform, targetMachine string) (DeployJob, error) {
 	requestedAt := nowISO()
+	platform := ""
+	if p, err := ParseBuildPlatform(artifactPlatform); err == nil && !p.IsZero() {
+		platform = p.String()
+	}
 	job := DeployJob{
-		RequestID:     requestID,
-		ServiceID:     serviceID,
-		Deployment:    deployment,
-		TargetMachine: firstNonEmptyArg(targetMachine),
-		State:         StateQueued,
-		RequestedAt:   requestedAt,
-		Message:       message,
+		RequestID:        requestID,
+		ServiceID:        serviceID,
+		Deployment:       deployment,
+		TargetMachine:    targetMachine,
+		ArtifactPlatform: platform,
+		State:            StateQueued,
+		RequestedAt:      requestedAt,
+		Message:          message,
 	}
 	job.setIdentity(by)
 	_, err := s.db.Exec(`
 		INSERT INTO deploys (
 		  request_id, service_id, deployment, target_machine, state, requested_at, message,
-		  triggered_by_role, triggered_by_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		  triggered_by_role, triggered_by_id, artifact_platform
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		job.RequestID, job.ServiceID, job.Deployment, job.TargetMachine, string(job.State), job.RequestedAt,
-		nullIfEmpty(message), job.TriggeredByRole, job.TriggeredByID,
+		nullIfEmpty(message), job.TriggeredByRole, job.TriggeredByID, job.ArtifactPlatform,
 	)
 	return job, err
+}
+
+// RequeueDeploy 把一条正在执行的部署放回队列，并记下产物平台（非空才覆盖）。
+// 用于「领走了不属于本控制面的本机部署」：不失败、不推送，让对应平台的控制面来领。
+func (s *Store) RequeueDeploy(requestID, artifactPlatform string) error {
+	platform := ""
+	if p, err := ParseBuildPlatform(artifactPlatform); err == nil && !p.IsZero() {
+		platform = p.String()
+	}
+	res, err := s.db.Exec(`
+		UPDATE deploys SET
+		  state = 'queued',
+		  started_at = NULL,
+		  artifact_platform = CASE WHEN ? <> '' THEN ? ELSE artifact_platform END
+		WHERE request_id = ? AND state = 'running'`,
+		platform, platform, requestID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("requeue deploy %s: not running", requestID)
+	}
+	return nil
 }
 
 func (s *Store) GetDeploy(requestID string) (*DeployJob, error) {
@@ -684,7 +732,7 @@ func scanDeploy(row scannable) (*DeployJob, error) {
 	err := row.Scan(
 		&job.RequestID, &job.ServiceID, &job.Deployment, &job.TargetMachine, &state, &job.RequestedAt,
 		&started, &finished, &version, &errStr, &message,
-		&job.TriggeredByRole, &job.TriggeredByID,
+		&job.TriggeredByRole, &job.TriggeredByID, &job.ArtifactPlatform,
 	)
 	if err != nil {
 		return nil, err

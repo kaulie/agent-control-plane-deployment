@@ -98,6 +98,33 @@ func deploymentHash(tag string) string {
 	return hash
 }
 
+// explicitArtifactPlatform 是这条部署**已知**的产物平台：先看入队时记下的
+// artifact_platform，再看 tag 后缀。两者都没有（老的 deployment-<hash>）返回零值 ——
+// 这时不能猜成执行者自己的平台，调用方要另作处理。
+func explicitArtifactPlatform(job DeployJob) BuildPlatform {
+	if p, err := ParseBuildPlatform(job.ArtifactPlatform); err == nil && !p.IsZero() {
+		return p
+	}
+	_, p := ParseDeploymentTag(job.Deployment)
+	return p
+}
+
+// localDeployForThisControlPlane 判断这条部署能不能由**当前进程**执行。
+//
+// 远端部署谁有 ssh 谁都能推。本机部署的「local」在每台控制面上都指向自己，
+// 多台控制面共用一个队列时，只能由产物平台与自己 GOOS/GOARCH 一致的那台来领；
+// 平台还不知道（老 tag、也没记 artifact_platform）时先领走，下载后再看二进制。
+func localDeployForThisControlPlane(job DeployJob, target MachineTarget) bool {
+	if target.Remote() {
+		return true
+	}
+	p := explicitArtifactPlatform(job)
+	if p.IsZero() {
+		return true
+	}
+	return p == LocalBuildPlatform()
+}
+
 // assertTagPlatformMatchesMachine 校验「制品 tag 上的平台」与目标机器平台一致。
 //
 //	本机机器：产物必须与本机平台一致；
