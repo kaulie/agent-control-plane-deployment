@@ -494,6 +494,19 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 			return
 		}
 	}
+	// 本机部署且产物平台已经知道、又不是本控制面：放回队列，不要在这里失败。
+	// 失败会让另一台平台对的控制面再也领不走（pipeline-abfb4b15：Linux 控制面把
+	// macOS 的 deployment-<hash> 当成自己的本机包装进 /home/ubuntu，Mach-O 起不来）。
+	if !localDeployForThisControlPlane(*job, target) {
+		p := explicitArtifactPlatform(*job)
+		msg := fmt.Sprintf("本控制面是 %s，这条本机部署的制品是 %s，交回队列给对应平台的控制面（本次未下载、未推送）",
+			LocalBuildPlatform(), p)
+		_ = store.AddDeployEvent(job.RequestID, eventlevel.Info, msg)
+		if err := store.RequeueDeploy(job.RequestID, p.String()); err != nil {
+			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{State: StateFailed, Error: err.Error()})
+		}
+		return
+	}
 	// 产物平台 vs 机器平台：tag 上带着产物平台，机器平台已知（本机 GOOS / 远端 uname），
 	// 不一致就**不下载、不推送**，直接说清怎么办。
 	if err := assertTagPlatformMatchesMachine(tag, machine, target, remotePlatform); err != nil {
@@ -567,6 +580,11 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{State: StateFailed, Error: err.Error()})
 			return
 		}
+	} else if requeued, err := localBinaryGuard(store, *job, src); requeued {
+		return
+	} else if err != nil {
+		_, _ = store.FinishDeploy(job.RequestID, FinishPatch{State: StateFailed, Error: err.Error()})
+		return
 	}
 
 	self := isSelfDeploy(*service, cfg)
@@ -965,6 +983,10 @@ func (w *DeployWorker) tick() {
 		if w.drain.IsDraining() {
 			return
 		}
+		if !w.claimable(candidate) {
+			// 别的控制面的本机部署：留在队列里，等平台一致的那台来领。
+			continue
+		}
 		unit, ok := w.reserveUnit(candidate.ServiceID, candidate.RequestID)
 		if !ok {
 			// another deploy of the same runtime is in flight; its turn comes
@@ -989,6 +1011,48 @@ func (w *DeployWorker) tick() {
 			w.run(job.RequestID)
 		}(*job, unit)
 	}
+}
+
+// claimable 报告这条排队中的部署能不能由本进程领走。
+// 解析不出通道时仍领走，交给 executeDeploy 报错（和以前一样）。
+func (w *DeployWorker) claimable(job DeployJob) bool {
+	if w.machines == nil {
+		return true
+	}
+	machine := strings.TrimSpace(job.TargetMachine)
+	if machine == "" {
+		machine = defaultDeployMachine
+	}
+	target, ok := w.machines.TargetForService(context.Background(), job.ServiceID, machine)
+	if !ok {
+		return true
+	}
+	return localDeployForThisControlPlane(job, target)
+}
+
+// localBinaryGuard 在本机 rsync 之前看包里的二进制。
+// 平台与本控制面不一致、且全是同一平台 → 交回队列（不推送）。混了多个平台 → 失败。
+func localBinaryGuard(store *Store, job DeployJob, src string) (bool, error) {
+	plat, ok := solePackagePlatform(src)
+	if !ok {
+		if err := assertPackageMatchesPlatform(src, LocalBuildPlatform()); err != nil {
+			_ = store.AddDeployEvent(job.RequestID, eventlevel.Error, "产物平台检查失败："+err.Error())
+			return false, err
+		}
+		return false, nil
+	}
+	if plat == LocalBuildPlatform() {
+		_ = store.AddDeployEvent(job.RequestID, eventlevel.Success,
+			"产物平台检查通过：包里二进制与本控制面 "+plat.String()+" 一致")
+		return false, nil
+	}
+	msg := fmt.Sprintf("本控制面是 %s，制品是 %s —— 本机部署交回队列，由 %s 的控制面执行；本次未推送任何文件",
+		LocalBuildPlatform(), plat, plat)
+	_ = store.AddDeployEvent(job.RequestID, eventlevel.Info, msg)
+	if err := store.RequeueDeploy(job.RequestID, plat.String()); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // deployUnit is the mutual-exclusion key for a deploy: the service's runtime
