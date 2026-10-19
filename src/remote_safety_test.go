@@ -60,6 +60,20 @@ func TestRsyncBudgetCoversSlowCrossBorderPush(t *testing.T) {
 	}
 }
 
+func TestLocalRsyncUsesRsyncBudgetNotCommandBudget(t *testing.T) {
+	body, err := os.ReadFile("worker.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(body)
+	if strings.Contains(src, "runShell(rsyncCmd, cfg.Home, os.Environ(), cfg.DeployMaxSec)") {
+		t.Fatal("local rsync still uses DeployMaxSec (120s); web-cursor ~1GB packages time out before copy finishes")
+	}
+	if !strings.Contains(src, "runShell(rsyncCmd, cfg.Home, os.Environ(), rsyncBudget)") {
+		t.Fatal("local rsync must use rsyncMaxSec / rsyncBudget, same as remote push")
+	}
+}
+
 func TestPackagePlatformGuardRejectsForeignBinaries(t *testing.T) {
 	dir := t.TempDir()
 	binDir := filepath.Join(dir, "bin")
