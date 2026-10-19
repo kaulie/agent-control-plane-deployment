@@ -61,6 +61,7 @@ type RegistryService struct {
 	Tags          []string    `json:"tags,omitempty"`
 	BasePath      string      `json:"basePath,omitempty"`
 	HealthPath    string      `json:"healthPath,omitempty"`
+	MCPPath       string      `json:"mcpPath,omitempty"` // MCP address relative to the instance root; registry default /mcp
 	API           RegistryAPI `json:"api"`
 	Revision      int64       `json:"revision,omitempty"`
 	UpdatedAt     string      `json:"updatedAt,omitempty"`
