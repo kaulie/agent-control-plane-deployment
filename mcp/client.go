@@ -1,6 +1,6 @@
 // Package main is the deployment-mcp stdio server. client.go speaks the
 // deployment control plane's HTTP API (default http://127.0.0.1:4220).
-package main
+package deploymcp
 
 import (
 	"bytes"

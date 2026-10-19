@@ -4,6 +4,35 @@
 
 本进程只转发请求。打包和部署仍由控制面异步执行（接口返回 202）。它不调用 `/restart/notify` 或 `/restart/poll`：那两个接口是控制面自己排空用的，不是给 agent 的工具。
 
+在终端里执行 `deployment-mcp --help` 会打印用法。不带参数、且标准输入是终端时也打印用法并退出。Cursor 用管道启动它时才进入 stdio MCP。
+
+## HTTP
+
+控制面进程同时在 `/mcp` 提供 Streamable HTTP。别的机器把 Cursor 的 MCP 配成这个地址即可，不用在每台机器上放二进制。监听地址跟控制面一样，默认只有 `127.0.0.1:4220`；要给别的机器用，把 `DEPLOYMENT_HOST` 改成它们能访问的地址。身份仍然是请求头 `identity_role` / `identity_id`，会记成这次发版的触发者。这不是新的凭证，不要裸暴露到公网。
+
+```json
+{
+  "mcpServers": {
+    "deployment": {
+      "url": "http://127.0.0.1:4220/mcp",
+      "headers": {
+        "identity_role": "agent",
+        "identity_id": "cursor-agent"
+      }
+    }
+  }
+}
+```
+
+控制面还没带上这段代码时，可以先单独起一个 HTTP MCP，由它去调已经在跑的 `:4220`：
+
+```bash
+go build -o bin/deployment-mcp ./cmd/deployment-mcp
+./bin/deployment-mcp --http 127.0.0.1:4221
+```
+
+独立进程的 MCP 地址是 `http://127.0.0.1:4221`（根路径）。控制面自己提供的地址是 `http://<控制面主机>:<端口>/mcp`。
+
 ## 环境变量
 
 | 变量 | 默认 | 作用 |
@@ -18,7 +47,7 @@
 ## 构建
 
 ```bash
-go build -o bin/deployment-mcp ./mcp
+go build -o bin/deployment-mcp ./cmd/deployment-mcp
 ```
 
 `build.sh` 和 `install.sh` 会把这个二进制打进 `bin/deployment-mcp`。控制面自己的下一次安装或发版之后，路径是：
@@ -30,7 +59,7 @@ go build -o bin/deployment-mcp ./mcp
 开发时也可以不安装，直接：
 
 ```bash
-go run ./mcp
+go run ./cmd/deployment-mcp
 ```
 
 ## 接到 Cursor

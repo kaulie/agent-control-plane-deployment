@@ -9,8 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"log"
+
 	"github.com/google/uuid"
 	"github.com/kaulie/agent-control-plane-deployment/eventlevel"
+	"github.com/kaulie/agent-control-plane-deployment/mcp"
 )
 
 type apiServer struct {
@@ -90,6 +93,12 @@ func (s *apiServer) routes() http.Handler {
 	mux.HandleFunc("GET /restart/poll", s.handleRestartPoll)
 	mux.HandleFunc("GET /api/meta", s.handleMeta)
 	mux.HandleFunc("GET /api/deployment-inventory", s.handleDeploymentInventory)
+	if h, upstream, err := deploymcp.LoopbackHandler(s.cfg.Host, s.cfg.Port); err != nil {
+		log.Printf("[mcp] HTTP MCP disabled: %v", err)
+	} else {
+		mux.Handle("/mcp", h)
+		log.Printf("[mcp] streamable HTTP at /mcp, tools call %s", upstream)
+	}
 	s.registerPanel(mux)
 	return withCORS(mux)
 }
@@ -1378,7 +1387,23 @@ func (s *apiServer) handleMeta(w http.ResponseWriter, r *http.Request) {
 		"serviceRegistryUrl":     s.registry.BaseURL(),
 		"serviceRegistryEnabled": s.registry.Enabled(),
 		"serviceCatalog":         "GET /api/services（服务列表来自 service_registry，本机只存部署配置）",
+		"mcpPath":                "/mcp",
+		"mcpUrl":                 mcpPublicURL(r, s.cfg.Port),
+		"mcpTransport":           "streamable-http",
 	})
+}
+
+// mcpPublicURL is the Streamable HTTP MCP endpoint as seen by this request.
+func mcpPublicURL(r *http.Request, port int) string {
+	host := r.Host
+	if host == "" {
+		host = "127.0.0.1:" + strconv.Itoa(port)
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	return scheme + "://" + host + "/mcp"
 }
 
 // storageName reports the active artifact storage backend for /api/meta, or

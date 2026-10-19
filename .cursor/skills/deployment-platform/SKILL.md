@@ -6,7 +6,7 @@ description: >-
 
 # 部署控制面
 
-部署只走控制面 HTTP API。本仓库的 MCP 服务 `deployment-mcp`（`./mcp`）把这些 API 收成工具。
+部署只走控制面 HTTP API。工具来自 MCP 服务 `deployment`。本机可以用 stdio 进程 `deployment-mcp`；别的机器用控制面上的 Streamable HTTP，地址是 `http://<控制面主机>:<端口>/mcp`。不要在当前仓库里找 `./mcp` 来发版。
 
 ## 何时用
 
