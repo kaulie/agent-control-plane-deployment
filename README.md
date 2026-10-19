@@ -38,11 +38,13 @@ cd agent-control-plane-deployment
 
 ## MCP 技能
 
-`mcp/` 是一个 stdio MCP 服务（`deployment-mcp`），把本控制面的查询、配置和发版 API 收成 agent 工具。它只转发到 `DEPLOYMENT_URL`（默认 `http://127.0.0.1:4220`），打包和部署仍由本服务异步执行。`/restart/notify` 与 `/restart/poll` 不在工具列表里。
+`mcp/` 把本控制面的查询、配置和发版 API 收成 agent 工具。stdio 供本机 Cursor 拉起；HTTP 挂在本服务的 `POST /mcp`（Streamable HTTP），别的机器连这个地址即可。工具只转发到本服务的 HTTP API，打包和部署仍由本服务异步执行。`/restart/notify` 与 `/restart/poll` 不在工具列表里。监听地址与本服务相同，默认 `127.0.0.1`。身份头 `identity_role` / `identity_id` 会记成触发者。
 
 ```bash
-go build -o bin/deployment-mcp ./mcp
+go build -o bin/deployment-mcp ./cmd/deployment-mcp
 # install.sh / build.sh 会一并产出 bin/deployment-mcp
+# 控制面还没升级时，可先单独听一个 HTTP MCP：
+# ./bin/deployment-mcp --http 127.0.0.1:4221
 ```
 
 Cursor 里把命令指到 `bin/deployment-mcp`，并用 `IDENTITY_ROLE` / `IDENTITY_ID` 标触发者。工具清单、环境变量和配置示例见 [`mcp/README.md`](mcp/README.md)。给 agent 的使用约定在 [`.cursor/skills/deployment-platform/SKILL.md`](.cursor/skills/deployment-platform/SKILL.md)。

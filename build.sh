@@ -40,7 +40,7 @@ echo "[build] version=${VERSION}"
 
 go build -o "${OUT}/bin/deployment-server" ./src
 go build -o "${OUT}/bin/acp-upgrader" ./upgrader
-go build -o "${OUT}/bin/deployment-mcp" ./mcp
+go build -o "${OUT}/bin/deployment-mcp" ./cmd/deployment-mcp
 
 cp scripts/*.sh "${OUT}/scripts/"
 # Copy the whole web/ panel (vanilla HTML/CSS/JS) into the package.
