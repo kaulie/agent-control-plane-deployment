@@ -700,17 +700,22 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 			return
 		}
 	} else {
-		fmt.Printf("[deploy] %s rsync %s → %s\n", job.RequestID, tag, runtimeDir)
-		rsync := runShell(rsyncCmd, cfg.Home, os.Environ(), cfg.DeployMaxSec)
+		rsyncBudget := cfg.rsyncMaxSec()
+		fmt.Printf("[deploy] %s rsync %s → %s (limit %ds)\n", job.RequestID, tag, runtimeDir, rsyncBudget)
+		rsync := runShell(rsyncCmd, cfg.Home, os.Environ(), rsyncBudget)
 		if rsync.Code != 0 {
 			out := rsync.Output
 			if len(out) > 2000 {
 				out = out[len(out)-2000:]
 			}
 			_ = store.AddDeployEvent(job.RequestID, eventlevel.Error, "rsync 失败："+out)
+			errText := "rsync failed: " + out
+			if strings.Contains(out, "timeout") {
+				errText = fmt.Sprintf("rsync failed: exceeded %ds (%s)", rsyncBudget, strings.TrimSpace(out))
+			}
 			_, _ = store.FinishDeploy(job.RequestID, FinishPatch{
 				State: StateFailed,
-				Error: "rsync failed: " + out,
+				Error: errText,
 			})
 			return
 		}
