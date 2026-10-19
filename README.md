@@ -24,7 +24,7 @@ HTTP 服务实现为 **Go**（`src/` → `bin/deployment-server`）。需要本�
 git clone https://github.com/kaulie/agent-control-plane-deployment
 cd agent-control-plane-deployment
 ./install.sh
-# → go build deployment-server + acp-upgrader
+# → go build deployment-server + acp-upgrader + deployment-mcp
 # → 启动 upgrader + deployment-server（监听 :4220，端口用 DEPLOYMENT_PORT，不继承应用 PORT）
 
 ~/runtime/agent-control-plane-deployment/scripts/stop.sh
@@ -35,6 +35,17 @@ cd agent-control-plane-deployment
 ~/runtime/agent-control-plane-deployment/scripts/upgrader-restart.sh
 ~/runtime/agent-control-plane-deployment/scripts/upgrader-status.sh
 ```
+
+## MCP 技能
+
+`mcp/` 是一个 stdio MCP 服务（`deployment-mcp`），把本控制面的查询、配置和发版 API 收成 agent 工具。它只转发到 `DEPLOYMENT_URL`（默认 `http://127.0.0.1:4220`），打包和部署仍由本服务异步执行。`/restart/notify` 与 `/restart/poll` 不在工具列表里。
+
+```bash
+go build -o bin/deployment-mcp ./mcp
+# install.sh / build.sh 会一并产出 bin/deployment-mcp
+```
+
+Cursor 里把命令指到 `bin/deployment-mcp`，并用 `IDENTITY_ROLE` / `IDENTITY_ID` 标触发者。工具清单、环境变量和配置示例见 [`mcp/README.md`](mcp/README.md)。给 agent 的使用约定在 [`.cursor/skills/deployment-platform/SKILL.md`](.cursor/skills/deployment-platform/SKILL.md)。
 
 ### 自身升级（ACP）
 

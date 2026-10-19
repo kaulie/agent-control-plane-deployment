@@ -20,6 +20,7 @@ ops/*.pid
 *token*
 bin/deployment-server
 bin/acp-upgrader
+bin/deployment-mcp
 # stray binary produced by `go build` (no -o) inside src/
 /src/src
 outputs/

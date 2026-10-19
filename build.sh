@@ -6,7 +6,7 @@
 #   cwd = repo root, APP_VERSION = <short hash>
 # Must produce outputs/ containing the runtime fileset that a self-deploy
 # rsyncs into DEPLOYMENT_HOME:
-#   bin/deployment-server, bin/acp-upgrader, scripts/*.sh, web/*
+#   bin/deployment-server, bin/acp-upgrader, bin/deployment-mcp, scripts/*.sh, web/*
 # VERSION / COMMIT / GIT_REPO_URL are written by the caller into the package.
 set -euo pipefail
 
@@ -40,6 +40,7 @@ echo "[build] version=${VERSION}"
 
 go build -o "${OUT}/bin/deployment-server" ./src
 go build -o "${OUT}/bin/acp-upgrader" ./upgrader
+go build -o "${OUT}/bin/deployment-mcp" ./mcp
 
 cp scripts/*.sh "${OUT}/scripts/"
 # Copy the whole web/ panel (vanilla HTML/CSS/JS) into the package.
