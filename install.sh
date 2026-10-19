@@ -23,6 +23,7 @@ rsync -a \
   --exclude='ops/*.pid' \
   --exclude='bin/deployment-server' \
   --exclude='bin/acp-upgrader' \
+  --exclude='bin/deployment-mcp' \
   "${ROOT}/" "${DEPLOYMENT_HOME}/"
 
 chmod +x "${DEPLOYMENT_HOME}/bin/"*.sh "${DEPLOYMENT_HOME}/scripts/"*.sh "${DEPLOYMENT_HOME}/install.sh" 2>/dev/null || true
@@ -31,6 +32,7 @@ chmod +x "${DEPLOYMENT_HOME}/bin/"*.sh "${DEPLOYMENT_HOME}/scripts/"*.sh "${DEPL
   cd "${DEPLOYMENT_HOME}"
   go build -o bin/deployment-server ./src
   go build -o bin/acp-upgrader ./upgrader
+  go build -o bin/deployment-mcp ./mcp
 )
 
 echo "[install] starting acp-upgrader..."
