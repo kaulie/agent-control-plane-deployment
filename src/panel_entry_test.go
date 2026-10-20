@@ -57,6 +57,56 @@ func TestPanelEntryExposesServiceContractFrontend(t *testing.T) {
 	}
 }
 
+// TestPanelRoutesDoNotConflictWithMCP is the production startup shape: MCP is
+// mounted at the method-agnostic path "/mcp" and the panel is mounted too.
+// "GET /" used to panic the process in ServeMux before it listened, which made
+// http://127.0.0.1:4220/panel/ unreachable.
+func TestPanelRoutesDoNotConflictWithMCP(t *testing.T) {
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	webDir := filepath.Join(filepath.Dir(filepath.Dir(testFile)), "web")
+	srv := &apiServer{cfg: Config{WebDir: webDir, Host: "127.0.0.1", Port: 4220}}
+
+	var handler http.Handler
+	func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				t.Fatalf("routes() panicked: %v", rec)
+			}
+		}()
+		handler = srv.routes()
+	}()
+	if handler == nil {
+		t.Fatal("routes() did not return a handler")
+	}
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/panel/" {
+		t.Fatalf("GET / = %d location %q", rec.Code, rec.Header().Get("Location"))
+	}
+
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/panel/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /panel/ = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "服务契约") {
+		t.Fatal("GET /panel/ did not serve the panel HTML")
+	}
+
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader("{}")))
+	if rec.Code == http.StatusNotFound {
+		t.Fatal("POST /mcp is not registered")
+	}
+	if loc := rec.Header().Get("Location"); rec.Code == http.StatusFound && loc == "/panel/" {
+		t.Fatal("POST /mcp was redirected to the panel")
+	}
+}
+
 // TestPanelAndAPIAreUncacheable: 面板是就地升级的静态文件、API 是实时状态，两者都
 // 不能被浏览器缓存 —— 否则升级后会出现「新 index.html + 旧 app.js」的半新半旧页面
 // （新增的「部署机器」下拉就是没人填充），或者更糟：拿旧 /api/meta 渲染新面板。

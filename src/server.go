@@ -121,7 +121,11 @@ func (s *apiServer) registerPanel(mux *http.ServeMux) {
 	mux.HandleFunc("GET /panel", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/panel/", http.StatusFound)
 	})
-	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+	// Exact "/{$}" only. "GET /" is a catch-all for every GET, and Go's ServeMux
+	// panics when it overlaps the method-agnostic "/mcp" pattern: fewer methods,
+	// but a more general path. That panic happens before Listen, so /panel/ never
+	// comes up. The redirect is only for the root.
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/panel/", http.StatusFound)
 	})
 }
