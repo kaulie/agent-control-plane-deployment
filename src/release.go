@@ -220,6 +220,17 @@ func packageFromGit(serviceID, gitRepoURL, ref string, opts PackageOptions) (Pac
 			events(eventlevel.Info, "按目标平台构建：GOOS="+platform.OS+" GOARCH="+platform.Arch)
 		}
 	}
+	// 本机 go 比 go.mod 旧时，先把够新的工具链放到 PATH。服务的 build.sh
+	// （例如 service-registry）在调用方没设 GOTOOLCHAIN 时会把它设成 local，
+	// 于是 go 不会自己下载，直接报 "requires go >= 1.25.0 (GOTOOLCHAIN=local)"。
+	tool, err := lookupGoToolchain(srcTree)
+	if err != nil {
+		return out, fmt.Errorf("go toolchain: %w", err)
+	}
+	if tool.note != "" && events != nil {
+		events(eventlevel.Info, tool.note)
+	}
+	buildEnv = append(buildEnv, tool.env()...)
 	buildCmd.Env = append(os.Environ(), buildEnv...)
 	buildOut, err := buildCmd.CombinedOutput()
 	if err != nil {
