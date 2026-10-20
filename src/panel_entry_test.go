@@ -110,6 +110,41 @@ func TestMetaExposesDeployMachines(t *testing.T) {
 	}
 }
 
+// TestRootRedirectDoesNotSwallowMCP: routes() registers both the panel and
+// /mcp. On Go 1.25 the subtree pattern "GET /" conflicts with "/mcp" and
+// panics in ServeMux.register, so the process never listens. The root
+// redirect must be the exact path, and GET /mcp must not be sent to /panel/.
+func TestRootRedirectDoesNotSwallowMCP(t *testing.T) {
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	webDir := filepath.Join(filepath.Dir(filepath.Dir(testFile)), "web")
+	srv := &apiServer{cfg: Config{WebDir: webDir, Host: "127.0.0.1", Port: 4220}}
+
+	var h http.Handler
+	func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				t.Fatalf("routes() panicked registering /mcp next to the panel root redirect: %v", rec)
+			}
+		}()
+		h = srv.routes()
+	}()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/panel/" {
+		t.Fatalf("GET / = %d %q, want 302 /panel/", rec.Code, rec.Header().Get("Location"))
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/mcp", nil))
+	if rec.Code == http.StatusFound && rec.Header().Get("Location") == "/panel/" {
+		t.Fatal("GET /mcp was redirected to /panel/; the root pattern swallowed the MCP route")
+	}
+}
+
 // TestPanelVersionTracksAssets: panelVersion 是面板静态资源的指纹 —— 面板靠它发现
 // 「我这一页跑的是升级前的 JS」并自动刷新，所以「内容不变 → 指纹不变」「内容变了 →
 // 指纹变」都必须成立，没有资源时则给空串（面板不比对空值）。

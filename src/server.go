@@ -121,7 +121,11 @@ func (s *apiServer) registerPanel(mux *http.ServeMux) {
 	mux.HandleFunc("GET /panel", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/panel/", http.StatusFound)
 	})
-	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+	// Exact path only. "GET /" is a subtree of every GET, and Go 1.25's ServeMux
+	// panics at registration when that overlaps the method-agnostic "/mcp"
+	// route (fewer methods, more general path). "{$}" keeps the root redirect
+	// and leaves /mcp to the MCP handler.
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/panel/", http.StatusFound)
 	})
 }
