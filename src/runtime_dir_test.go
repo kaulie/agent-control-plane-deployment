@@ -214,3 +214,64 @@ func TestDeployNotifyUsesInstanceOSField(t *testing.T) {
 		t.Fatalf("os=mac with an absolute default runtimeDir must be accepted, status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestAdaptServiceForRuntimeRewritesMirroredPaths(t *testing.T) {
+	svc := ServiceContract{
+		RuntimeDir:  "/Users/gaolei/runtime/service-registry",
+		RuntimeDirs: map[string]string{"linux": "/home/ubuntu/runtime/service-registry"},
+		StartCmd:    `bash "/Users/gaolei/runtime/service-registry/scripts/start.sh"`,
+		StopCmd:     `bash "/Users/gaolei/runtime/service-registry/scripts/stop.sh"`,
+		RestartCmd:  `bash "/Users/gaolei/runtime/service-registry/scripts/restart.sh"`,
+		RuntimeEnv: map[string]string{
+			"REGISTRY_POSTGRES_DSN": "postgres://postgres:secret@49.234.45.173:5432/service_registry?sslmode=verify-ca&sslrootcert=/Users/gaolei/database/autonomy/pg-autonomy-ca.pem",
+		},
+	}
+	got := adaptServiceForRuntime(svc, "/home/ubuntu/runtime/service-registry")
+	if got.StartCmd != `bash "/home/ubuntu/runtime/service-registry/scripts/start.sh"` {
+		t.Fatalf("startCmd = %s", got.StartCmd)
+	}
+	if got.StopCmd != `bash "/home/ubuntu/runtime/service-registry/scripts/stop.sh"` ||
+		got.RestartCmd != `bash "/home/ubuntu/runtime/service-registry/scripts/restart.sh"` {
+		t.Fatalf("stop/restart = %s / %s", got.StopCmd, got.RestartCmd)
+	}
+	wantDSN := "postgres://postgres:secret@49.234.45.173:5432/service_registry?sslmode=verify-ca&sslrootcert=/home/ubuntu/database/autonomy/pg-autonomy-ca.pem"
+	if got.RuntimeEnv["REGISTRY_POSTGRES_DSN"] != wantDSN {
+		t.Fatalf("dsn = %s", got.RuntimeEnv["REGISTRY_POSTGRES_DSN"])
+	}
+	// 本机部署保持原样。
+	local := adaptServiceForRuntime(svc, svc.RuntimeDir)
+	if local.StartCmd != svc.StartCmd || local.RuntimeEnv["REGISTRY_POSTGRES_DSN"] != svc.RuntimeEnv["REGISTRY_POSTGRES_DSN"] {
+		t.Fatalf("local deploy must keep mac paths: %+v", local)
+	}
+	// 相对命令不用改。别的服务的 runtime 路径也不要靠家目录前缀去猜。
+	rel := svc
+	rel.StartCmd = "bash scripts/start.sh"
+	rel.RuntimeEnv = map[string]string{
+		"OTHER": "/Users/gaolei/runtime/service-registry-extra/scripts/start.sh",
+	}
+	kept := adaptServiceForRuntime(rel, "/home/ubuntu/runtime/service-registry")
+	if kept.StartCmd != "bash scripts/start.sh" {
+		t.Fatalf("relative start = %s", kept.StartCmd)
+	}
+	if kept.RuntimeEnv["OTHER"] != rel.RuntimeEnv["OTHER"] {
+		t.Fatalf("sibling runtime path must stay, got %s", kept.RuntimeEnv["OTHER"])
+	}
+}
+
+func TestAdaptServiceForRuntimeDoesNotSwapUnrelatedRoots(t *testing.T) {
+	svc := ServiceContract{
+		RuntimeDir:  "/Users/gaolei/runtime/web-cursor",
+		RuntimeDirs: map[string]string{"linux": "/opt/web-cursor"},
+		StartCmd:    `bash "/Users/gaolei/runtime/web-cursor/scripts/start.sh"`,
+		RuntimeEnv: map[string]string{
+			"SSL_CERT": "/Users/gaolei/database/autonomy/pg-autonomy-ca.pem",
+		},
+	}
+	got := adaptServiceForRuntime(svc, "/opt/web-cursor")
+	if got.StartCmd != `bash "/opt/web-cursor/scripts/start.sh"` {
+		t.Fatalf("startCmd = %s", got.StartCmd)
+	}
+	if got.RuntimeEnv["SSL_CERT"] != svc.RuntimeEnv["SSL_CERT"] {
+		t.Fatalf("unrelated home must not be rewritten, got %s", got.RuntimeEnv["SSL_CERT"])
+	}
+}
