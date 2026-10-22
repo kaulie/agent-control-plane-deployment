@@ -67,8 +67,16 @@ type Config struct {
 	ServiceRegistryURL string
 	// Optional bearer token for the registry (REGISTRY_READ_AUTH=token).
 	ServiceRegistryToken string
-	// Per-request timeout for registry pulls.
+	// Per-request timeout for registry pulls and for the startup announce.
 	ServiceRegistryTimeout time.Duration
+	// RegistryNamespace is the namespace this process announces into
+	// (REGISTRY_NS). Default "default" — the namespace of the already
+	// registered contract.
+	RegistryNamespace string
+	// RegistryService is this process's service name in the registry
+	// (REGISTRY_SERVICE). Default "agent-control-plane-deployment".
+	// The contract must already exist; startup only announces the address.
+	RegistryService string
 	// Where the「打包走本机代理」option reads the local proxy from
 	// (PROXY_ENV_FILE; default <home>/data/proxy.env, the file the ops scripts
 	// use). "off" disables the option entirely; a missing file falls back to
@@ -229,6 +237,14 @@ func loadConfig() Config {
 			registryTimeout = time.Duration(n) * time.Second
 		}
 	}
+	registryNS := strings.TrimSpace(os.Getenv("REGISTRY_NS"))
+	if registryNS == "" {
+		registryNS = "default"
+	}
+	registryService := strings.TrimSpace(os.Getenv("REGISTRY_SERVICE"))
+	if registryService == "" {
+		registryService = "agent-control-plane-deployment"
+	}
 
 	// 本机代理（发起流水线时可勾选「走本机代理」）。默认读运维脚本同一份文件
 	// data/proxy.env；PROXY_ENV_FILE=off 关掉这个选项。
@@ -286,6 +302,8 @@ func loadConfig() Config {
 		ServiceRegistryURL:     registryURL,
 		ServiceRegistryToken:   strings.TrimSpace(os.Getenv("SERVICE_REGISTRY_TOKEN")),
 		ServiceRegistryTimeout: registryTimeout,
+		RegistryNamespace:      registryNS,
+		RegistryService:        registryService,
 		ProxyEnvFile:           proxyEnvFile,
 		DeployMachines:         deployMachines,
 		DefaultDeployMachine:   defaultDeployMachine,
