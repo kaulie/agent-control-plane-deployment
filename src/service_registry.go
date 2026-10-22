@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -114,6 +116,7 @@ type registryListBody struct {
 // RegistryInstance is one service instance of the registry (only the fields that
 // say *which machine it runs on* matter here).
 type RegistryInstance struct {
+	ID        string `json:"id,omitempty"`
 	Namespace string `json:"namespace"`
 	Service   string `json:"service"`
 	Host      string `json:"host"`
@@ -135,30 +138,112 @@ type registrySnapshotBody struct {
 
 // getJSON performs one authenticated GET against the registry and decodes it.
 func (r *ServiceRegistry) getJSON(ctx context.Context, path string, out any) error {
-	if !r.Enabled() {
-		return fmt.Errorf("service_registry 未配置（SERVICE_REGISTRY_URL 为空）")
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.baseURL+path, nil)
+	status, body, err := r.roundTrip(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Accept", "application/json")
-	if r.token != "" {
-		req.Header.Set("Authorization", "Bearer "+r.token)
-	}
-	resp, err := r.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("请求 service_registry 失败（%s）：%w", r.baseURL, err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("service_registry 返回 %d：%s", resp.StatusCode, registryErrorMessage(body))
+	if status != http.StatusOK {
+		return fmt.Errorf("service_registry 返回 %d：%s", status, registryErrorMessage(body))
 	}
 	if err := json.Unmarshal(body, out); err != nil {
 		return fmt.Errorf("解析 service_registry 响应失败：%w", err)
 	}
 	return nil
+}
+
+// roundTrip sends one JSON request to the registry. payload nil means no body.
+// Network and configuration errors are returned; HTTP status is not — callers
+// decide which codes are success.
+func (r *ServiceRegistry) roundTrip(ctx context.Context, method, path string, payload any) (int, []byte, error) {
+	if !r.Enabled() {
+		return 0, nil, fmt.Errorf("service_registry 未配置（SERVICE_REGISTRY_URL 为空）")
+	}
+	var buf io.Reader
+	if payload != nil {
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return 0, nil, err
+		}
+		buf = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, r.baseURL+path, buf)
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if r.token != "" {
+		req.Header.Set("Authorization", "Bearer "+r.token)
+	}
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("请求 service_registry 失败（%s）：%w", r.baseURL, err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	return resp.StatusCode, body, nil
+}
+
+// registryAnnounceRequest is the body of PUT .../announce. Host and arch are
+// omitted when empty so the registry keeps its defaults (peer address, prior arch).
+type registryAnnounceRequest struct {
+	Port int    `json:"port"`
+	OS   string `json:"os"`
+	Host string `json:"host,omitempty"`
+	Arch string `json:"arch,omitempty"`
+}
+
+type registryAnnounceResponse struct {
+	Instance RegistryInstance `json:"instance"`
+	Created  bool             `json:"created"`
+}
+
+// Announce reports this process's listen address (PUT .../announce).
+// 201 creates the instance; 200 means the same address was already registered.
+// It does not remove the service's other addresses.
+func (r *ServiceRegistry) Announce(ctx context.Context, namespace, service string, body registryAnnounceRequest) (RegistryInstance, bool, error) {
+	path := registryServicePath(namespace, service) + "/announce"
+	status, raw, err := r.roundTrip(ctx, http.MethodPut, path, body)
+	if err != nil {
+		return RegistryInstance{}, false, err
+	}
+	if status != http.StatusCreated && status != http.StatusOK {
+		return RegistryInstance{}, false, fmt.Errorf("登记实例 %s/%s 失败：service_registry 返回 %d：%s",
+			namespace, service, status, registryErrorMessage(raw))
+	}
+	var out registryAnnounceResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return RegistryInstance{}, false, fmt.Errorf("解析 service_registry 响应失败：%w", err)
+	}
+	if strings.TrimSpace(out.Instance.ID) == "" {
+		return RegistryInstance{}, out.Created, fmt.Errorf("登记实例 %s/%s 的响应没有 instance.id", namespace, service)
+	}
+	return out.Instance, out.Created, nil
+}
+
+// DeleteInstance removes one announced address (DELETE .../instances/{id}).
+// 404 is success: the address is already gone.
+func (r *ServiceRegistry) DeleteInstance(ctx context.Context, namespace, service, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("instance id 为空")
+	}
+	path := registryServicePath(namespace, service) + "/instances/" + url.PathEscape(id)
+	status, raw, err := r.roundTrip(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return err
+	}
+	if status == http.StatusNoContent || status == http.StatusNotFound {
+		return nil
+	}
+	return fmt.Errorf("摘掉实例 %s 失败：service_registry 返回 %d：%s", id, status, registryErrorMessage(raw))
+}
+
+func registryServicePath(namespace, service string) string {
+	return "/v1/namespaces/" + url.PathEscape(strings.TrimSpace(namespace)) +
+		"/services/" + url.PathEscape(strings.TrimSpace(service))
 }
 
 // List pulls the whole service catalog from the registry.

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
@@ -172,13 +173,31 @@ func main() {
 		Handler: api.routes(),
 	}
 
-	// Start serving BEFORE reconcile so that self-deploy orphan reconciliation
-	// can confirm this server's own /health. Previously reconcile ran before
-	// ListenAndServe, so a just-succeeded self-upgrade was falsely marked
-	// "failed" (healthOK hit /health before the listener was up).
+	// Listen first, announce this address, and only then accept requests.
+	// Registration failure closes the socket and aborts startup so the process
+	// is not left running with no catalog entry. See service-registry
+	// docs/register.md. Serving still starts before reconcile: a self-upgrade
+	// must be able to see /health, and reconcile used to run too early.
+	ln, err := net.Listen("tcp", httpServer.Addr)
+	if err != nil {
+		log.Fatalf("listen: %v", err)
+	}
+	httpServer.Addr = ln.Addr().String()
+	tcpAddr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok || tcpAddr.Port < 1 {
+		_ = ln.Close()
+		log.Fatalf("listen: 无法解析监听端口 %s", ln.Addr())
+	}
+	announceCtx, announceCancel := context.WithTimeout(context.Background(), announceTimeout(cfg))
+	instanceID, err := announceDeployment(announceCtx, registry, cfg, tcpAddr.Port)
+	announceCancel()
+	if err != nil {
+		_ = ln.Close()
+		log.Fatalf("[registry] 实例登记失败，启动中止：%v", err)
+	}
 	go func() {
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("listen: %v", err)
+		if err := httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("serve: %v", err)
 		}
 	}()
 	healthURL := fmt.Sprintf("http://%s/health", httpServer.Addr)
@@ -219,6 +238,14 @@ func main() {
 		ch := make(chan os.Signal, 1)
 		signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 		<-ch
+		// Drop the address before waiting on in-flight deploys. stop.sh sends
+		// SIGKILL about two seconds after SIGTERM, and worker.Stop waits for
+		// those deploys. A failed delete is logged only — shutdown must proceed.
+		dropCtx, dropCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if err := deregisterDeployment(dropCtx, registry, cfg, instanceID); err != nil {
+			log.Printf("[registry] 退出时摘掉实例失败（地址会留在目录里）：%v", err)
+		}
+		dropCancel()
 		pipeline.Stop()
 		worker.Stop()
 		_ = os.Remove(pidFile)
