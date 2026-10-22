@@ -95,6 +95,9 @@ func shownServiceCmd(cmd, override string, service ServiceContract, runtimeDir, 
 // 通道 restart= 仍交给 systemd，不走 pidfile stop。
 func runDeployRestart(store *Store, job DeployJob, cfg Config, service ServiceContract,
 	target MachineTarget, remote RemoteRunner, runtimeDir, hash, machine string) string {
+	// 契约里的 start/stop/restart 常写成控制面本机的绝对路径。远端目录不同时先改写，
+	// 否则会在 Linux 上执行 /Users/.../scripts/start.sh（pipeline-9e15bc3a）。
+	service = adaptServiceForRuntime(service, runtimeDir)
 	startCmd := strings.TrimSpace(service.StartCmd)
 	stopCmd := strings.TrimSpace(service.StopCmd)
 	restartCmd := strings.TrimSpace(service.RestartCmd)

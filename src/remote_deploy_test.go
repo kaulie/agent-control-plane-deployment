@@ -658,6 +658,48 @@ func TestExecuteDeployRejectsLinuxWithoutExplicitRuntimeDir(t *testing.T) {
 	}
 }
 
+// pipeline-9e15bc3a：rsync 到了 Linux runtime，startCmd 仍是 macOS 绝对路径。
+func TestExecuteDeployRewritesAbsoluteHostPaths(t *testing.T) {
+	store, cfg, storage, machines, tag := newRemoteNoOverride(t)
+	svc, err := store.GetService("web-cursor")
+	if err != nil || svc == nil {
+		t.Fatalf("GetService: %v %v", svc, err)
+	}
+	svc.RuntimeDir = "/Users/gaolei/runtime/web-cursor"
+	svc.RuntimeDirs = map[string]string{"linux": "/home/ubuntu/runtime/web-cursor"}
+	svc.StartCmd = `bash "/Users/gaolei/runtime/web-cursor/scripts/start.sh"`
+	svc.StopCmd = `bash "/Users/gaolei/runtime/web-cursor/scripts/stop.sh"`
+	svc.RestartCmd = `bash "/Users/gaolei/runtime/web-cursor/scripts/restart.sh"`
+	svc.RuntimeEnv = map[string]string{
+		"REGISTRY_POSTGRES_DSN": "postgres://postgres:secret@10.0.0.8:5432/db?sslmode=verify-ca&sslrootcert=/Users/gaolei/database/autonomy/pg-autonomy-ca.pem",
+	}
+	if _, err := store.UpsertService(*svc); err != nil {
+		t.Fatalf("UpsertService: %v", err)
+	}
+	mustQueueRemote(t, store, "deploy-abspath", tag)
+	fake := &fakeRemote{remoteOS: "Linux", remoteArch: "x86_64"}
+	executeDeploy(store, cfg, storage, &GracefulDrain{}, machines, fake, "deploy-abspath")
+
+	job, _ := store.GetDeploy("deploy-abspath")
+	if job == nil || job.State != StateSucceeded {
+		t.Fatalf("deploy = %+v, want succeeded", job)
+	}
+	runs, _, _ := fake.calls()
+	joined := strings.Join(runs, "\n---\n")
+	for _, want := range []string{
+		`bash "/home/ubuntu/runtime/web-cursor/scripts/start.sh"`,
+		`bash "/home/ubuntu/runtime/web-cursor/scripts/stop.sh"`,
+		"sslrootcert=/home/ubuntu/database/autonomy/pg-autonomy-ca.pem",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("remote script missing %q:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "/Users/gaolei") {
+		t.Fatalf("mac path must not be executed on linux:\n%s", joined)
+	}
+}
+
 func TestRejectRemoteRuntimeDirBlocksMacPathOnLinux(t *testing.T) {
 	macPath := "/Users/gaolei/runtime/agent-control-plane-deployment/agent-control-plane"
 	msg := rejectRemoteRuntimeDir(macPath, "Linux")
