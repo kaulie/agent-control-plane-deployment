@@ -591,7 +591,7 @@ func executeDeploy(store *Store, cfg Config, storage ArtifactStorage, drain *Gra
 		return
 	}
 
-	self := isSelfDeploy(*service, cfg)
+	self := selfUpgrade(*service, cfg, target)
 	if self {
 		bin := filepath.Join(src, "bin", "deployment-server")
 		st, err := os.Stat(bin)
