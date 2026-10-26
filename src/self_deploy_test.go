@@ -20,6 +20,20 @@ func TestIsSelfDeploy(t *testing.T) {
 	}
 }
 
+func TestRemoteTargetIsNotSelfUpgrade(t *testing.T) {
+	home := t.TempDir()
+	cfg := Config{Home: home}
+	svc := ServiceContract{RuntimeDir: home}
+	remote := MachineTarget{ID: "49.234.45.173", Kind: "ssh", SSHHost: "49.234.45.173", RuntimeHome: "/home/ubuntu/runtime"}
+	if selfUpgrade(svc, cfg, remote) {
+		t.Fatal("a remote target must be started on that machine, not handed to the local upgrader")
+	}
+	local := MachineTarget{ID: "local", Kind: "local"}
+	if !selfUpgrade(svc, cfg, local) {
+		t.Fatal("deploying this service onto its own machine is a self-upgrade")
+	}
+}
+
 func TestEnqueueACPUpgrade(t *testing.T) {
 	home := t.TempDir()
 	cfg := Config{Home: home}

@@ -33,6 +33,18 @@ func isSelfDeploy(service ServiceContract, cfg Config) bool {
 	return a == b
 }
 
+// selfUpgrade reports whether this deploy must hand off to the local
+// acp-upgrader. That is only the control plane replacing itself on this
+// machine. The service contract's runtimeDir is this process's home even when
+// the selected target is another host; handing that deploy to the local
+// upgrader skips the remote start, so the other machine never listens.
+func selfUpgrade(service ServiceContract, cfg Config, target MachineTarget) bool {
+	if target.Remote() {
+		return false
+	}
+	return isSelfDeploy(service, cfg)
+}
+
 func upgraderPidPath(home string) string {
 	return filepath.Join(home, "upgrader.pid")
 }
