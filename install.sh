@@ -40,6 +40,6 @@ DEPLOYMENT_HOME="${DEPLOYMENT_HOME}" "${DEPLOYMENT_HOME}/scripts/upgrader-start.
 
 echo "[install] starting deployment service..."
 # Force ACP listen port; do not inherit ambient PORT from other apps.
-DEPLOYMENT_HOME="${DEPLOYMENT_HOME}" DEPLOYMENT_PORT="${DEPLOYMENT_PORT:-4220}" DEPLOYMENT_HOST="${DEPLOYMENT_HOST:-127.0.0.1}" \
+DEPLOYMENT_HOME="${DEPLOYMENT_HOME}" DEPLOYMENT_PORT="${DEPLOYMENT_PORT:-4220}" DEPLOYMENT_HOST="${DEPLOYMENT_HOST:-0.0.0.0}" \
   "${DEPLOYMENT_HOME}/scripts/restart.sh"
 echo "[install] done — API http://127.0.0.1:${DEPLOYMENT_PORT:-4220}/health"

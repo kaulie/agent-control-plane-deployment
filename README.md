@@ -11,7 +11,7 @@
 | PostgreSQL `49.234.45.173:5432` / 库 `deployment` | 服务契约 + 部署任务。连接串 `DEPLOYMENT_POSTGRES_DSN`（`data/postgres.env` 或 `~/database/deployment/pg.env`） |
 | `$HOME/data/deploy.sqlite` | 切换前的旧库。PostgreSQL 还是空的时候，第一次启动会导入一次，之后不再读 |
 | `$HOME/upgrade-requests/` | ACP 自身升级请求（供 `acp-upgrader`） |
-| HTTP `127.0.0.1:4220` | 部署 API |
+| HTTP `0.0.0.0:4220`（本机仍可用 `127.0.0.1:4220`） | 部署 API |
 
 被部署的应用（例如 web-cursor）仍使用自己的 runtime（如 `~/runtime/web-cursor`），由 PostgreSQL 里的 **service contract** 描述启停方式。
 
@@ -38,7 +38,7 @@ cd agent-control-plane-deployment
 
 ## MCP 技能
 
-`mcp/` 把本控制面的查询、配置和发版 API 收成 agent 工具。stdio 供本机 Cursor 拉起；HTTP 挂在本服务的 `POST /mcp`（Streamable HTTP），别的机器连这个地址即可。工具只转发到本服务的 HTTP API，打包和部署仍由本服务异步执行。`/restart/notify` 与 `/restart/poll` 不在工具列表里。监听地址与本服务相同，默认 `127.0.0.1`。身份头 `identity_role` / `identity_id` 会记成触发者。
+`mcp/` 把本控制面的查询、配置和发版 API 收成 agent 工具。stdio 供本机 Cursor 拉起；HTTP 挂在本服务的 `POST /mcp`（Streamable HTTP），别的机器连这个地址即可。工具只转发到本服务的 HTTP API，打包和部署仍由本服务异步执行。`/restart/notify` 与 `/restart/poll` 不在工具列表里。监听地址与本服务相同，默认 `0.0.0.0`（`DEPLOYMENT_HOST=127.0.0.1` 可改回仅本机）。身份头 `identity_role` / `identity_id` 会记成触发者。
 
 ```bash
 go build -o bin/deployment-mcp ./cmd/deployment-mcp

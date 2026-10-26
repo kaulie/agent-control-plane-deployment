@@ -133,9 +133,10 @@ func loadConfig() Config {
 	_ = os.MkdirAll(webDir, 0o755)
 	_ = os.MkdirAll(filepath.Join(home, "logs"), 0o755)
 
+	// 默认听所有网卡，公网或局域网地址才能访问面板。只要本机回环时设 DEPLOYMENT_HOST=127.0.0.1。
 	host := os.Getenv("DEPLOYMENT_HOST")
 	if host == "" {
-		host = "127.0.0.1"
+		host = "0.0.0.0"
 	}
 	port := 4220
 	if p := os.Getenv("DEPLOYMENT_PORT"); p != "" {

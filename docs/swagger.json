@@ -4,7 +4,7 @@
     ],
     "swagger": "2.0",
     "info": {
-        "description": "独立部署控制面（:4220）：打包 / 部署 / 制品索引 / 服务契约部署参数 + Web 面板。\n服务目录（GET /api/services）的唯一真源是 service-registry（:4240），本机只存部署参数。\n鉴权（第一阶段）：触发部署的接口（POST /api/deploys、POST /api/deploy-notify）要求身份头 identity_role / identity_id；只读接口与 /restart/* 不校验。\nHTTP MCP：POST /mcp（Streamable HTTP）。工具调用转发到本服务的 HTTP API。身份头会记成触发者。监听地址与本服务相同，默认只在 127.0.0.1。",
+        "description": "独立部署控制面（:4220）：打包 / 部署 / 制品索引 / 服务契约部署参数 + Web 面板。\n服务目录（GET /api/services）的唯一真源是 service-registry（:4240），本机只存部署参数。\n鉴权（第一阶段）：触发部署的接口（POST /api/deploys、POST /api/deploy-notify）要求身份头 identity_role / identity_id；只读接口与 /restart/* 不校验。\nHTTP MCP：POST /mcp（Streamable HTTP）。工具调用转发到本服务的 HTTP API。身份头会记成触发者。监听地址与本服务相同，默认 0.0.0.0（DEPLOYMENT_HOST=127.0.0.1 可改回仅本机）。",
         "title": "agent-control-plane-deployment",
         "contact": {},
         "version": "1.0.0"
