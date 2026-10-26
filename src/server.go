@@ -221,6 +221,9 @@ type putServiceBody struct {
 	// RuntimeEnv 启动时额外注入的环境变量。不传 = 沿用已有配置；{} = 清空。
 	// 平台键（SERVICE_PORT / PORT / APP_VERSION / DEPLOY_MACHINE / RUNTIME_DIR）不能写在这里。
 	RuntimeEnv map[string]string `json:"runtimeEnv"`
+	// Database 启动时注入的数据库连接。不传 = 沿用已有配置；env 与 dsn 都空 = 清空。
+	// 变量名不能与 runtimeEnv 或平台键重复。
+	Database *DatabaseConnection `json:"database"`
 }
 
 // handlePutService 配置/更新一个服务的**本机部署参数**。服务是否存在由
@@ -301,6 +304,7 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 	supervise := false
 	intervalSec := defaultProbeIntervalSec
 	var runtimeEnv map[string]string
+	var database DatabaseConnection
 	if existing != nil {
 		if name == "" {
 			name = existing.Name
@@ -332,6 +336,7 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 		supervise = existing.Supervise
 		intervalSec = normalizeIntervalSec(existing.IntervalSec)
 		runtimeEnv = existing.RuntimeEnv
+		database = existing.Database
 	}
 	// 服务端口：**必填**（1..65535）。它会在启动/停止/重启时注入 SERVICE_PORT。
 	// 缺省（不传）时沿用库里已有的端口；库里也没有（老契约 port=0）→ 400。
@@ -422,6 +427,19 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 		}
 		runtimeEnv = normalized
 	}
+	// 不传 database（nil）沿用库里的值；显式传入则整份替换（env、dsn 都空 = 清空）。
+	if body.Database != nil {
+		normalized, dbErr := NormalizeDatabase(*body.Database)
+		if dbErr != nil {
+			writeError(w, http.StatusBadRequest, dbErr.Error())
+			return
+		}
+		database = normalized
+	}
+	if conflictErr := databaseEnvConflict(database, runtimeEnv); conflictErr != nil {
+		writeError(w, http.StatusBadRequest, conflictErr.Error())
+		return
+	}
 	if name == "" {
 		name = serviceID
 	}
@@ -455,6 +473,7 @@ func (s *apiServer) handlePutService(w http.ResponseWriter, r *http.Request) {
 		Supervise:         supervise,
 		IntervalSec:       intervalSec,
 		RuntimeEnv:        runtimeEnv,
+		Database:          database,
 	})
 	if err != nil {
 		// 并发保存时可能绕过上面的检查、撞到 services.port 的唯一索引：同样给友好的 409。

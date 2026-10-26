@@ -38,6 +38,28 @@ func TestConfigureBodyOmitsUnsetFields(t *testing.T) {
 	if !ok || len(raw) != 0 {
 		t.Fatalf("runtimeEnv = %#v", cleared["runtimeEnv"])
 	}
+	_, err = (configureServiceArgs{
+		Database:      &databaseConnection{Env: "DATABASE_URL", DSN: "postgres://db/app"},
+		ClearDatabase: true,
+	}).body()
+	if err == nil {
+		t.Fatal("clearDatabase together with database should fail")
+	}
+	clearedDB, err := (configureServiceArgs{ClearDatabase: true}).body()
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, ok := clearedDB["database"].(databaseConnection)
+	if !ok || db.Env != "" || db.DSN != "" {
+		t.Fatalf("database = %#v", clearedDB["database"])
+	}
+	kept, err := (configureServiceArgs{ServiceID: "web-cursor"}).body()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := kept["database"]; ok {
+		t.Fatalf("omitted database should stay omitted: %#v", kept)
+	}
 }
 
 func TestDeployListQuery(t *testing.T) {

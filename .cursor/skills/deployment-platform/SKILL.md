@@ -24,6 +24,7 @@ description: >-
 - 不要调用控制面的 `/restart/notify` 和 `/restart/poll`。MCP 没有这两个工具，它们只给控制面自己排空
 - `deployment_delete_service_config` 和 `deployment_move_service_history` 会改或搬走历史。只有用户明确要求时才调用
 - `deployment_configure_service` 不能改 `gitRepoUrl`。省略的字段会沿用已有配置；不要为了改端口把其它字段传空字符串
+- 数据库连接用 `database`（`env` 是变量名，`dsn` 是连接串）。省略则保留已有配置；清空时传 `clearDatabase: true`。不要把同一个变量名再写进 `runtimeEnv`
 
 ## 身份
 

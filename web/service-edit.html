@@ -117,7 +117,22 @@
         </div>
       </section>
 
-      <!-- ⑥ 运行时环境变量：启动时额外注入，平台固定变量不在这里配 -->
+      <!-- ⑥ 数据库连接：启动时按变量名注入连接串 -->
+      <section class="cfg" id="cfg-database">
+        <h3 class="cfg__title">数据库连接<span class="cfg__note">启动时注入</span></h3>
+        <p class="cfg__desc">把数据库连接串注入到指定的环境变量。startCmd / stopCmd / restartCmd 在目标机器上执行时带上它，本机与远端同一份。留空表示不注入。</p>
+        <div class="form-grid">
+          <label>环境变量名
+            <input type="text" id="svc-database-env" placeholder="例如 DATABASE_URL" spellcheck="false" autocomplete="off" />
+          </label>
+          <label class="span-2">连接串
+            <input type="password" id="svc-database-dsn" placeholder="postgres://user:password@host:5432/dbname" spellcheck="false" autocomplete="new-password" />
+          </label>
+          <p class="hint cfg__hint" id="svc-database-hint"></p>
+        </div>
+      </section>
+
+      <!-- ⑦ 运行时环境变量：启动时额外注入，平台固定变量不在这里配 -->
       <section class="cfg" id="cfg-runtime-env">
         <h3 class="cfg__title">运行时环境变量<span class="cfg__note">启动时注入</span></h3>
         <p class="cfg__desc">startCmd / stopCmd / restartCmd 在目标机器上执行时，除平台变量外再注入这些键值。本机与远端同一份。不填则只注入平台变量。</p>

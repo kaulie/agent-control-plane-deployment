@@ -351,6 +351,7 @@ func serviceCmdEnv(service ServiceContract, runtimeDir string, extra map[string]
 	delete(envMap, "HOST")
 	delete(envMap, "DEPLOYMENT_HOME")
 	applyUserRuntimeEnv(envMap, service)
+	applyDatabaseEnv(envMap, service)
 	for k, v := range extra {
 		envMap[k] = v
 	}

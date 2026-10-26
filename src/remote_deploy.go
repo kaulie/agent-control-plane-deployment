@@ -141,6 +141,7 @@ func remoteEnvPrefixMasked(service ServiceContract, extra map[string]string, mas
 func contractShellEnv(service ServiceContract, extra map[string]string) map[string]string {
 	env := map[string]string{}
 	applyUserRuntimeEnv(env, service)
+	applyDatabaseEnv(env, service)
 	env["SERVICE_PORT"] = servicePort(service)
 	env["PORT"] = servicePort(service)
 	for k, v := range extra {

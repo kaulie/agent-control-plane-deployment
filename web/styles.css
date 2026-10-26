@@ -181,6 +181,7 @@ a.btn:hover { color: var(--text); }
 .cfg__desc { margin: 4px 0 10px; font-size: 12px; color: var(--muted); line-height: 1.5; }
 /* 分区里的提示要横跨整行，不要被挤进某一列 */
 .form-grid .hint { grid-column: 1 / -1; }
+.form-grid .span-2 { grid-column: 1 / -1; }
 /* 运行时环境变量：一行「名字 + 值 + 删除」，整行横跨分区网格 */
 .env-rows { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 8px; }
 .env-row {

@@ -47,7 +47,7 @@ func (s *skill) register(srv *mcp.Server) {
 	}, s.serviceHistory)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "deployment_configure_service",
-		Description: "配置或更新服务的本机部署参数（PUT /api/services/{serviceId}）。只改已在 service-registry 登记的服务。省略的字段沿用已有配置；首次配置必须给出 port、runtimeDir、healthUrl、startCmd、stopCmd、restartCmd。gitRepoUrl 只读，不能通过本工具修改。runtimeEnv 一旦传入会整份替换；要清空用 clearRuntimeEnv。",
+		Description: "配置或更新服务的本机部署参数（PUT /api/services/{serviceId}）。只改已在 service-registry 登记的服务。省略的字段沿用已有配置；首次配置必须给出 port、runtimeDir、healthUrl、startCmd、stopCmd、restartCmd。gitRepoUrl 只读，不能通过本工具修改。runtimeEnv 一旦传入会整份替换；要清空用 clearRuntimeEnv。database 是启动时注入的数据库连接（env 为变量名，dsn 为连接串）；传入则整份替换，env 与 dsn 都空则清空。",
 	}, s.configureService)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "deployment_delete_service_config",
@@ -151,23 +151,31 @@ type pipelineListArgs struct {
 }
 
 type configureServiceArgs struct {
-	ServiceID                string            `json:"serviceId" jsonschema:"服务 id（service-registry 里的 name）"`
-	Name                     *string           `json:"name,omitempty" jsonschema:"显示名。省略则沿用已有配置"`
-	RuntimeDir               *string           `json:"runtimeDir,omitempty" jsonschema:"运行目录。首次配置必填"`
-	RuntimeDirs              map[string]string `json:"runtimeDirs,omitempty" jsonschema:"按平台覆盖运行目录，键为 darwin 或 linux。传入则整份替换"`
-	HealthURL                *string           `json:"healthUrl,omitempty" jsonschema:"健康检查 URL。首次配置必填"`
-	Port                     *int              `json:"port,omitempty" jsonschema:"服务端口 1..65535。首次配置必填；省略则沿用已有端口"`
-	StartCmd                 *string           `json:"startCmd,omitempty" jsonschema:"启动命令。首次配置必填"`
-	StopCmd                  *string           `json:"stopCmd,omitempty" jsonschema:"停止命令。首次配置必填"`
-	RestartCmd               *string           `json:"restartCmd,omitempty" jsonschema:"重启命令。首次配置必填"`
-	DefaultBranch            *string           `json:"defaultBranch,omitempty" jsonschema:"发版未指定 ref 时使用的分支"`
-	RestartNotifyURL         *string           `json:"restartNotifyUrl,omitempty" jsonschema:"graceful 排空通知 URL。必须和 restartPollUrl 同时设置或同时为空"`
-	RestartPollURL           *string           `json:"restartPollUrl,omitempty" jsonschema:"graceful 排空轮询 URL"`
-	GracefulRestartMaxWaitMs *int              `json:"gracefulRestartMaxWaitMs,omitempty" jsonschema:"graceful 最长等待毫秒"`
-	Supervise                *bool             `json:"supervise,omitempty" jsonschema:"是否由 watchdog 守护"`
-	IntervalSec              *int              `json:"intervalSec,omitempty" jsonschema:"watchdog 探活周期（秒）"`
-	RuntimeEnv               map[string]string `json:"runtimeEnv,omitempty" jsonschema:"启动时额外环境变量。传入则整份替换。不要写 SERVICE_PORT、PORT、APP_VERSION、DEPLOY_MACHINE、RUNTIME_DIR"`
-	ClearRuntimeEnv          bool              `json:"clearRuntimeEnv,omitempty" jsonschema:"为 true 时清空 runtimeEnv。不要和 runtimeEnv 同时传"`
+	ServiceID                string              `json:"serviceId" jsonschema:"服务 id（service-registry 里的 name）"`
+	Name                     *string             `json:"name,omitempty" jsonschema:"显示名。省略则沿用已有配置"`
+	RuntimeDir               *string             `json:"runtimeDir,omitempty" jsonschema:"运行目录。首次配置必填"`
+	RuntimeDirs              map[string]string   `json:"runtimeDirs,omitempty" jsonschema:"按平台覆盖运行目录，键为 darwin 或 linux。传入则整份替换"`
+	HealthURL                *string             `json:"healthUrl,omitempty" jsonschema:"健康检查 URL。首次配置必填"`
+	Port                     *int                `json:"port,omitempty" jsonschema:"服务端口 1..65535。首次配置必填；省略则沿用已有端口"`
+	StartCmd                 *string             `json:"startCmd,omitempty" jsonschema:"启动命令。首次配置必填"`
+	StopCmd                  *string             `json:"stopCmd,omitempty" jsonschema:"停止命令。首次配置必填"`
+	RestartCmd               *string             `json:"restartCmd,omitempty" jsonschema:"重启命令。首次配置必填"`
+	DefaultBranch            *string             `json:"defaultBranch,omitempty" jsonschema:"发版未指定 ref 时使用的分支"`
+	RestartNotifyURL         *string             `json:"restartNotifyUrl,omitempty" jsonschema:"graceful 排空通知 URL。必须和 restartPollUrl 同时设置或同时为空"`
+	RestartPollURL           *string             `json:"restartPollUrl,omitempty" jsonschema:"graceful 排空轮询 URL"`
+	GracefulRestartMaxWaitMs *int                `json:"gracefulRestartMaxWaitMs,omitempty" jsonschema:"graceful 最长等待毫秒"`
+	Supervise                *bool               `json:"supervise,omitempty" jsonschema:"是否由 watchdog 守护"`
+	IntervalSec              *int                `json:"intervalSec,omitempty" jsonschema:"watchdog 探活周期（秒）"`
+	RuntimeEnv               map[string]string   `json:"runtimeEnv,omitempty" jsonschema:"启动时额外环境变量。传入则整份替换。不要写 SERVICE_PORT、PORT、APP_VERSION、DEPLOY_MACHINE、RUNTIME_DIR"`
+	ClearRuntimeEnv          bool                `json:"clearRuntimeEnv,omitempty" jsonschema:"为 true 时清空 runtimeEnv。不要和 runtimeEnv 同时传"`
+	Database                 *databaseConnection `json:"database,omitempty" jsonschema:"启动时注入的数据库连接。env 是变量名（如 DATABASE_URL），dsn 是连接串。传入则整份替换；不要和 runtimeEnv 重名，也不要写平台变量"`
+	ClearDatabase            bool                `json:"clearDatabase,omitempty" jsonschema:"为 true 时清空数据库连接。不要和 database 同时传"`
+}
+
+// databaseConnection 是 PUT /api/services 的 database 对象。
+type databaseConnection struct {
+	Env string `json:"env,omitempty" jsonschema:"注入连接串用的环境变量名，例如 DATABASE_URL 或 ORG_DATABASE_URL"`
+	DSN string `json:"dsn,omitempty" jsonschema:"数据库连接串。时间线只记变量名，不记这个值"`
 }
 
 type moveHistoryArgs struct {
@@ -255,6 +263,9 @@ func (a configureServiceArgs) body() (map[string]any, error) {
 	if a.ClearRuntimeEnv && a.RuntimeEnv != nil {
 		return nil, errors.New("clearRuntimeEnv and runtimeEnv cannot both be set")
 	}
+	if a.ClearDatabase && a.Database != nil {
+		return nil, errors.New("clearDatabase and database cannot both be set")
+	}
 	body := map[string]any{}
 	putString(body, "name", a.Name)
 	putString(body, "runtimeDir", a.RuntimeDir)
@@ -284,6 +295,11 @@ func (a configureServiceArgs) body() (map[string]any, error) {
 		body["runtimeEnv"] = map[string]string{}
 	} else if a.RuntimeEnv != nil {
 		body["runtimeEnv"] = a.RuntimeEnv
+	}
+	if a.ClearDatabase {
+		body["database"] = databaseConnection{}
+	} else if a.Database != nil {
+		body["database"] = *a.Database
 	}
 	return body, nil
 }

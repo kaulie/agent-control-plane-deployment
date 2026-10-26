@@ -111,6 +111,7 @@ func applyUserRuntimeEnv(env map[string]string, service ServiceContract) {
 }
 
 // userRuntimeEnvKeys 是启动命令里来自契约（而不是平台）的变量名，给时间线打码用。
+// 数据库连接的变量名也算在内：连接串同样不能出现在时间线上。
 func userRuntimeEnvKeys(service ServiceContract) map[string]bool {
 	keys := map[string]bool{}
 	for k := range usableRuntimeEnv(service.RuntimeEnv) {
@@ -119,20 +120,37 @@ func userRuntimeEnvKeys(service ServiceContract) map[string]bool {
 		}
 		keys[k] = true
 	}
+	if db := usableDatabase(service.Database); db.Env != "" && !isPlatformInjectedEnv(db.Env) {
+		keys[db.Env] = true
+	}
 	return keys
 }
 
 // runtimeEnvEventSuffix 附在部署事件后面：只列变量名，不写值（值可能是密钥）。
 func runtimeEnvEventSuffix(service ServiceContract) string {
+	dbName := ""
+	if db := usableDatabase(service.Database); db.Env != "" && !isPlatformInjectedEnv(db.Env) {
+		dbName = db.Env
+	}
 	keys := make([]string, 0)
 	for k := range userRuntimeEnvKeys(service) {
+		if k == dbName {
+			continue
+		}
 		keys = append(keys, k)
 	}
-	if len(keys) == 0 {
+	sort.Strings(keys)
+	parts := make([]string, 0, 2)
+	if len(keys) > 0 {
+		parts = append(parts, "运行时环境变量 "+strings.Join(keys, "、"))
+	}
+	if dbName != "" {
+		parts = append(parts, "数据库连接 "+dbName)
+	}
+	if len(parts) == 0 {
 		return ""
 	}
-	sort.Strings(keys)
-	return "，运行时环境变量 " + strings.Join(keys, "、")
+	return "，" + strings.Join(parts, "，")
 }
 
 func encodeRuntimeEnv(in map[string]string) (string, error) {
