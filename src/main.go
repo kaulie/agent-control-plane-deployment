@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -79,7 +80,7 @@ func seedACPService(store *Store, cfg Config) {
 // @description  独立部署控制面（:4220）：打包 / 部署 / 制品索引 / 服务契约部署参数 + Web 面板。
 // @description  服务目录（GET /api/services）的唯一真源是 service-registry（:4240），本机只存部署参数。
 // @description  鉴权（第一阶段）：触发部署的接口（POST /api/deploys、POST /api/deploy-notify）要求身份头 identity_role / identity_id；只读接口与 /restart/* 不校验。
-// @description  HTTP MCP：POST /mcp（Streamable HTTP）。工具调用转发到本服务的 HTTP API。身份头会记成触发者。监听地址与本服务相同，默认只在 127.0.0.1。
+// @description  HTTP MCP：POST /mcp（Streamable HTTP）。工具调用转发到本服务的 HTTP API。身份头会记成触发者。监听地址与本服务相同，默认 0.0.0.0（DEPLOYMENT_HOST=127.0.0.1 可改回仅本机）。
 // @BasePath     /
 // @schemes      http
 // @host         127.0.0.1:4220
@@ -200,7 +201,8 @@ func main() {
 			log.Fatalf("serve: %v", err)
 		}
 	}()
-	healthURL := fmt.Sprintf("http://%s/health", httpServer.Addr)
+	// 0.0.0.0 / :: 是监听地址，不能当作拨号地址（macOS 上连 0.0.0.0 会失败）。
+	healthURL := fmt.Sprintf("http://%s/health", dialableAddr(httpServer.Addr, cfg.Host, tcpAddr.Port))
 	readyDeadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(readyDeadline) {
 		if healthOK(healthURL) {
@@ -255,4 +257,15 @@ func main() {
 
 	log.Printf("deployment service on http://%s home=%s", httpServer.Addr, cfg.Home)
 	<-stopCh
+}
+
+// dialableAddr is the address the process uses to probe itself. A wildcard
+// listen address is not a dial target (connecting to 0.0.0.0 fails on macOS).
+func dialableAddr(listenAddr, host string, port int) string {
+	switch strings.Trim(strings.TrimSpace(host), "[]") {
+	case "", "0.0.0.0", "::":
+		return fmt.Sprintf("127.0.0.1:%d", port)
+	default:
+		return listenAddr
+	}
 }

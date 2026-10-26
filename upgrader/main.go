@@ -186,17 +186,33 @@ func addEvent(db *pgdb.DB, requestID string, level eventlevel.Level, message str
 func runBash(script, home string) error {
 	cmd := exec.Command("/bin/bash", script)
 	cmd.Dir = home
-	cmd.Env = append(os.Environ(),
-		"DEPLOYMENT_HOME="+home,
+	// Do not force loopback. start.sh exports DEPLOYMENT_HOST (default 0.0.0.0);
+	// an inherited DEPLOYMENT_HOST still wins because the first env value is kept.
+	env := os.Environ()
+	extra := []string{
+		"DEPLOYMENT_HOME=" + home,
 		"DEPLOYMENT_PORT=4220",
 		"PORT=4220",
-		"HOST=127.0.0.1",
-	)
+	}
+	if !envHasKey(env, "DEPLOYMENT_HOST") {
+		extra = append(extra, "DEPLOYMENT_HOST=0.0.0.0", "HOST=0.0.0.0")
+	}
+	cmd.Env = append(env, extra...)
 	out, err := cmd.CombinedOutput()
 	if len(out) > 0 {
 		logf("%s", strings.TrimSpace(string(out)))
 	}
 	return err
+}
+
+func envHasKey(env []string, key string) bool {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func healthOK(rawURL string) bool {

@@ -8,7 +8,7 @@
 
 ## HTTP
 
-控制面进程同时在 `/mcp` 提供 Streamable HTTP。别的机器把 Cursor 的 MCP 配成这个地址即可，不用在每台机器上放二进制。监听地址跟控制面一样，默认只有 `127.0.0.1:4220`；要给别的机器用，把 `DEPLOYMENT_HOST` 改成它们能访问的地址。身份仍然是请求头 `identity_role` / `identity_id`，会记成这次发版的触发者。这不是新的凭证，不要裸暴露到公网。
+控制面进程同时在 `/mcp` 提供 Streamable HTTP。别的机器把 Cursor 的 MCP 配成这个地址即可，不用在每台机器上放二进制。监听地址跟控制面一样，默认 `0.0.0.0:4220`。只要本机访问时把 `DEPLOYMENT_HOST` 设成 `127.0.0.1`。身份仍然是请求头 `identity_role` / `identity_id`，会记成这次发版的触发者。这不是新的凭证，不要裸暴露到公网。
 
 ```json
 {

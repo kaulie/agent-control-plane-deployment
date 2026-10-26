@@ -22,7 +22,11 @@ export DEPLOYMENT_HOME="${HOME_DIR}"
 load_deployment_postgres_env
 # Never inherit app PORT (e.g. web-cursor 4211). Only DEPLOYMENT_PORT overrides.
 export PORT="${DEPLOYMENT_PORT:-4220}"
-export HOST="${DEPLOYMENT_HOST:-127.0.0.1}"
+# The server reads DEPLOYMENT_HOST, not HOST. Default is every interface so a
+# public address such as :4220 is reachable. Set DEPLOYMENT_HOST=127.0.0.1
+# to keep the panel on loopback only.
+export DEPLOYMENT_HOST="${DEPLOYMENT_HOST:-0.0.0.0}"
+export HOST="${DEPLOYMENT_HOST}"
 
 # Artifact storage backend for this deployment. This control plane uses the
 # Aliyun packages (制品仓库) generic repo; override with
