@@ -134,6 +134,10 @@ function fillForm(svc) {
   $('#svc-supervise').checked = !!svc.supervise;
   $('#svc-intervalSec').value = Number(svc.intervalSec) > 0 ? svc.intervalSec : 30;
   renderRuntimeEnvRows(svc.runtimeEnv);
+  const db = svc.database || {};
+  $('#svc-database-env').value = db.env || '';
+  $('#svc-database-dsn').value = db.dsn || '';
+  renderDatabaseHint();
   setMessage(svc.registered
     ? ''
     : '⚠ service_registry 未返回该服务（未登记 / 注册中心不可用）：已配置的仍可编辑，新建会被拒绝。');
@@ -237,6 +241,42 @@ function renderRuntimeEnvHint() {
     (n ? ' 当前 ' + n + ' 项。' : ' 不填则只注入平台变量。');
 }
 
+function renderDatabaseHint() {
+  const hint = $('#svc-database-hint');
+  if (!hint) return;
+  const env = $('#svc-database-env').value.trim();
+  hint.textContent = '启动时把连接串注入到这个环境变量（本机部署与远端部署同一份）。' +
+    '部署时间线只记录变量名，不记录连接串。' +
+    '不要使用 SERVICE_PORT、PORT、APP_VERSION、DEPLOY_MACHINE、RUNTIME_DIR，也不要和下面的运行时环境变量重名。' +
+    (env ? ' 当前注入 ' + env + '。' : ' 两项都留空则不注入数据库连接。');
+}
+
+function collectDatabase(runtimeEnv) {
+  const envEl = $('#svc-database-env');
+  const dsnEl = $('#svc-database-dsn');
+  if (!envEl || !dsnEl) return { database: { env: '', dsn: '' } };
+  const env = envEl.value.trim();
+  const dsn = dsnEl.value.trim();
+  if (!env && !dsn) return { database: { env: '', dsn: '' } };
+  if (!env || !dsn) return { error: '数据库连接要同时填写环境变量名和连接串' };
+  if (!RUNTIME_ENV_KEY.test(env)) {
+    return { error: `数据库连接 ${env} 无效：名字只能包含字母、数字和下划线，且不能以数字开头` };
+  }
+  if (PLATFORM_ENV_KEYS.has(env)) {
+    return { error: `数据库连接 ${env} 由平台在启动时注入，不能在这里配置` };
+  }
+  if (String(dsn).includes('\n') || String(dsn).includes('\r')) {
+    return { error: `数据库连接 ${env} 的值不能包含换行` };
+  }
+  if (dsn.length > MAX_RUNTIME_ENV_VALUE) {
+    return { error: `数据库连接 ${env} 的值过长（上限 ${MAX_RUNTIME_ENV_VALUE}）` };
+  }
+  if (runtimeEnv && Object.prototype.hasOwnProperty.call(runtimeEnv, env)) {
+    return { error: `数据库连接的环境变量 ${env} 已在运行时环境变量里，请只保留一处` };
+  }
+  return { database: { env, dsn } };
+}
+
 function collectRuntimeEnv() {
   const rows = [...document.querySelectorAll('#svc-runtime-env-rows .env-row')];
   const env = {};
@@ -295,6 +335,8 @@ function serviceFormBody() {
   }
   const collected = collectRuntimeEnv();
   if (collected.error) return collected;
+  const database = collectDatabase(collected.env);
+  if (database.error) return database;
   const runtimeDirs = {};
   if ($('#svc-runtimeDir-darwin').value.trim()) runtimeDirs.darwin = $('#svc-runtimeDir-darwin').value.trim();
   if ($('#svc-runtimeDir-linux').value.trim()) runtimeDirs.linux = $('#svc-runtimeDir-linux').value.trim();
@@ -311,6 +353,7 @@ function serviceFormBody() {
       supervise: $('#svc-supervise').checked,
       intervalSec,
       runtimeEnv: collected.env,
+      database: database.database,
     },
   };
 }
@@ -325,6 +368,11 @@ if (runtimeEnvRows) {
   });
   runtimeEnvRows.addEventListener('input', renderRuntimeEnvHint);
 }
+for (const id of ['#svc-database-env', '#svc-database-dsn']) {
+  const el = $(id);
+  if (el) el.addEventListener('input', renderDatabaseHint);
+}
+
 const runtimeEnvAdd = $('#svc-runtime-env-add');
 if (runtimeEnvAdd) {
   runtimeEnvAdd.addEventListener('click', () => {

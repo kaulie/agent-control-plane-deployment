@@ -91,14 +91,14 @@ service-registry :4240  ──pull(GET /v1/services)──▶  本控制面 :422
 
 响应里还带 `registry: {url, enabled, ok, services, error}`，面板顶部据此显示「在线 · N 个服务 / 拉取失败」，**拉取失败不会伪装成"没有服务"**。
 
-本机只存注册中心没有的部署参数：`runtimeDir` / `healthUrl` / `port`（服务端口） / `startCmd` / `stopCmd` / `restartCmd` / 可选 graceful 端点 / `defaultBranch` / `supervise`（本机 watchdog 是否探活并拉起） / `intervalSec`（watchdog 探活周期，默认 30 秒） / `runtimeEnv`（启动时额外注入的环境变量）。
+本机只存注册中心没有的部署参数：`runtimeDir` / `healthUrl` / `port`（服务端口） / `startCmd` / `stopCmd` / `restartCmd` / 可选 graceful 端点 / `defaultBranch` / `supervise`（本机 watchdog 是否探活并拉起） / `intervalSec`（watchdog 探活周期，默认 30 秒） / `runtimeEnv`（启动时额外注入的环境变量） / `database`（启动时按变量名注入的数据库连接）。
 
 **字段归属（重要）**：
 
 | 归属 | 字段 | 本机能否改 |
 |---|---|---|
 | **service_registry（同步过来的信息）** | `serviceId`、`gitRepoUrl`、`version`、`owner`、`description`、`tags`、API 端点 | **不能改** |
-| 本控制面（部署参数） | `runtimeDir`、`healthUrl`、**`port`（服务端口）**、`startCmd`、`stopCmd`、`restartCmd`、`restartNotifyUrl`/`restartPollUrl`、`gracefulRestartMaxWaitMs`、`defaultBranch`、`name`（本机显示名）、`supervise`、`intervalSec`（探活周期）、`runtimeEnv`（启动时额外注入的环境变量） | 可配置 |
+| 本控制面（部署参数） | `runtimeDir`、`healthUrl`、**`port`（服务端口）**、`startCmd`、`stopCmd`、`restartCmd`、`restartNotifyUrl`/`restartPollUrl`、`gracefulRestartMaxWaitMs`、`defaultBranch`、`name`（本机显示名）、`supervise`、`intervalSec`（探活周期）、`runtimeEnv`（启动时额外注入的环境变量）、`database`（启动时按变量名注入的数据库连接） | 可配置 |
 
 `gitRepoUrl` 尤其**不可在本机修改**：它只有一个来源 —— service_registry。
 
@@ -123,9 +123,16 @@ service-registry :4240  ──pull(GET /v1/services)──▶  本控制面 :422
 | `SERVICE_PORT` | 契约里的 `port`（**正式字段名**） |
 | `PORT` | 同一个值（兼容老脚本） |
 | `RUNTIME_DIR` | 该服务的 `runtimeDir` |
+| 契约 `database.env` | 契约 `database.dsn`（数据库连接串；见下） |
 | 契约 `runtimeEnv` 里的每一项 | 原样注入（见下） |
 
-契约还可以配 **`runtimeEnv`**（对象，键是变量名、值是字符串）：`startCmd` / `stopCmd` / `restartCmd` 执行时一并注入，本机与远端同一份。平台上表那些键**始终覆盖**同名的 `runtimeEnv`。
+契约可以配 **`database`**（`{env, dsn}`）：启动时把连接串注入到 `env` 指定的变量（例如 `DATABASE_URL`、`ORG_DATABASE_URL`）。`startCmd` / `stopCmd` / `restartCmd` 在本机和远端都带上它。`env` 与 `dsn` 都空 = 不注入。变量名规则与 `runtimeEnv` 相同，且不能和 `runtimeEnv` 里的键重复（`PUT` → `400`，请只保留一处）。平台上表那些键**始终覆盖**同名的数据库变量。部署时间线只记变量名，不记连接串。
+
+- 不传 `database`：沿用库里已有的值。传 `{"env":"","dsn":""}`：清空。
+- 只填变量名或只填连接串 → `400 数据库连接要同时填写环境变量名和连接串`。
+- 面板：配置页单独一个「数据库连接」区（环境变量名 + 连接串）。
+
+契约还可以配 **`runtimeEnv`**（对象，键是变量名、值是字符串）：`startCmd` / `stopCmd` / `restartCmd` 执行时一并注入，本机与远端同一份。平台上表那些键**始终覆盖**同名的 `runtimeEnv`。数据库连接再盖过同名的 `runtimeEnv`（正常保存时两者不会重名）。
 
 - 不传 `runtimeEnv`：沿用库里已有的值。传 `{}`：清空（老契约没有这一列时就是空，行为与现在一样）。
 - 名字须匹配 `[A-Za-z_][A-Za-z0-9_]*`。`SERVICE_PORT` / `PORT` / `APP_VERSION` / `DEPLOY_MACHINE` / `RUNTIME_DIR` 不能写在这里（`PUT` → `400`）。值不能含换行，最多 64 项。
@@ -337,10 +344,11 @@ macOS 上打的包（Mach-O）在 Linux 远端起不来，所以**打包时就�
 | ② 运行目录（按目标机器平台选） | `runtimeDir` 默认 / macOS / Linux | 制品落到哪、`restartCmd` 在哪跑 |
 | ③ 服务接口（URL 只填路径） | `port`、健康检查路径、graceful 通知/轮询路径、最长等待 ms | 端口 + 探活/graceful 端点；host:port 部署时按目标机器拼 |
 | ④ 本机监督（agent-watchdog） | `supervise`、`intervalSec` | 本机 watchdog 是否探活并拉起，以及探活周期 |
-| ⑤ 启停命令（在目标机器上执行） | `startCmd`、`stopCmd`、`restartCmd` | 部署时注入平台变量，以及下一区的运行时环境变量 |
-| ⑥ 运行时环境变量（启动时注入） | `runtimeEnv` 键值行 | `start` / `stop` / `restart` 时额外注入；平台变量不在这里配 |
+| ⑤ 启停命令（在目标机器上执行） | `startCmd`、`stopCmd`、`restartCmd` | 部署时注入平台变量，以及下面两区的数据库连接和运行时环境变量 |
+| ⑥ 数据库连接（启动时注入） | `database.env`、`database.dsn` | 把连接串注入到指定环境变量；时间线只记变量名 |
+| ⑦ 运行时环境变量（启动时注入） | `runtimeEnv` 键值行 | `start` / `stop` / `restart` 时额外注入；平台变量和数据库连接不在这里配 |
 
-「保存部署配置 / 返回服务列表」在所有分区之外（全页只有一组操作按钮）。控件 id 未变（`#svc-*`），分区容器是 `section.cfg#cfg-identity|cfg-runtimedir|cfg-endpoints|cfg-supervise|cfg-commands|cfg-runtime-env`；面板测试断言每个字段落在与含义相符的分区里、且全页只有一个控件（分组不是靠复制控件）。
+「保存部署配置 / 返回服务列表」在所有分区之外（全页只有一组操作按钮）。控件 id 未变（`#svc-*`），分区容器是 `section.cfg#cfg-identity|cfg-runtimedir|cfg-endpoints|cfg-supervise|cfg-commands|cfg-database|cfg-runtime-env`；面板测试断言每个字段落在与含义相符的分区里、且全页只有一个控件（分组不是靠复制控件）。
 
 ### 服务契约里的 URL：只填路径（host+port 部署时拼）
 

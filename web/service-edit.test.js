@@ -250,6 +250,7 @@ test('service edit page: save sends PUT /api/services/:id with the form body', a
   assert.equal(body.supervise, false, 'supervise checkbox defaults off');
   assert.equal(body.intervalSec, 30, 'probe interval defaults to 30s');
   assert.deepEqual(body.runtimeEnv, {}, '没配运行时环境变量时提交空对象（保存即清空）');
+  assert.deepEqual(body.database, { env: '', dsn: '' }, '没配数据库连接时提交空对象（保存即清空）');
   assert.ok(!('gitRepoUrl' in body), 'gitRepoUrl is registry-owned: never sent from the panel');
   assert.match(doc.querySelector('#svc-msg').textContent, /已保存/);
 });
@@ -321,7 +322,7 @@ test('service edit page: 端口唯一性（前端先拦，不发请求）', asyn
 
 // 字段按含义分区：十几个字段平铺成一坨很难读，页面按「标识 / 目录 / 接口 / 命令」分四区，
 // 每区「小标题 + 一行说明 + 字段网格」，提示跟着它解释的字段走。
-test('service edit page: 字段按含义分区（标识 / 运行目录 / 服务接口 / 监督 / 启停命令 / 运行时环境变量）', async (t) => {
+test('service edit page: 字段按含义分区（标识 / 运行目录 / 服务接口 / 监督 / 启停命令 / 数据库连接 / 运行时环境变量）', async (t) => {
   const { dom, flush } = makePage('web-cursor');
   t.after(() => dom.window.close());
   const doc = dom.window.document;
@@ -330,11 +331,11 @@ test('service edit page: 字段按含义分区（标识 / 运行目录 / 服务�
   const sections = [...doc.querySelectorAll('.form-card > section.cfg')];
   assert.deepEqual(
     sections.map((s) => s.id),
-    ['cfg-identity', 'cfg-runtimedir', 'cfg-endpoints', 'cfg-supervise', 'cfg-commands', 'cfg-runtime-env'],
+    ['cfg-identity', 'cfg-runtimedir', 'cfg-endpoints', 'cfg-supervise', 'cfg-commands', 'cfg-database', 'cfg-runtime-env'],
   );
   assert.deepEqual(
     sections.map((s) => s.querySelector('.cfg__title').firstChild.textContent.trim()),
-    ['服务标识', '运行目录', '服务接口', '本机监督', '启停命令', '运行时环境变量'],
+    ['服务标识', '运行目录', '服务接口', '本机监督', '启停命令', '数据库连接', '运行时环境变量'],
   );
   for (const s of sections) {
     assert.ok(s.querySelector('.cfg__desc').textContent.trim().length > 0, s.id + ' 要有分区说明');
@@ -363,6 +364,9 @@ test('service edit page: 字段按含义分区（标识 / 运行目录 / 服务�
     '#svc-startCmd': 'cfg-commands',
     '#svc-stopCmd': 'cfg-commands',
     '#svc-restartCmd': 'cfg-commands',
+    '#svc-database-env': 'cfg-database',
+    '#svc-database-dsn': 'cfg-database',
+    '#svc-database-hint': 'cfg-database',
     '#svc-runtime-env-rows': 'cfg-runtime-env',
     '#svc-runtime-env-hint': 'cfg-runtime-env',
     '#svc-runtime-env-add': 'cfg-runtime-env',
@@ -444,5 +448,50 @@ test('service edit page: 运行时环境变量单独成区，保存时随部署�
     LOG_LEVEL: 'info',
     AUTONOMY_HTTP_HOST: '0.0.0.0',
   });
+});
+
+test('service edit page: 数据库连接单独成区，保存时随部署配置提交', async (t) => {
+  const { dom, flush, puts } = makePage('web-cursor', {
+    payload: {
+      registry: { url: 'http://127.0.0.1:4240', enabled: true, ok: true, services: 1 },
+      services: [{
+        serviceId: 'web-cursor', name: 'Web Cursor', runtimeDir: '/tmp/web-cursor',
+        healthUrl: '/health', port: 4211,
+        startCmd: 'start', stopCmd: 'stop', restartCmd: 'restart',
+        runtimeEnv: { LOG_LEVEL: 'info' },
+        database: { env: 'DATABASE_URL', dsn: 'postgres://app:s3cret@db/app' },
+        defaultBranch: 'main', registered: true, configured: true,
+      }],
+    },
+  });
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+  await flush();
+
+  const section = doc.querySelector('#cfg-database');
+  assert.ok(section, '编辑部署配置页要有数据库连接分区');
+  assert.match(section.querySelector('.cfg__desc').textContent, /注入/);
+  const hint = doc.querySelector('#svc-database-hint').textContent;
+  assert.match(hint, /DATABASE_URL/, '要写出当前注入的变量名：' + hint);
+  assert.match(hint, /不记录连接串/, '要说明时间线不记连接串：' + hint);
+  assert.equal(doc.querySelector('#svc-database-env').value, 'DATABASE_URL');
+  assert.equal(doc.querySelector('#svc-database-dsn').value, 'postgres://app:s3cret@db/app');
+  assert.equal(doc.querySelector('#svc-database-dsn').type, 'password', '连接串按密码框填写');
+
+  doc.querySelector('#svc-database-env').value = 'LOG_LEVEL';
+  const before = puts().length;
+  doc.querySelector('#svc-save').click();
+  await flush();
+  assert.equal(puts().length, before, '与运行时环境变量重名不能发 PUT');
+  assert.match(doc.querySelector('#svc-msg').textContent, /LOG_LEVEL/);
+  assert.match(doc.querySelector('#svc-msg').textContent, /只保留一处/);
+
+  doc.querySelector('#svc-database-env').value = 'DATABASE_URL';
+  doc.querySelector('#svc-database-dsn').value = 'postgres://app:new@db/app';
+  doc.querySelector('#svc-save').click();
+  await flush();
+  const body = JSON.parse(puts().at(-1).body);
+  assert.deepEqual(body.database, { env: 'DATABASE_URL', dsn: 'postgres://app:new@db/app' });
+  assert.deepEqual(body.runtimeEnv, { LOG_LEVEL: 'info' });
 });
 

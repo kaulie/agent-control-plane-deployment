@@ -4,7 +4,7 @@
     ],
     "swagger": "2.0",
     "info": {
-        "description": "独立部署控制面（:4220）：打包 / 部署 / 制品索引 / 服务契约部署参数 + Web 面板。\n服务目录（GET /api/services）的唯一真源是 service-registry（:4240），本机只存部署参数。\n鉴权（第一阶段）：触发部署的接口（POST /api/deploys、POST /api/deploy-notify）要求身份头 identity_role / identity_id；只读接口与 /restart/* 不校验。",
+        "description": "独立部署控制面（:4220）：打包 / 部署 / 制品索引 / 服务契约部署参数 + Web 面板。\n服务目录（GET /api/services）的唯一真源是 service-registry（:4240），本机只存部署参数。\n鉴权（第一阶段）：触发部署的接口（POST /api/deploys、POST /api/deploy-notify）要求身份头 identity_role / identity_id；只读接口与 /restart/* 不校验。\nHTTP MCP：POST /mcp（Streamable HTTP）。工具调用转发到本服务的 HTTP API。身份头会记成触发者。监听地址与本服务相同，默认只在 127.0.0.1。",
         "title": "agent-control-plane-deployment",
         "contact": {},
         "version": "1.0.0"
@@ -1098,9 +1098,24 @@
                 }
             }
         },
+        "main.DatabaseConnection": {
+            "type": "object",
+            "properties": {
+                "dsn": {
+                    "type": "string"
+                },
+                "env": {
+                    "type": "string"
+                }
+            }
+        },
         "main.DeployJob": {
             "type": "object",
             "properties": {
+                "artifactPlatform": {
+                    "description": "ArtifactPlatform 是打包时确定的产物平台（darwin/amd64 这种）。\n本机平台的 tag 不带后缀（deployment-\u003chash\u003e），多台控制面共用一个队列时，\n不能再把「没有后缀」理解成「执行者自己的平台」——否则 Linux 控制面会把\nmacOS 打的包当成自己的本机包，rsync 到 Linux runtime 后二进制起不来。",
+                    "type": "string"
+                },
                 "deployment": {
                     "type": "string"
                 },
@@ -1304,6 +1319,10 @@
                 "instanceCount": {
                     "type": "integer"
                 },
+                "mcpPath": {
+                    "description": "MCP address relative to the instance root; registry default /mcp",
+                    "type": "string"
+                },
                 "name": {
                     "type": "string"
                 },
@@ -1340,6 +1359,14 @@
                 "createdAt": {
                     "type": "string"
                 },
+                "database": {
+                    "description": "Database 是启动时注入的数据库连接（变量名 + 连接串）。空表示不注入。\n变量名不能与 RuntimeEnv 或平台键重复；时间线只记变量名。",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/main.DatabaseConnection"
+                        }
+                    ]
+                },
                 "defaultBranch": {
                     "description": "Default git branch/ref for packaging when notify omits ref (default: main).",
                     "type": "string"
@@ -1354,6 +1381,10 @@
                 },
                 "healthUrl": {
                     "type": "string"
+                },
+                "intervalSec": {
+                    "description": "IntervalSec is how often watchdog probes this service. Watchdog syncs\nthis from GET /api/services; 0 in memory is stored as the factory default.",
+                    "type": "integer"
                 },
                 "name": {
                     "type": "string"
@@ -1410,6 +1441,10 @@
                 "stopCmd": {
                     "type": "string"
                 },
+                "supervise": {
+                    "description": "Supervise: watchdog on this machine should probe and remediate the service.\nStored in the existing watchdog_enabled column (historically written as 0\nand never exposed).",
+                    "type": "boolean"
+                },
                 "updatedAt": {
                     "type": "string"
                 }
@@ -1420,6 +1455,14 @@
             "properties": {
                 "createdAt": {
                     "type": "string"
+                },
+                "database": {
+                    "description": "Database 是启动时注入的数据库连接（变量名 + 连接串）。空表示不注入。\n变量名不能与 RuntimeEnv 或平台键重复；时间线只记变量名。",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/main.DatabaseConnection"
+                        }
+                    ]
                 },
                 "defaultBranch": {
                     "description": "Default git branch/ref for packaging when notify omits ref (default: main).",
@@ -1435,6 +1478,10 @@
                 },
                 "healthUrl": {
                     "type": "string"
+                },
+                "intervalSec": {
+                    "description": "IntervalSec is how often watchdog probes this service. Watchdog syncs\nthis from GET /api/services; 0 in memory is stored as the factory default.",
+                    "type": "integer"
                 },
                 "name": {
                     "type": "string"
@@ -1478,6 +1525,10 @@
                 },
                 "stopCmd": {
                     "type": "string"
+                },
+                "supervise": {
+                    "description": "Supervise: watchdog on this machine should probe and remediate the service.\nStored in the existing watchdog_enabled column (historically written as 0\nand never exposed).",
+                    "type": "boolean"
                 },
                 "updatedAt": {
                     "type": "string"
@@ -1543,6 +1594,14 @@
         "main.putServiceBody": {
             "type": "object",
             "properties": {
+                "database": {
+                    "description": "Database 启动时注入的数据库连接。不传 = 沿用已有配置；env 与 dsn 都空 = 清空。\n变量名不能与 runtimeEnv 或平台键重复。",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/main.DatabaseConnection"
+                        }
+                    ]
+                },
                 "defaultBranch": {
                     "type": "string"
                 },
@@ -1554,6 +1613,9 @@
                 },
                 "healthUrl": {
                     "type": "string"
+                },
+                "intervalSec": {
+                    "type": "integer"
                 },
                 "name": {
                     "type": "string"
@@ -1592,6 +1654,9 @@
                 },
                 "stopCmd": {
                     "type": "string"
+                },
+                "supervise": {
+                    "type": "boolean"
                 }
             }
         },
