@@ -160,6 +160,20 @@ func TestAnnounceDeploymentFailureAborts(t *testing.T) {
 	}
 }
 
+func TestAnnounceDeploymentContinuesWhenRouteMissing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"code":"not_found","message":"未知路径 /v1/namespaces/default/services/agent-control-plane-deployment/announce"}}`))
+	}))
+	t.Cleanup(srv.Close)
+	reg := registryClientFor(srv.URL)
+	cfg := Config{Host: "0.0.0.0", RegistryNamespace: "default", RegistryService: "agent-control-plane-deployment"}
+	id, err := announceDeployment(context.Background(), reg, cfg, 4220)
+	if err != nil || id != "" {
+		t.Fatalf("old registry must not block startup, id=%q err=%v", id, err)
+	}
+}
+
 func TestAnnounceDeploymentSkipsWhenRegistryOff(t *testing.T) {
 	id, err := announceDeployment(context.Background(), nil, Config{}, 4220)
 	if err != nil || id != "" {

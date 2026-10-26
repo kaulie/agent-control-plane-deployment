@@ -28,6 +28,12 @@ func announceDeployment(ctx context.Context, reg *ServiceRegistry, cfg Config, p
 	}
 	inst, created, err := reg.Announce(ctx, cfg.RegistryNamespace, cfg.RegistryService, spec)
 	if err != nil {
+		// 旧注册中心没有 PUT .../announce（404 未知路径）。地址登记失败不能挡住
+		// 监听：这台机器上的面板否则永远起不来。契约缺失等其它 404 仍然中止启动。
+		if announceRouteMissing(err) {
+			log.Printf("[registry] 注册中心没有 /announce，跳过实例登记并继续启动：%v", err)
+			return "", nil
+		}
 		return "", err
 	}
 	host := spec.Host
@@ -110,6 +116,16 @@ func registryArchName(goarchName string) string {
 	default:
 		return ""
 	}
+}
+
+// announceRouteMissing reports whether the registry process does not implement
+// PUT .../announce (an older service-registry answers 404 未知路径).
+func announceRouteMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "未知路径") && strings.Contains(msg, "/announce")
 }
 
 // announceHost is the host field to send. A wildcard bind has no single
