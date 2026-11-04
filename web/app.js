@@ -942,6 +942,104 @@ $('#pipe-trigger').addEventListener('click', async () => {
 
 // ---- pipeline detail -------------------------------------------------------
 let pipeDetailID = null;
+let pipeDiagnosis = null;
+let pipeDiagnosisError = '';
+let pipeDiagnosing = false;
+
+const DIAG_STAGE = {
+  precheck: '预检', packaging: '打包', enqueue: '入队部署', deploy: '部署',
+};
+const DIAG_CATEGORY = {
+  unknown_service: '服务不存在',
+  no_repo: '仓库未登记',
+  runtime_dir: '运行目录',
+  proxy_off: '直连失败',
+  proxy_on: '代理失败',
+  git_fetch: '拉仓库',
+  build: '构建失败',
+  enqueue: '入队失败',
+  no_channel: '没有部署通道',
+  no_runtime_dir: '缺少运行目录',
+  download: '制品下载',
+  rsync: '同步失败',
+  health_check: '健康检查',
+  graceful: '优雅重启',
+  upgrader: '自身升级',
+  version_mismatch: '版本不一致',
+  package_incomplete: '包不完整',
+  start_failed: '启动失败',
+  restart_failed: '重启失败',
+  uncategorized: '未归类',
+};
+
+function diagLabel(map, key) {
+  return map[key] || key || '—';
+}
+
+function renderPipeDiagnosis(job) {
+  const box = $('#pipe-detail-diagnosis');
+  const body = $('#pipe-detail-diagnosis-body');
+  const btn = $('#pipe-diagnose');
+  if (btn) {
+    const failed = !!(job && job.state === 'failed');
+    btn.disabled = !failed || pipeDiagnosing;
+    btn.textContent = pipeDiagnosing ? '诊断中…' : '一键诊断';
+    btn.title = failed ? '根据失败记录和本机启动日志说明原因' : '只有失败的流水线可以诊断';
+  }
+  if (!box || !body) return;
+  if (!pipeDiagnosis && !pipeDiagnosisError) {
+    box.hidden = true;
+    body.innerHTML = '';
+    return;
+  }
+  box.hidden = false;
+  if (pipeDiagnosisError) {
+    body.innerHTML = `<p class="detail-value detail-value--err">${esc(pipeDiagnosisError)}</p>`;
+    return;
+  }
+  const d = pipeDiagnosis;
+  const evidence = Array.isArray(d.evidence) ? d.evidence : [];
+  const suggestions = Array.isArray(d.suggestions) ? d.suggestions : [];
+  body.innerHTML =
+    `<div class="diagnosis__tags">` +
+      `<span class="badge badge--violet">${esc(diagLabel(DIAG_STAGE, d.stage))}</span>` +
+      `<span class="badge badge--bad">${esc(diagLabel(DIAG_CATEGORY, d.category))}</span>` +
+    `</div>` +
+    `<p class="diagnosis__summary">${esc(d.summary || '—')}</p>` +
+    `<p class="diagnosis__cause">${esc(d.cause || '')}</p>` +
+    (evidence.length
+      ? `<h4>依据</h4><ul class="diagnosis__list">` + evidence.map((ev) =>
+          `<li><span class="mono">${esc(ev.source || '')}</span> ${esc(ev.message || '')}</li>`
+        ).join('') + `</ul>`
+      : '') +
+    (suggestions.length
+      ? `<h4>建议</h4><ul class="diagnosis__list">` + suggestions.map((s) =>
+          `<li>${esc(s)}</li>`
+        ).join('') + `</ul>`
+      : '');
+}
+
+$('#pipe-diagnose').addEventListener('click', async () => {
+  const id = pipeDetailID;
+  const btn = $('#pipe-diagnose');
+  if (!id || pipeDiagnosing || (btn && btn.disabled)) return;
+  pipeDiagnosing = true;
+  pipeDiagnosisError = '';
+  renderPipeDiagnosis({ state: 'failed' });
+  try {
+    const d = await apiGet('/api/pipelines/' + encodeURIComponent(id) + '/diagnosis');
+    if (pipeDetailID !== id) return;
+    pipeDiagnosis = d;
+    pipeDiagnosisError = '';
+  } catch (e) {
+    if (pipeDetailID !== id) return;
+    pipeDiagnosis = null;
+    pipeDiagnosisError = '诊断失败：' + e.message;
+  } finally {
+    pipeDiagnosing = false;
+    if (pipeDetailID === id) renderPipeDiagnosis({ state: 'failed' });
+  }
+});
 
 $('#pipe-table tbody').addEventListener('click', (e) => {
   const tr = e.target.closest('[data-pipe-open]');
@@ -1033,6 +1131,11 @@ async function renderPipelineMachines(job) {
 }
 
 async function openPipelineDetail(requestId) {
+  if (pipeDetailID !== requestId) {
+    pipeDiagnosis = null;
+    pipeDiagnosisError = '';
+    pipeDiagnosing = false;
+  }
   pipeDetailID = requestId;
   $('#pipe-list-view').hidden = true;
   $('#pipe-detail').hidden = false;
@@ -1043,6 +1146,9 @@ async function openPipelineDetail(requestId) {
 
 function closePipelineDetail() {
   pipeDetailID = null;
+  pipeDiagnosis = null;
+  pipeDiagnosisError = '';
+  pipeDiagnosing = false;
   $('#pipe-detail').hidden = true;
   $('#pipe-list-view').hidden = false;
 }
@@ -1059,6 +1165,7 @@ async function refreshPipelineDetail() {
     $('#pipe-detail-events').innerHTML = '';
     $('#pipe-detail-machines-wrap').hidden = true;
     $('#pipe-detail-deploy-wrap').hidden = true;
+    renderPipeDiagnosis(null);
     return;
   }
   try {
@@ -1103,6 +1210,7 @@ async function refreshPipelineDetail() {
   ].join('');
 
   await renderPipelineMachines(job);
+  renderPipeDiagnosis(job);
 
   const evList = $('#pipe-detail-events');
   if (!merged.length) {
