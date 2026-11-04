@@ -86,6 +86,7 @@ func (s *apiServer) routes() http.Handler {
 	mux.HandleFunc("GET /api/pipelines", s.handleListPipelines)
 	mux.HandleFunc("GET /api/pipelines/{requestId}", s.handleGetPipeline)
 	mux.HandleFunc("GET /api/pipelines/{requestId}/events", s.handleListPipelineEvents)
+	mux.HandleFunc("GET /api/pipelines/{requestId}/diagnosis", s.handleDiagnosePipeline)
 	mux.HandleFunc("GET /api/artifacts", s.handleListArtifacts)
 	mux.HandleFunc("GET /api/artifacts/{tag}", s.handleGetArtifact)
 	mux.HandleFunc("POST /api/artifacts/scan", s.handleScanArtifacts)
@@ -1095,6 +1096,23 @@ func (s *apiServer) handleListPipelineEvents(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+}
+
+// @Summary  诊断一条失败的流水线
+// @Tags     pipelines
+// @Produce  json
+// @Param    requestId  path  string  true  "流水线 id"
+// @Success  200  {object}  main.Diagnosis
+// @Failure  404  {object}  map[string]string  "流水线不存在"
+// @Failure  409  {object}  map[string]string  "不是失败状态"
+// @Router   /api/pipelines/{requestId}/diagnosis [get]
+func (s *apiServer) handleDiagnosePipeline(w http.ResponseWriter, r *http.Request) {
+	d, code, msg := s.diagnosePipeline(r.PathValue("requestId"))
+	if code != http.StatusOK {
+		writeError(w, code, msg)
+		return
+	}
+	writeJSON(w, http.StatusOK, d)
 }
 
 // handleListArtifacts returns artifact metadata, optionally filtered by

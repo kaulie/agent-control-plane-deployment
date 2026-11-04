@@ -79,7 +79,20 @@ function makePanel(options = {}) {
     if (pathname === '/health') return { ok: true };
     // Pipeline detail: single job + its event timeline (the deploy machines list
     // comes from the usual /api/meta?serviceId=<服务> mock above).
-    let pm = /^\/api\/pipelines\/([^/]+)\/events$/.exec(pathname);
+    let pm = /^\/api\/pipelines\/([^/]+)\/diagnosis$/.exec(pathname);
+    if (pm) {
+      return options.diagnosis || {
+        requestId: decodeURIComponent(pm[1]),
+        state: 'failed',
+        stage: 'deploy',
+        category: 'start_failed',
+        summary: '启动命令非 0 退出',
+        cause: '进程在开始监听前被健康等待杀掉',
+        evidence: [{ source: 'log', level: 'info', message: '时间窗内没有 Traceback' }],
+        suggestions: ['看 backend/server.log'],
+      };
+    }
+    pm = /^\/api\/pipelines\/([^/]+)\/events$/.exec(pathname);
     if (pm) return { events: options.pipelineEvents || [] };
     pm = /^\/api\/pipelines\/([^/]+)$/.exec(pathname);
     if (pm) return pipelineDetail || {};
@@ -823,6 +836,65 @@ test('pipeline detail: shows the deploy machine list and marks the target machin
   assert.ok(doc.querySelector('.machine-list__item--target') !== null, '目标机器应有高亮行');
   const metaCalls = requests.filter((r) => r.pathname === '/api/meta' && r.search.includes('serviceId=web-cursor'));
   assert.ok(metaCalls.length >= 1, '详情页应按这条流水线的服务拉取机器列表');
+});
+
+async function openPipeDetail(doc, requestId) {
+  const tbody = doc.querySelector('#pipe-table tbody');
+  const tr = doc.createElement('tr');
+  tr.setAttribute('data-pipe-open', requestId);
+  tr.innerHTML = '<td>' + requestId + '</td>';
+  tbody.appendChild(tr);
+  tr.querySelector('td').click();
+}
+
+test('pipeline detail: 一键诊断只对失败流水线可点，并展示结论', async (t) => {
+  const { dom, flush, requests } = makePanel({
+    pipelineDetail: {
+      requestId: 'pipeline-8c58ee70', serviceId: 'home-agent-brain', ref: 'main',
+      state: 'failed', error: 'start failed: log tail',
+    },
+  });
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+  await flush();
+  openPipeDetail(doc, 'pipeline-8c58ee70');
+  await flush();
+
+  const btn = doc.querySelector('#pipe-diagnose');
+  assert.equal(btn.disabled, false, '失败流水线应能点一键诊断');
+  assert.equal(doc.querySelector('#pipe-detail-diagnosis').hidden, true, '点之前不展示诊断');
+  btn.click();
+  await flush();
+
+  const box = doc.querySelector('#pipe-detail-diagnosis');
+  assert.equal(box.hidden, false);
+  assert.match(box.textContent, /启动失败/);
+  assert.match(box.textContent, /进程在开始监听前被健康等待杀掉/);
+  assert.match(box.textContent, /看 backend\/server\.log/);
+  assert.ok(requests.some((r) => r.pathname === '/api/pipelines/pipeline-8c58ee70/diagnosis'), '应请求诊断接口');
+});
+
+test('pipeline detail: 成功的流水线不能一键诊断', async (t) => {
+  const { dom, flush, requests } = makePanel({
+    pipelineDetail: {
+      requestId: 'pipeline-ok', serviceId: 'web-cursor', ref: 'main', state: 'succeeded',
+    },
+  });
+  t.after(() => dom.window.close());
+  const doc = dom.window.document;
+  await flush();
+  openPipeDetail(doc, 'pipeline-ok');
+  await flush();
+
+  const btn = doc.querySelector('#pipe-diagnose');
+  assert.equal(btn.disabled, true);
+  assert.match(btn.title, /只有失败的流水线可以诊断/);
+  const before = requests.filter((r) => r.pathname.endsWith('/diagnosis')).length;
+  btn.click();
+  await flush();
+  const after = requests.filter((r) => r.pathname.endsWith('/diagnosis')).length;
+  assert.equal(after, before, '禁用的按钮不应发出诊断请求');
+  assert.equal(doc.querySelector('#pipe-detail-diagnosis').hidden, true);
 });
 
 

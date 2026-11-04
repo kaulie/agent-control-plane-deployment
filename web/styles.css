@@ -248,6 +248,14 @@ a.btn:hover { color: var(--text); }
   margin-bottom: 14px;
 }
 .detail-head h2 { margin: 0; font-size: 15px; }
+.detail-head__action { margin-left: auto; }
+
+.diagnosis__tags { display: flex; gap: 8px; margin-bottom: 8px; }
+.diagnosis__summary { font-size: 14px; font-weight: 600; margin: 0 0 8px; }
+.diagnosis__cause { margin: 0 0 10px; line-height: 1.5; }
+.diagnosis__list { margin: 0; padding-left: 1.2em; }
+.diagnosis__list li { margin: 4px 0; }
+.diagnosis h4 { margin: 10px 0 6px; font-size: 12px; color: var(--muted); font-weight: 600; }
 
 .detail-grid {
   display: grid;

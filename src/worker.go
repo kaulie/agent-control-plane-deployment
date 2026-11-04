@@ -72,11 +72,31 @@ func runServiceCmd(remote RemoteRunner, target MachineTarget, cmd string, servic
 	return res.Code, res.Output
 }
 
+// clipCmdOut 限制写进任务错误里的命令输出。超长时保留开头和结尾：
+// 启动脚本的失败句在开头，后面才是 tail 出来的日志，只留结尾会把原因截掉。
 func clipCmdOut(out string) string {
-	if len(out) > 2000 {
-		return out[len(out)-2000:]
+	const limit = 2000
+	if len(out) <= limit {
+		return out
 	}
-	return out
+	const headBudget = 600
+	head := out[:headBudget]
+	if i := strings.LastIndex(head, "\n"); i > 40 {
+		head = out[:i]
+	}
+	marker := "\n…(中间已截断，仅保留开头和结尾)…\n"
+	tailBudget := limit - len(head) - len(marker)
+	if tailBudget < 400 {
+		tailBudget = 400
+	}
+	if tailBudget >= len(out) {
+		return out
+	}
+	tail := out[len(out)-tailBudget:]
+	if i := strings.Index(tail, "\n"); i >= 0 && i < len(tail)-1 {
+		tail = tail[i+1:]
+	}
+	return head + marker + tail
 }
 
 func shownServiceCmd(cmd, override string, service ServiceContract, runtimeDir, hash, machine string) string {

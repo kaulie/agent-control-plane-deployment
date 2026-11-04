@@ -152,8 +152,13 @@
         <div class="detail-head">
           <button class="btn btn--ghost" id="pipe-detail-back" type="button">← 返回列表</button>
           <h2 id="pipe-detail-title">流水线详情</h2>
+          <button class="btn btn--primary detail-head__action" id="pipe-diagnose" type="button" disabled title="只有失败的流水线可以诊断">一键诊断</button>
         </div>
         <div class="detail-grid" id="pipe-detail-fields"></div>
+        <div class="detail-section" id="pipe-detail-diagnosis" hidden>
+          <h3>诊断结果</h3>
+          <div id="pipe-detail-diagnosis-body"></div>
+        </div>
         <div class="detail-section" id="pipe-detail-machines-wrap" hidden>
           <h3>部署机器</h3>
           <div id="pipe-detail-machines"></div>
